@@ -87,6 +87,16 @@ func (e *Engine) Explain(ctx context.Context, req Request) (Trace, error) {
 		return Trace{}, err
 	}
 
+	member, err := e.requireMembership(ctx, req.Account, req.Principal)
+	if err != nil {
+		return Trace{}, err
+	}
+	if !member {
+		// Fail-closed: the denial precedes grant evaluation, so the trace records
+		// the membership verdict and considers no grants.
+		return Trace{Request: req, Decision: nonMemberDeny(req), Considered: []GrantEvaluation{}}, nil
+	}
+
 	subjects, err := e.subjectSet(ctx, req.Principal)
 	if err != nil {
 		return Trace{}, err

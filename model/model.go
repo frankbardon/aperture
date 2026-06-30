@@ -15,7 +15,15 @@
 //   - Grant — a binding of a subject (principal | role | group) to a permission,
 //     scoped to an object-identity PATTERN and an Effect (allow | deny), and
 //     STAMPED with the account it belongs to. Account stamping is the mechanism
-//     that guarantees cross-account isolation (enforced later in E3-S1).
+//     that guarantees cross-account isolation (enforced end-to-end in E3-S1).
+//
+// Two further entities make accounts first-class tenancy boundaries:
+//
+//   - Account — a tenancy boundary: the unit a grant is stamped to and the active
+//     context a decision is scoped to.
+//   - Membership — the edge linking a global principal to the one-or-more accounts
+//     it belongs to. The (principal, active-account) pair is the isolation unit:
+//     a multi-account principal's grants in one account never apply in another.
 //
 // Grants store the identity pattern in string form so wildcard grants are
 // first-class; the decision engine (E1-S4) parses the pattern with the identity
@@ -181,6 +189,42 @@ type Group struct {
 	MemberPrincipalIDs []string
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
+}
+
+// Account is a first-class tenancy boundary: the unit a grant is stamped to and
+// the active context a decision is scoped to. Accounts are global entities; a
+// single principal can be a member of more than one (via Membership), but the
+// grants it holds in one account never apply in another — the (principal,
+// active-account) isolation invariant this story locks down.
+type Account struct {
+	// ID is the account's stable identifier (caller-assigned). It is the value
+	// Grant.AccountID stamps and Request.Account scopes a decision to.
+	ID string
+	// Name is the human-readable account name.
+	Name string
+	// Description is optional human-readable documentation.
+	Description string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+// Membership is the edge linking a global Principal to an Account it belongs to.
+// A principal with memberships in accounts A and B is one user spanning two
+// tenancies; the membership edge says nothing about what the principal may DO in
+// an account (that is grants) — only that the principal is in scope there. The
+// pair (PrincipalID, AccountID) is the membership's identity: a principal is a
+// member of an account at most once, so PutMembership upserts on the pair.
+//
+// Membership being first-class lets the decision engine optionally enforce that
+// a request's principal is actually a member of the active account (a non-member
+// is denied), a defence-in-depth layer over the account-scoped grant query.
+type Membership struct {
+	// PrincipalID references Principal.ID.
+	PrincipalID string
+	// AccountID references Account.ID.
+	AccountID string
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // Grant binds a subject (principal | role | group) to a permission, scoped to an

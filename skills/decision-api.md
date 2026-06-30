@@ -28,6 +28,32 @@ Each has a bulk form — `CheckBatch`, `EnumerateBatch`, `ExplainBatch` — that
 takes many queries and returns results **aligned by index** (`result[i]` for
 `query[i]`).
 
+## Account isolation & membership
+
+Every decision is scoped to an **active account** (`Request.Account`), and the
+(principal, active-account) pair is a hard isolation boundary (FR-14): a
+multi-account principal's grants in one account NEVER apply in another. This is
+guaranteed at the storage seam — `GrantsForSubjects(account, subjects)` and
+`GroupsForPrincipal` are account-scoped, so a grant stamped to another account is
+never even loaded. The invariant holds identically under direct, role, group,
+wildcard, and scope-strategy grants, and switching `Request.Account` changes the
+effective grant set deterministically.
+
+Accounts and memberships are first-class (`model.Account`, `model.Membership`):
+a membership is the edge admitting a principal to an account. Enforcement of
+membership is **opt-in**:
+
+```go
+eng := engine.New(store, engine.WithMembershipEnforcement())
+```
+
+With it on, a request whose principal is not a member of the active account is
+denied at the door — a fail-closed default-deny (Check), an empty result
+(Enumerate), and a deny Trace that considers no grants (Explain) — before any
+grant is consulted. It is a defence-in-depth layer over the always-on
+account-scoped grant query; off by default, deployments that model membership
+purely through grants are unaffected.
+
 ## Enumerate is bounded
 
 Enumerate is the most cache-sensitive op. It is deliberately bounded and never

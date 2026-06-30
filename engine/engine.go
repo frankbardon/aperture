@@ -252,8 +252,9 @@ func (c scopeCoverer) members(ctx context.Context, req Request, g model.Grant, p
 // and coverer, and safe for concurrent use to whatever degree the underlying
 // Storage is.
 type Engine struct {
-	store   model.Storage
-	coverer coverer
+	store             model.Storage
+	coverer           coverer
+	enforceMembership bool
 }
 
 // Option configures an Engine at construction. Options compose; the last one to
@@ -296,6 +297,54 @@ func WithScopeResolution(registry *scope.Registry, deps ...ScopeDeps) Option {
 	}
 }
 
+// WithMembershipEnforcement makes the engine require that a decision request's
+// principal is actually a member of the active account before any grant is
+// consulted. A non-member is denied at the door — a clean, fail-closed
+// default-deny (Check), an empty result (Enumerate), or a deny Trace (Explain) —
+// rather than an error, so the PDP never fails open and the rendering surfaces
+// treat it like any other deny.
+//
+// It is OPT-IN. The (principal, active-account) isolation invariant is ALREADY
+// guaranteed without it — grant queries are account-scoped, so a non-member with
+// no grants in the account already default-denies. Enforcement is the
+// defence-in-depth layer that makes membership a hard precondition: it closes
+// the theoretical gap where a grant is mistakenly stamped to an account a
+// principal was never admitted to, and gives surfaces an explicit, uniform
+// "not in this tenancy" verdict. Off by default so a deployment that models
+// membership purely through grants is unaffected.
+func WithMembershipEnforcement() Option {
+	return func(e *Engine) { e.enforceMembership = true }
+}
+
+// requireMembership reports whether the request may proceed under the active
+// membership policy. With enforcement off it always returns true. With
+// enforcement on it returns whether principal is a member of account; a storage
+// failure surfaces as an APERTURE_STORAGE error (a non-decision), never a silent
+// allow.
+func (e *Engine) requireMembership(ctx context.Context, account, principal string) (bool, error) {
+	if !e.enforceMembership {
+		return true, nil
+	}
+	ok, err := e.store.IsMember(ctx, principal, account)
+	if err != nil {
+		return false, aerr.Wrap(aerr.APERTURE_STORAGE,
+			"engine: failed to check active-account membership", err)
+	}
+	return ok, nil
+}
+
+// nonMemberDeny is the fail-closed verdict for a principal that is not a member
+// of the active account. It names no deciding grant — the denial precedes grant
+// evaluation entirely.
+func nonMemberDeny(req Request) Decision {
+	return Decision{
+		Allow: false,
+		Reason: fmt.Sprintf(
+			"default deny: principal %q is not a member of active account %q",
+			req.Principal, req.Account),
+	}
+}
+
 // ScopeDeps are the runtime dependencies the scope resolvers may consult: the
 // object lister (E2-S2) and the rule evaluator (E2-S3). It mirrors scope.Deps so
 // callers do not import the scope package's seam types directly when they only
@@ -322,6 +371,14 @@ func (e *Engine) Check(ctx context.Context, req Request) (Decision, error) {
 	object, err := identity.Parse(req.Object)
 	if err != nil {
 		return Decision{}, err
+	}
+
+	member, err := e.requireMembership(ctx, req.Account, req.Principal)
+	if err != nil {
+		return Decision{}, err
+	}
+	if !member {
+		return nonMemberDeny(req), nil
 	}
 
 	subjects, err := e.subjectSet(ctx, req.Principal)

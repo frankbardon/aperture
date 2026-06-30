@@ -108,6 +108,184 @@ func notFound(kind, id string) error {
 
 func isNoRows(err error) bool { return errors.Is(err, sql.ErrNoRows) }
 
+// ---- Account ----
+
+func (s *Store) PutAccount(ctx context.Context, a model.Account) error {
+	if err := model.ValidateAccount(a); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT OR REPLACE INTO accounts (id, name, description, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?)`,
+		a.ID, a.Name, a.Description, encodeTime(a.CreatedAt), encodeTime(a.UpdatedAt))
+	if err != nil {
+		return wrapStorage("put account", err)
+	}
+	return nil
+}
+
+func (s *Store) GetAccount(ctx context.Context, id string) (model.Account, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT id, name, description, created_at, updated_at FROM accounts WHERE id = ?`, id)
+	a, err := scanAccount(row)
+	if isNoRows(err) {
+		return model.Account{}, notFound("account", id)
+	}
+	return a, err
+}
+
+func (s *Store) ListAccounts(ctx context.Context) ([]model.Account, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, name, description, created_at, updated_at FROM accounts ORDER BY id`)
+	if err != nil {
+		return nil, wrapStorage("list accounts", err)
+	}
+	defer rows.Close()
+	out := make([]model.Account, 0)
+	for rows.Next() {
+		a, err := scanAccount(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) DeleteAccount(ctx context.Context, id string) error {
+	return s.deleteByID(ctx, "account", "accounts", "id", id)
+}
+
+func scanAccount(sc scanner) (model.Account, error) {
+	var (
+		a                model.Account
+		created, updated string
+	)
+	if err := sc.Scan(&a.ID, &a.Name, &a.Description, &created, &updated); err != nil {
+		if isNoRows(err) {
+			return model.Account{}, err
+		}
+		return model.Account{}, wrapStorage("scan account", err)
+	}
+	var err error
+	if a.CreatedAt, err = decodeTime(created); err != nil {
+		return model.Account{}, err
+	}
+	if a.UpdatedAt, err = decodeTime(updated); err != nil {
+		return model.Account{}, err
+	}
+	return a, nil
+}
+
+// ---- Membership ----
+
+func (s *Store) PutMembership(ctx context.Context, m model.Membership) error {
+	if err := model.ValidateMembership(m); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT OR REPLACE INTO memberships (principal_id, account_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?)`,
+		m.PrincipalID, m.AccountID, encodeTime(m.CreatedAt), encodeTime(m.UpdatedAt))
+	if err != nil {
+		return wrapStorage("put membership", err)
+	}
+	return nil
+}
+
+func (s *Store) GetMembership(ctx context.Context, principalID, accountID string) (model.Membership, error) {
+	row := s.db.QueryRowContext(ctx,
+		membershipSelect+` WHERE principal_id = ? AND account_id = ?`, principalID, accountID)
+	m, err := scanMembership(row)
+	if isNoRows(err) {
+		return model.Membership{}, notFound("membership", principalID+"@"+accountID)
+	}
+	return m, err
+}
+
+func (s *Store) DeleteMembership(ctx context.Context, principalID, accountID string) error {
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM memberships WHERE principal_id = ? AND account_id = ?`, principalID, accountID)
+	if err != nil {
+		return wrapStorage("delete membership", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return notFound("membership", principalID+"@"+accountID)
+	}
+	return nil
+}
+
+func (s *Store) MembershipsForPrincipal(ctx context.Context, principalID string) ([]model.Membership, error) {
+	rows, err := s.db.QueryContext(ctx,
+		membershipSelect+` WHERE principal_id = ? ORDER BY account_id`, principalID)
+	if err != nil {
+		return nil, wrapStorage("memberships for principal", err)
+	}
+	return collectMemberships(rows)
+}
+
+func (s *Store) MembershipsForAccount(ctx context.Context, accountID string) ([]model.Membership, error) {
+	rows, err := s.db.QueryContext(ctx,
+		membershipSelect+` WHERE account_id = ? ORDER BY principal_id`, accountID)
+	if err != nil {
+		return nil, wrapStorage("memberships for account", err)
+	}
+	return collectMemberships(rows)
+}
+
+func (s *Store) IsMember(ctx context.Context, principalID, accountID string) (bool, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT 1 FROM memberships WHERE principal_id = ? AND account_id = ?`, principalID, accountID)
+	var one int
+	switch err := row.Scan(&one); {
+	case isNoRows(err):
+		return false, nil
+	case err != nil:
+		return false, wrapStorage("is member", err)
+	default:
+		return true, nil
+	}
+}
+
+const membershipSelect = `SELECT principal_id, account_id, created_at, updated_at FROM memberships`
+
+func collectMemberships(rows *sql.Rows) ([]model.Membership, error) {
+	defer rows.Close()
+	out := make([]model.Membership, 0)
+	for rows.Next() {
+		m, err := scanMembership(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, wrapStorage("scan memberships", err)
+	}
+	return out, nil
+}
+
+func scanMembership(sc scanner) (model.Membership, error) {
+	var (
+		m                model.Membership
+		created, updated string
+	)
+	if err := sc.Scan(&m.PrincipalID, &m.AccountID, &created, &updated); err != nil {
+		if isNoRows(err) {
+			return model.Membership{}, err
+		}
+		return model.Membership{}, wrapStorage("scan membership", err)
+	}
+	var err error
+	if m.CreatedAt, err = decodeTime(created); err != nil {
+		return model.Membership{}, err
+	}
+	if m.UpdatedAt, err = decodeTime(updated); err != nil {
+		return model.Membership{}, err
+	}
+	return m, nil
+}
+
 // ---- ObjectType ----
 
 func (s *Store) PutObjectType(ctx context.Context, ot model.ObjectType) error {

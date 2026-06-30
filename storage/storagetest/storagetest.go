@@ -27,6 +27,8 @@ type Factory func(t *testing.T) model.Storage
 // Each subtest gets its own store so the cases are independent and order-free.
 func Run(t *testing.T, newStore Factory) {
 	t.Helper()
+	t.Run("AccountCRUD", func(t *testing.T) { testAccountCRUD(t, newStore(t)) })
+	t.Run("MembershipCRUDAndQueries", func(t *testing.T) { testMembershipCRUDAndQueries(t, newStore(t)) })
 	t.Run("ObjectTypeCRUD", func(t *testing.T) { testObjectTypeCRUD(t, newStore(t)) })
 	t.Run("PermissionTypedAction", func(t *testing.T) { testPermissionTypedAction(t, newStore(t)) })
 	t.Run("PermissionUnknownObjectType", func(t *testing.T) { testPermissionUnknownObjectType(t, newStore(t)) })
@@ -62,6 +64,142 @@ func seedDocumentType(t *testing.T, s model.Storage) {
 	if err := s.PutObjectType(ctx(), ot); err != nil {
 		t.Fatalf("seed object type: %v", err)
 	}
+}
+
+func testAccountCRUD(t *testing.T, s model.Storage) {
+	a := model.Account{ID: "acme", Name: "Acme Corp", Description: "the demo tenant"}
+	if err := s.PutAccount(ctx(), a); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	got, err := s.GetAccount(ctx(), "acme")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !reflect.DeepEqual(normAccount(got), normAccount(a)) {
+		t.Fatalf("round trip mismatch:\n got %+v\nwant %+v", got, a)
+	}
+
+	// Upsert replaces the name.
+	a.Name = "Acme Incorporated"
+	if err := s.PutAccount(ctx(), a); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	got, _ = s.GetAccount(ctx(), "acme")
+	if got.Name != "Acme Incorporated" {
+		t.Fatalf("upsert did not replace name: %q", got.Name)
+	}
+
+	if err := s.PutAccount(ctx(), model.Account{ID: "other", Name: "Other"}); err != nil {
+		t.Fatalf("put other: %v", err)
+	}
+	list, err := s.ListAccounts(ctx())
+	if err != nil || len(list) != 2 {
+		t.Fatalf("list = %v (len %d), err %v", list, len(list), err)
+	}
+
+	if err := s.DeleteAccount(ctx(), "acme"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	mustCode(t, func() error { _, e := s.GetAccount(ctx(), "acme"); return e }(), aerr.APERTURE_NOT_FOUND)
+
+	// An account with no name is rejected.
+	mustCode(t, s.PutAccount(ctx(), model.Account{ID: "noname"}), aerr.APERTURE_INVALID_INPUT)
+	// An account with no id is rejected.
+	mustCode(t, s.PutAccount(ctx(), model.Account{Name: "noid"}), aerr.APERTURE_INVALID_INPUT)
+}
+
+func testMembershipCRUDAndQueries(t *testing.T, s model.Storage) {
+	put := func(principalID, accountID string) {
+		if err := s.PutMembership(ctx(), model.Membership{PrincipalID: principalID, AccountID: accountID}); err != nil {
+			t.Fatalf("put membership %s@%s: %v", principalID, accountID, err)
+		}
+	}
+	// alice spans two accounts; bob is only in acme.
+	put("alice", "acme")
+	put("alice", "other")
+	put("bob", "acme")
+
+	// IsMember reflects the edges.
+	for _, tc := range []struct {
+		principal, account string
+		want               bool
+	}{
+		{"alice", "acme", true},
+		{"alice", "other", true},
+		{"bob", "acme", true},
+		{"bob", "other", false},  // bob was never admitted to other
+		{"carol", "acme", false}, // carol has no memberships at all
+	} {
+		got, err := s.IsMember(ctx(), tc.principal, tc.account)
+		if err != nil {
+			t.Fatalf("IsMember(%s,%s): %v", tc.principal, tc.account, err)
+		}
+		if got != tc.want {
+			t.Fatalf("IsMember(%s,%s) = %v, want %v", tc.principal, tc.account, got, tc.want)
+		}
+	}
+
+	// GetMembership returns the edge, or NOT_FOUND for a non-edge.
+	if _, err := s.GetMembership(ctx(), "alice", "acme"); err != nil {
+		t.Fatalf("get membership: %v", err)
+	}
+	mustCode(t, func() error { _, e := s.GetMembership(ctx(), "bob", "other"); return e }(), aerr.APERTURE_NOT_FOUND)
+
+	// MembershipsForPrincipal: alice is in two accounts.
+	am, err := s.MembershipsForPrincipal(ctx(), "alice")
+	if err != nil {
+		t.Fatalf("memberships for principal: %v", err)
+	}
+	if accs := accountSet(am); len(accs) != 2 || !accs["acme"] || !accs["other"] {
+		t.Fatalf("alice memberships = %v, want {acme, other}", accs)
+	}
+
+	// MembershipsForAccount: acme has two members.
+	acme, err := s.MembershipsForAccount(ctx(), "acme")
+	if err != nil {
+		t.Fatalf("memberships for account: %v", err)
+	}
+	if ps := principalSet(acme); len(ps) != 2 || !ps["alice"] || !ps["bob"] {
+		t.Fatalf("acme members = %v, want {alice, bob}", ps)
+	}
+
+	// Deleting one edge leaves the other intact (isolation between edges).
+	if err := s.DeleteMembership(ctx(), "alice", "other"); err != nil {
+		t.Fatalf("delete membership: %v", err)
+	}
+	if ok, _ := s.IsMember(ctx(), "alice", "other"); ok {
+		t.Fatal("deleted membership still reported as member")
+	}
+	if ok, _ := s.IsMember(ctx(), "alice", "acme"); !ok {
+		t.Fatal("deleting alice@other wrongly removed alice@acme")
+	}
+	mustCode(t, s.DeleteMembership(ctx(), "alice", "other"), aerr.APERTURE_NOT_FOUND)
+
+	// Validation: both endpoints are required.
+	mustCode(t, s.PutMembership(ctx(), model.Membership{AccountID: "acme"}), aerr.APERTURE_INVALID_INPUT)
+	mustCode(t, s.PutMembership(ctx(), model.Membership{PrincipalID: "alice"}), aerr.APERTURE_INVALID_INPUT)
+
+	// Empty queries return empty, not error.
+	none, err := s.MembershipsForPrincipal(ctx(), "nobody")
+	if err != nil || len(none) != 0 {
+		t.Fatalf("nobody memberships = %v (len %d), err %v", none, len(none), err)
+	}
+}
+
+func accountSet(ms []model.Membership) map[string]bool {
+	out := map[string]bool{}
+	for _, m := range ms {
+		out[m.AccountID] = true
+	}
+	return out
+}
+
+func principalSet(ms []model.Membership) map[string]bool {
+	out := map[string]bool{}
+	for _, m := range ms {
+		out[m.PrincipalID] = true
+	}
+	return out
 }
 
 func testObjectTypeCRUD(t *testing.T, s model.Storage) {
@@ -381,6 +519,8 @@ func testGroupsForPrincipal(t *testing.T, s model.Storage) {
 }
 
 func testNotFoundSemantics(t *testing.T, s model.Storage) {
+	mustCode(t, func() error { _, e := s.GetAccount(ctx(), "x"); return e }(), aerr.APERTURE_NOT_FOUND)
+	mustCode(t, func() error { _, e := s.GetMembership(ctx(), "x", "y"); return e }(), aerr.APERTURE_NOT_FOUND)
 	mustCode(t, func() error { _, e := s.GetObjectType(ctx(), "x"); return e }(), aerr.APERTURE_NOT_FOUND)
 	mustCode(t, func() error { _, e := s.GetPermission(ctx(), "x"); return e }(), aerr.APERTURE_NOT_FOUND)
 	mustCode(t, func() error { _, e := s.GetPrincipal(ctx(), "x"); return e }(), aerr.APERTURE_NOT_FOUND)
@@ -388,6 +528,8 @@ func testNotFoundSemantics(t *testing.T, s model.Storage) {
 	mustCode(t, func() error { _, e := s.GetGroup(ctx(), "x"); return e }(), aerr.APERTURE_NOT_FOUND)
 	mustCode(t, func() error { _, e := s.GetGrant(ctx(), "x"); return e }(), aerr.APERTURE_NOT_FOUND)
 
+	mustCode(t, s.DeleteAccount(ctx(), "x"), aerr.APERTURE_NOT_FOUND)
+	mustCode(t, s.DeleteMembership(ctx(), "x", "y"), aerr.APERTURE_NOT_FOUND)
 	mustCode(t, s.DeleteObjectType(ctx(), "x"), aerr.APERTURE_NOT_FOUND)
 	mustCode(t, s.DeletePermission(ctx(), "x"), aerr.APERTURE_NOT_FOUND)
 	mustCode(t, s.DeletePrincipal(ctx(), "x"), aerr.APERTURE_NOT_FOUND)
@@ -425,6 +567,11 @@ func testTimestampsRoundTrip(t *testing.T, s model.Storage) {
 // location pointers or monotonic clock readings.
 
 func normTime(t time.Time) time.Time { return t.UTC().Round(0) }
+
+func normAccount(a model.Account) model.Account {
+	a.CreatedAt, a.UpdatedAt = normTime(a.CreatedAt), normTime(a.UpdatedAt)
+	return a
+}
 
 func normObjectType(ot model.ObjectType) model.ObjectType {
 	ot.CreatedAt, ot.UpdatedAt = normTime(ot.CreatedAt), normTime(ot.UpdatedAt)

@@ -31,6 +31,32 @@ type Storage interface {
 	// Close releases backend resources. It is safe to call once.
 	Close() error
 
+	// ---- Account ----
+
+	PutAccount(ctx context.Context, a Account) error
+	GetAccount(ctx context.Context, id string) (Account, error)
+	ListAccounts(ctx context.Context) ([]Account, error)
+	DeleteAccount(ctx context.Context, id string) error
+
+	// ---- Membership (keyed by the (principalID, accountID) pair) ----
+
+	// PutMembership upserts the edge linking principalID to accountID. The pair is
+	// the membership's identity, so re-putting the same pair replaces it.
+	PutMembership(ctx context.Context, m Membership) error
+	// GetMembership returns the edge for the pair, or APERTURE_NOT_FOUND when the
+	// principal is not a member of the account.
+	GetMembership(ctx context.Context, principalID, accountID string) (Membership, error)
+	// DeleteMembership removes the edge, returning APERTURE_NOT_FOUND when absent.
+	DeleteMembership(ctx context.Context, principalID, accountID string) error
+	// MembershipsForPrincipal returns every account the principal belongs to.
+	MembershipsForPrincipal(ctx context.Context, principalID string) ([]Membership, error)
+	// MembershipsForAccount returns every principal that belongs to the account.
+	MembershipsForAccount(ctx context.Context, accountID string) ([]Membership, error)
+	// IsMember reports whether principalID is a member of accountID. It is the
+	// decision engine's membership-enforcement query: a tight existence check that
+	// avoids materializing the full membership list on the hot path.
+	IsMember(ctx context.Context, principalID, accountID string) (bool, error)
+
 	// ---- ObjectType (keyed by Name) ----
 
 	PutObjectType(ctx context.Context, ot ObjectType) error

@@ -18,6 +18,8 @@ import (
 // ample for an in-memory backend and keeps the maps trivially consistent.
 type Store struct {
 	mu          sync.RWMutex
+	accounts    map[string]model.Account
+	memberships map[membershipKey]model.Membership
 	objectTypes map[string]model.ObjectType
 	permissions map[string]model.Permission
 	principals  map[string]model.Principal
@@ -26,9 +28,17 @@ type Store struct {
 	grants      map[string]model.Grant
 }
 
+// membershipKey is the composite identity of a membership edge.
+type membershipKey struct {
+	principalID string
+	accountID   string
+}
+
 // New returns an empty, ready-to-use in-memory Store.
 func New() *Store {
 	return &Store{
+		accounts:    make(map[string]model.Account),
+		memberships: make(map[membershipKey]model.Membership),
 		objectTypes: make(map[string]model.ObjectType),
 		permissions: make(map[string]model.Permission),
 		principals:  make(map[string]model.Principal),
@@ -51,6 +61,112 @@ func notFound(kind, id string) error {
 	return aerr.WithContext(aerr.APERTURE_NOT_FOUND,
 		kind+" not found",
 		map[string]any{"kind": kind, "id": id})
+}
+
+// ---- Account ----
+
+func (s *Store) PutAccount(_ context.Context, a model.Account) error {
+	if err := model.ValidateAccount(a); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.accounts[a.ID] = a
+	return nil
+}
+
+func (s *Store) GetAccount(_ context.Context, id string) (model.Account, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	a, ok := s.accounts[id]
+	if !ok {
+		return model.Account{}, notFound("account", id)
+	}
+	return a, nil
+}
+
+func (s *Store) ListAccounts(_ context.Context) ([]model.Account, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]model.Account, 0, len(s.accounts))
+	for _, a := range s.accounts {
+		out = append(out, a)
+	}
+	return out, nil
+}
+
+func (s *Store) DeleteAccount(_ context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.accounts[id]; !ok {
+		return notFound("account", id)
+	}
+	delete(s.accounts, id)
+	return nil
+}
+
+// ---- Membership ----
+
+func (s *Store) PutMembership(_ context.Context, m model.Membership) error {
+	if err := model.ValidateMembership(m); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.memberships[membershipKey{m.PrincipalID, m.AccountID}] = m
+	return nil
+}
+
+func (s *Store) GetMembership(_ context.Context, principalID, accountID string) (model.Membership, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	m, ok := s.memberships[membershipKey{principalID, accountID}]
+	if !ok {
+		return model.Membership{}, notFound("membership", principalID+"@"+accountID)
+	}
+	return m, nil
+}
+
+func (s *Store) DeleteMembership(_ context.Context, principalID, accountID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := membershipKey{principalID, accountID}
+	if _, ok := s.memberships[key]; !ok {
+		return notFound("membership", principalID+"@"+accountID)
+	}
+	delete(s.memberships, key)
+	return nil
+}
+
+func (s *Store) MembershipsForPrincipal(_ context.Context, principalID string) ([]model.Membership, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]model.Membership, 0)
+	for k, m := range s.memberships {
+		if k.principalID == principalID {
+			out = append(out, m)
+		}
+	}
+	return out, nil
+}
+
+func (s *Store) MembershipsForAccount(_ context.Context, accountID string) ([]model.Membership, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]model.Membership, 0)
+	for k, m := range s.memberships {
+		if k.accountID == accountID {
+			out = append(out, m)
+		}
+	}
+	return out, nil
+}
+
+func (s *Store) IsMember(_ context.Context, principalID, accountID string) (bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, ok := s.memberships[membershipKey{principalID, accountID}]
+	return ok, nil
 }
 
 // ---- ObjectType ----

@@ -61,6 +61,15 @@ func (e *Engine) Enumerate(ctx context.Context, req EnumerateRequest) ([]string,
 		return nil, err
 	}
 
+	member, err := e.requireMembership(ctx, req.Account, req.Principal)
+	if err != nil {
+		return nil, err
+	}
+	if !member {
+		// Fail-closed: a non-member may act on nothing in this account.
+		return []string{}, nil
+	}
+
 	subjects, err := e.subjectSet(ctx, req.Principal)
 	if err != nil {
 		return nil, err

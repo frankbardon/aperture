@@ -11,6 +11,28 @@
 --     indexed by (account_id, subject_kind, subject_id) for the decision
 --     engine's hot-path GrantsForSubjects query.
 
+CREATE TABLE IF NOT EXISTS accounts (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL DEFAULT '',
+    updated_at  TEXT NOT NULL DEFAULT ''
+);
+
+-- Memberships are edges keyed by the (principal_id, account_id) pair: a
+-- principal is a member of an account at most once. Indexed both ways so
+-- "accounts for a principal" and "members of an account" are both cheap.
+CREATE TABLE IF NOT EXISTS memberships (
+    principal_id TEXT NOT NULL,
+    account_id   TEXT NOT NULL,
+    created_at   TEXT NOT NULL DEFAULT '',
+    updated_at   TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (principal_id, account_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_memberships_account
+    ON memberships (account_id);
+
 CREATE TABLE IF NOT EXISTS object_types (
     name        TEXT PRIMARY KEY,
     actions     TEXT NOT NULL,          -- JSON array of verb strings

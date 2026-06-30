@@ -49,12 +49,28 @@ const (
 // Document is the declarative model: a flat list of each entity kind. Field tags
 // cover both YAML and JSON so either format decodes into the same shape.
 type Document struct {
+	Accounts    []Account    `yaml:"accounts" json:"accounts"`
+	Memberships []Membership `yaml:"memberships" json:"memberships"`
 	ObjectTypes []ObjectType `yaml:"object_types" json:"object_types"`
 	Permissions []Permission `yaml:"permissions" json:"permissions"`
 	Principals  []Principal  `yaml:"principals" json:"principals"`
 	Roles       []Role       `yaml:"roles" json:"roles"`
 	Groups      []Group      `yaml:"groups" json:"groups"`
 	Grants      []Grant      `yaml:"grants" json:"grants"`
+}
+
+// Account mirrors model.Account in declarative form.
+type Account struct {
+	ID          string `yaml:"id" json:"id"`
+	Name        string `yaml:"name" json:"name"`
+	Description string `yaml:"description" json:"description"`
+}
+
+// Membership mirrors model.Membership in declarative form: the edge admitting a
+// principal to an account.
+type Membership struct {
+	Principal string `yaml:"principal" json:"principal"`
+	Account   string `yaml:"account" json:"account"`
 }
 
 // ObjectType mirrors model.ObjectType in declarative form.
@@ -138,6 +154,15 @@ func Parse(data []byte, format Format) (*Document, error) {
 // error a programmatic Put would. Apply is not transactional — a failure may
 // leave a partial model — which is acceptable for the seed-and-demo use case.
 func (d *Document) Apply(ctx context.Context, store model.Storage) error {
+	for _, a := range d.Accounts {
+		if err := store.PutAccount(ctx, model.Account{
+			ID:          a.ID,
+			Name:        a.Name,
+			Description: a.Description,
+		}); err != nil {
+			return aerr.Wrapf(aerr.APERTURE_INVALID_INPUT, err, "seed: account %q", a.ID)
+		}
+	}
 	for _, ot := range d.ObjectTypes {
 		if err := store.PutObjectType(ctx, model.ObjectType{
 			Name:        ot.Name,
@@ -167,6 +192,14 @@ func (d *Document) Apply(ctx context.Context, store model.Storage) error {
 			RoleIDs:     p.Roles,
 		}); err != nil {
 			return aerr.Wrapf(aerr.APERTURE_INVALID_INPUT, err, "seed: principal %q", p.ID)
+		}
+	}
+	for _, m := range d.Memberships {
+		if err := store.PutMembership(ctx, model.Membership{
+			PrincipalID: m.Principal,
+			AccountID:   m.Account,
+		}); err != nil {
+			return aerr.Wrapf(aerr.APERTURE_INVALID_INPUT, err, "seed: membership %q@%q", m.Principal, m.Account)
 		}
 	}
 	for _, r := range d.Roles {
@@ -239,7 +272,7 @@ func formatFor(path string) Format {
 // CLI/serve startup log so an operator can confirm what was loaded.
 func (d *Document) Describe() string {
 	return fmt.Sprintf(
-		"%d object-types, %d permissions, %d principals, %d roles, %d groups, %d grants",
-		len(d.ObjectTypes), len(d.Permissions), len(d.Principals),
-		len(d.Roles), len(d.Groups), len(d.Grants))
+		"%d accounts, %d memberships, %d object-types, %d permissions, %d principals, %d roles, %d groups, %d grants",
+		len(d.Accounts), len(d.Memberships), len(d.ObjectTypes), len(d.Permissions),
+		len(d.Principals), len(d.Roles), len(d.Groups), len(d.Grants))
 }

@@ -116,6 +116,36 @@ func ValidateGroup(g Group) error {
 	return nil
 }
 
+// ValidateAccount checks an account is well-formed: non-empty id and name. The
+// id is the value grants stamp and decisions scope to, so it is mandatory; the
+// name is required for parity with the other named entities (role, group).
+func ValidateAccount(a Account) error {
+	if a.ID == "" {
+		return aerr.New(aerr.APERTURE_INVALID_INPUT, "account id is empty")
+	}
+	if a.Name == "" {
+		return aerr.WithContext(aerr.APERTURE_INVALID_INPUT,
+			"account has no name",
+			map[string]any{"account": a.ID})
+	}
+	return nil
+}
+
+// ValidateMembership checks a membership edge is well-formed: both endpoints
+// present. The pair (PrincipalID, AccountID) is the edge's identity, so neither
+// half may be empty.
+func ValidateMembership(m Membership) error {
+	if m.PrincipalID == "" {
+		return aerr.New(aerr.APERTURE_INVALID_INPUT, "membership principal id is empty")
+	}
+	if m.AccountID == "" {
+		return aerr.WithContext(aerr.APERTURE_INVALID_INPUT,
+			"membership account id is empty",
+			map[string]any{"principal": m.PrincipalID})
+	}
+	return nil
+}
+
 // ValidateGrant checks a grant is well-formed and ready to persist: non-empty
 // id, an account stamp (the isolation boundary), a valid subject, a permission
 // reference, a valid effect, and an object that parses as an identity PATTERN
