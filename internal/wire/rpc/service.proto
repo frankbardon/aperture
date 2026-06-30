@@ -1,0 +1,241 @@
+syntax = "proto3";
+
+package aperture;
+option go_package = "github.com/frankbardon/aperture/internal/wire/rpc";
+
+// ApertureService is Aperture's full access-control RPC: the decision API
+// (Check / Enumerate / Explain, single and bulk) plus the model mutations
+// (CRUD for the RBAC entities, grants, delegation, and impersonation). It is
+// the Twirp mirror of the service.Service facade — every RPC is a thin
+// translation onto exactly one facade method, so HTTP / Twirp / CLI share one
+// code path with one auth + admin-tier policy.
+//
+// Wire-shape convention (mirrors orbit): simple, hot-path messages are typed
+// (Check / Enumerate carry their fields directly). Rich or nested shapes —
+// the model entities (with their timestamps) and the recursive decision Trace —
+// ride as a canonical JSON string in a `*_json` field rather than being modelled
+// in proto. This keeps the on-wire contract identical to the library's JSON
+// encoding, keeps the proto small, and sidesteps modelling self-referential
+// shapes (the rule AST) the brief flags as reflector-hostile.
+service ApertureService {
+  // ---- Decision API (open: no auth required, preserves the E1-S5 path) ----
+  rpc Check(CheckRequest) returns (Decision);
+  rpc CheckBatch(CheckBatchRequest) returns (CheckBatchResponse);
+  rpc Enumerate(EnumerateRequest) returns (EnumerateResponse);
+  rpc EnumerateBatch(EnumerateBatchRequest) returns (EnumerateBatchResponse);
+  rpc Explain(CheckRequest) returns (ExplainResponse);
+  rpc ExplainBatch(CheckBatchRequest) returns (ExplainBatchResponse);
+
+  // ---- Schema entities (reads require auth; writes require system-admin) ----
+  rpc PutObjectType(EntityRequest) returns (Empty);
+  rpc GetObjectType(GetRequest) returns (EntityResponse);
+  rpc ListObjectTypes(Empty) returns (EntityListResponse);
+  rpc DeleteObjectType(DeleteRequest) returns (Empty);
+
+  rpc PutPermission(EntityRequest) returns (Empty);
+  rpc GetPermission(GetRequest) returns (EntityResponse);
+  rpc ListPermissions(Empty) returns (EntityListResponse);
+  rpc DeletePermission(DeleteRequest) returns (Empty);
+
+  rpc PutPrincipal(EntityRequest) returns (Empty);
+  rpc GetPrincipal(GetRequest) returns (EntityResponse);
+  rpc ListPrincipals(Empty) returns (EntityListResponse);
+  rpc DeletePrincipal(DeleteRequest) returns (Empty);
+
+  rpc PutRole(EntityRequest) returns (Empty);
+  rpc GetRole(GetRequest) returns (EntityResponse);
+  rpc ListRoles(Empty) returns (EntityListResponse);
+  rpc DeleteRole(DeleteRequest) returns (Empty);
+
+  rpc PutGroup(EntityRequest) returns (Empty);
+  rpc GetGroup(GetRequest) returns (EntityResponse);
+  rpc ListGroups(Empty) returns (EntityListResponse);
+  rpc DeleteGroup(DeleteRequest) returns (Empty);
+
+  rpc PutAccount(EntityRequest) returns (Empty);
+  rpc GetAccount(GetRequest) returns (EntityResponse);
+  rpc ListAccounts(Empty) returns (EntityListResponse);
+  rpc DeleteAccount(DeleteRequest) returns (Empty);
+
+  // ---- Account-scoped entities (writes require account-admin) ----
+  rpc PutMembership(EntityRequest) returns (Empty);
+  rpc DeleteMembership(MembershipKeyRequest) returns (Empty);
+
+  rpc PutGrant(EntityRequest) returns (Empty);
+  rpc GetGrant(GetRequest) returns (EntityResponse);
+  rpc ListGrants(ListGrantsRequest) returns (EntityListResponse);
+  rpc DeleteGrant(DeleteRequest) returns (Empty);
+
+  // ---- Delegation (gated by the delegation subset rule, actor = delegator) ----
+  rpc Bestow(BestowRequest) returns (Empty);
+  rpc Revoke(RevokeRequest) returns (Empty);
+
+  // ---- Impersonation (gated by impersonation's own rule, actor = operator) ----
+  rpc ImpersonationStart(ImpersonationStartRequest) returns (ImpersonationSession);
+  rpc ImpersonationStop(ImpersonationStopRequest) returns (Empty);
+}
+
+message Empty {}
+
+// Actor carries the authenticated caller a mutation is attributed to: the
+// principal id and the active account. On the Twirp surface the principal is
+// overridden by the authenticated identity from the auth middleware; the
+// account is taken from the request.
+message Actor {
+  string principal = 1;
+  string account = 2;
+}
+
+// ---- Decision messages ----
+
+message CheckRequest {
+  string account = 1;
+  string principal = 2;
+  string action = 3;
+  string object = 4;
+}
+
+message Decision {
+  bool allow = 1;
+  string reason = 2;
+  repeated string deciding_grant_ids = 3;
+}
+
+message CheckBatchRequest {
+  repeated CheckRequest queries = 1;
+}
+
+// BatchDecision is one aligned item of a batch result: either a decision or an
+// error code+message for a per-item input-validation failure.
+message BatchDecision {
+  Decision decision = 1;
+  string error_code = 2;
+  string error_message = 3;
+}
+
+message CheckBatchResponse {
+  repeated BatchDecision results = 1;
+}
+
+message EnumerateRequest {
+  string account = 1;
+  string principal = 2;
+  string action = 3;
+  string pattern = 4;
+  int32 limit = 5;
+}
+
+message EnumerateResponse {
+  repeated string object_ids = 1;
+}
+
+message EnumerateBatchRequest {
+  repeated EnumerateRequest queries = 1;
+}
+
+message BatchEnumeration {
+  repeated string object_ids = 1;
+  string error_code = 2;
+  string error_message = 3;
+}
+
+message EnumerateBatchResponse {
+  repeated BatchEnumeration results = 1;
+}
+
+// ExplainResponse carries the engine Trace as canonical JSON (trace_json) — the
+// recursive/nested derivation shape is not modelled in proto.
+message ExplainResponse {
+  string trace_json = 1;
+}
+
+message BatchTrace {
+  string trace_json = 1;
+  string error_code = 2;
+  string error_message = 3;
+}
+
+message ExplainBatchResponse {
+  repeated BatchTrace results = 1;
+}
+
+// ---- Entity CRUD messages ----
+
+// EntityRequest carries a mutation's actor plus the entity body as canonical
+// JSON (the library's JSON encoding of the model.* struct).
+message EntityRequest {
+  Actor actor = 1;
+  string entity_json = 2;
+}
+
+// GetRequest names an entity by id (object types and permissions are keyed by
+// name/id; the facade routes per RPC).
+message GetRequest {
+  Actor actor = 1;
+  string id = 2;
+}
+
+message DeleteRequest {
+  Actor actor = 1;
+  string id = 2;
+}
+
+// EntityResponse returns one entity body as canonical JSON.
+message EntityResponse {
+  string entity_json = 1;
+}
+
+// EntityListResponse returns a list of entity bodies, each as canonical JSON.
+message EntityListResponse {
+  repeated string entities_json = 1;
+}
+
+message MembershipKeyRequest {
+  Actor actor = 1;
+  string principal_id = 2;
+  string account_id = 3;
+}
+
+message ListGrantsRequest {
+  Actor actor = 1;
+  string account_id = 2;
+}
+
+// ---- Delegation messages ----
+
+message BestowRequest {
+  // delegator is the principal bestowing; on the Twirp surface it is overridden
+  // by the authenticated identity. grant_json is the model.Grant to bestow.
+  string delegator = 1;
+  string grant_json = 2;
+}
+
+message RevokeRequest {
+  string delegator = 1;
+  string grant_id = 2;
+}
+
+// ---- Impersonation messages ----
+
+message ImpersonationStartRequest {
+  string operator = 1;
+  string target = 2;
+  string account = 3;
+  string mode = 4; // "augment" | "become"
+}
+
+message ImpersonationSession {
+  string real_actor = 1;
+  string subject = 2;
+  string account = 3;
+  string mode = 4;
+  string started_at = 5;  // RFC3339
+  string expires_at = 6;  // RFC3339
+}
+
+message ImpersonationStopRequest {
+  string operator = 1;
+  // The session being discarded, echoed for symmetry/audit; impersonation
+  // sessions are stateless time-boxed values, so stop is a client-side discard.
+  ImpersonationSession session = 2;
+}

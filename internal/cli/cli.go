@@ -7,10 +7,6 @@
 package cli
 
 import (
-	"context"
-
-	"github.com/frankbardon/aperture/errors"
-
 	ucli "github.com/urfave/cli/v3"
 )
 
@@ -21,26 +17,20 @@ func NewApp(version string) *ucli.Command {
 		Usage:   "Fine-grained access control engine",
 		Version: version,
 		Commands: []*ucli.Command{
+			// Decision API.
 			checkCommand(),
-			{
-				Name:   "enumerate",
-				Usage:  "List the objects a principal may act on",
-				Action: unimplemented("enumerate"),
-			},
-			{
-				Name:   "explain",
-				Usage:  "Explain why a decision resolved the way it did",
-				Action: unimplemented("explain"),
-			},
+			enumerateCommand(),
+			explainCommand(),
+			// Mutations (the same facade path the Twirp surface drives).
+			putCommand(),
+			getCommand(),
+			listCommand(),
+			deleteCommand(),
+			bestowCommand(),
+			revokeCommand(),
+			impersonateCommand(),
+			// Server.
 			serveCommand(),
 		},
-	}
-}
-
-// unimplemented returns an action that surfaces a coded APERTURE_UNIMPLEMENTED
-// error so placeholder leaves fail consistently through the error taxonomy.
-func unimplemented(surface string) ucli.ActionFunc {
-	return func(_ context.Context, _ *ucli.Command) error {
-		return errors.Newf(errors.APERTURE_UNIMPLEMENTED, "%q is not implemented yet", surface)
 	}
 }

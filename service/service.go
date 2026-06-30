@@ -42,9 +42,14 @@ package service
 import (
 	"context"
 	"fmt"
+	"time"
 
+	"github.com/frankbardon/aperture/authz"
+	"github.com/frankbardon/aperture/delegation"
 	"github.com/frankbardon/aperture/engine"
 	aerr "github.com/frankbardon/aperture/errors"
+	"github.com/frankbardon/aperture/impersonation"
+	"github.com/frankbardon/aperture/model"
 )
 
 // Query is a single authorization question in surface-neutral form. It mirrors
@@ -74,14 +79,74 @@ type Result struct {
 	DecidingGrantIDs []string
 }
 
-// Service is the decision facade over an engine.
+// Service is the single facade every surface — CLI, HTTP, Twirp, and the MCP
+// read subset — calls instead of touching the engine, storage, or the
+// delegation / impersonation / authz packages directly. It carries the read
+// path (Check / Enumerate / Explain + batch) always, and the mutation path
+// (entity CRUD, grants, delegation, impersonation) when constructed with the
+// backing dependencies (WithStorage / WithGate / WithDelegation /
+// WithImpersonation). A read-only Service (service.New(eng)) returns
+// APERTURE_UNIMPLEMENTED from any mutation, so the decision surfaces that do not
+// need write access stay minimal.
 type Service struct {
-	eng *engine.Engine
+	eng     *engine.Engine
+	store   model.Storage
+	gate    *authz.Gate
+	deleg   *delegation.Service
+	imperso *impersonation.Service
+	// now is the facade clock for stamping entity timestamps on writes. It is
+	// time.Now by default; WithClock overrides it for deterministic tests.
+	now func() time.Time
 }
 
-// New returns a Service backed by eng.
-func New(eng *engine.Engine) *Service {
-	return &Service{eng: eng}
+// Option configures a Service at construction. Options compose; the mutation
+// methods report APERTURE_UNIMPLEMENTED until the dependency they need is wired.
+type Option func(*Service)
+
+// WithStorage gives the facade the persistence handle the entity-CRUD mutations
+// (and their reads) operate over.
+func WithStorage(store model.Storage) Option {
+	return func(s *Service) { s.store = store }
+}
+
+// WithGate gives the facade the admin-authority gate (E3-S4) it calls before
+// every system/account-tier mutation.
+func WithGate(gate *authz.Gate) Option {
+	return func(s *Service) { s.gate = gate }
+}
+
+// WithDelegation gives the facade the delegation service (E3-S2) backing Bestow
+// and Revoke.
+func WithDelegation(d *delegation.Service) Option {
+	return func(s *Service) { s.deleg = d }
+}
+
+// WithImpersonation gives the facade the impersonation service (E3-S3) backing
+// ImpersonationStart.
+func WithImpersonation(i *impersonation.Service) Option {
+	return func(s *Service) { s.imperso = i }
+}
+
+// WithClock overrides the facade clock used to stamp entity timestamps on
+// writes. It exists for deterministic tests; production uses time.Now.
+func WithClock(now func() time.Time) Option {
+	return func(s *Service) {
+		if now != nil {
+			s.now = now
+		}
+	}
+}
+
+// New returns a Service backed by eng. With no options it is read-only (the
+// decision API); pass WithStorage / WithGate / WithDelegation / WithImpersonation
+// to enable the mutation surface. The serve command builds the fully-wired
+// facade so HTTP, Twirp, and CLI all drive one mutation path.
+func New(eng *engine.Engine, opts ...Option) *Service {
+	s := &Service{eng: eng, now: time.Now}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // Check answers q. It returns an error ONLY for genuine input-validation

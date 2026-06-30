@@ -11,8 +11,11 @@ import (
 	"time"
 
 	"github.com/frankbardon/aperture/auth"
+	"github.com/frankbardon/aperture/authz"
+	"github.com/frankbardon/aperture/delegation"
 	"github.com/frankbardon/aperture/engine"
 	aerr "github.com/frankbardon/aperture/errors"
+	"github.com/frankbardon/aperture/impersonation"
 	"github.com/frankbardon/aperture/internal/server"
 	"github.com/frankbardon/aperture/service"
 
@@ -77,7 +80,18 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 		return aerr.Wrap(aerr.APERTURE_BOOT, "cli: building the authenticator failed", err)
 	}
 
-	handler := server.Authenticate(authn, server.New(service.New(engine.New(store))))
+	// Build the fully-wired facade so HTTP, Twirp, and CLI drive ONE mutation
+	// path: the engine for decisions + authority, the admin gate for tier checks,
+	// and the delegation / impersonation services for their own gated mutations.
+	eng := engine.New(store)
+	svc := service.New(eng,
+		service.WithStorage(store),
+		service.WithGate(authz.NewGate(eng)),
+		service.WithDelegation(delegation.New(store, eng)),
+		service.WithImpersonation(impersonation.New(store, eng)),
+	)
+
+	handler := server.Authenticate(authn, server.New(svc))
 
 	addr := cmd.String("addr")
 	httpServer := &http.Server{

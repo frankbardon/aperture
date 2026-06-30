@@ -1,4 +1,4 @@
-.PHONY: build run clean test fmt vet lint
+.PHONY: build run clean test fmt vet lint proto
 
 BINARY_NAME=aperture
 BUILD_DIR=bin
@@ -31,6 +31,16 @@ test:
 
 fmt:
 	$(GO) fmt ./...
+
+# proto regenerates the Twirp service + protobuf messages from the .proto. The
+# generated *.pb.go / *.twirp.go are COMMITTED (CI does not regenerate); this
+# target mirrors orbit's. Requires protoc + protoc-gen-go + protoc-gen-twirp on
+# PATH (paths=source_relative keeps the output beside the .proto).
+proto:
+	protoc -I=./internal/wire/rpc \
+	  --go_out=./internal/wire/rpc --go_opt=paths=source_relative \
+	  --twirp_out=./internal/wire/rpc --twirp_opt=paths=source_relative \
+	  ./internal/wire/rpc/service.proto
 
 vet:
 	$(GO) vet ./...

@@ -1,19 +1,35 @@
 // Package server holds Aperture's HTTP surface: a net/http ServeMux (Go 1.22
 // method/pattern routing) whose handlers are thin translators over the decision
 // service facade. There is no business logic here — a handler decodes a request,
-// calls service.Check, and encodes the result.
+// calls the facade, and encodes the result.
 //
-// The /check handler is intentionally minimal: it is subsumed by the Twirp
-// service in E4-S1. Because it calls the same service.Service the CLI uses, the
-// fail-closed decision semantics are identical across surfaces.
+// Two surfaces are mounted on one mux:
+//
+//   - The full Twirp service (rpc.ApertureService) under its path prefix
+//     (/twirp/aperture.ApertureService/) — the decision API AND the model
+//     mutations, with twirp.ServerHooks request/error logging (the orbit
+//     pattern). The handler (twirp.go) owns the auth policy: decision RPCs are
+//     open, mutations require an authenticated principal and the admin tier.
+//   - The minimal plain-HTTP POST /check decision route, kept (FR per E1-S5) so
+//     the simple decision path survives the Twirp fold-in. It calls the same
+//     facade, so its fail-closed semantics are identical.
+//
+// The whole mux is wrapped by the Authenticate middleware in the serve command,
+// which attaches an authenticated principal to the context when a credential is
+// presented; the Twirp mutation handlers then require that principal.
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 
 	aerr "github.com/frankbardon/aperture/errors"
+	"github.com/frankbardon/aperture/internal/wire/rpc"
 	"github.com/frankbardon/aperture/service"
+
+	"github.com/twitchtv/twirp"
 )
 
 // checkRequest is the JSON body of POST /check.
@@ -37,12 +53,50 @@ type errorResponse struct {
 	Message string `json:"message"`
 }
 
-// New builds the HTTP handler, mounting the decision routes over svc. It returns
-// an http.Handler so the serve command can wrap it in an &http.Server{}.
-func New(svc *service.Service) http.Handler {
+// New builds the HTTP handler, mounting the Twirp service and the plain /check
+// decision route over svc, with request/error logging hooks on the Twirp
+// surface. It returns an http.Handler so the serve command can wrap it in
+// Authenticate + an &http.Server{}. A nil logger falls back to slog.Default.
+func New(svc *service.Service, logger ...*slog.Logger) http.Handler {
+	log := slog.Default()
+	if len(logger) > 0 && logger[0] != nil {
+		log = logger[0]
+	}
+
 	mux := http.NewServeMux()
+
+	// The full Twirp surface (decision API + mutations) under its path prefix.
+	twirpServer := rpc.NewApertureServiceServer(NewTwirpHandler(svc), twirp.WithServerHooks(loggingHooks(log)))
+	mux.Handle(rpc.ApertureServicePathPrefix, twirpServer)
+
+	// The minimal plain-HTTP decision path, preserved from E1-S5.
 	mux.HandleFunc("POST /check", checkHandler(svc))
+
+	// Liveness probe.
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+
 	return mux
+}
+
+// loggingHooks returns the twirp.ServerHooks that log each RPC request and error
+// via slog — the orbit logging-wrapper pattern.
+func loggingHooks(log *slog.Logger) *twirp.ServerHooks {
+	return &twirp.ServerHooks{
+		RequestReceived: func(ctx context.Context) (context.Context, error) {
+			if method, ok := twirp.MethodName(ctx); ok {
+				log.InfoContext(ctx, "rpc request", "method", method)
+			}
+			return ctx, nil
+		},
+		Error: func(ctx context.Context, err twirp.Error) context.Context {
+			method, _ := twirp.MethodName(ctx)
+			log.WarnContext(ctx, "rpc error", "method", method, "code", err.Code(), "msg", err.Msg())
+			return ctx
+		},
+	}
 }
 
 // checkHandler decodes a single query, asks the service, and encodes the
