@@ -38,6 +38,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	aerr "github.com/frankbardon/aperture/errors"
 	"github.com/frankbardon/aperture/identity"
@@ -76,6 +77,12 @@ type Decision struct {
 	// DecidingGrantIDs are the grant ids that produced the verdict, sorted for
 	// determinism. Empty when the decision is a default-deny.
 	DecidingGrantIDs []string
+	// Impersonation, when non-nil, records that this decision was resolved under
+	// an ACTIVE impersonation session: the real operator, the effective subject
+	// whose authority was used, the mode, and the session expiry. It is the audit
+	// linkage (E4-S2) — every decision made on behalf of another identity carries
+	// the real actor here. Nil on the ordinary, non-impersonated path.
+	Impersonation *ImpersonationContext
 }
 
 // coverer answers "does this grant cover this object, and at what specificity?".
@@ -255,6 +262,11 @@ type Engine struct {
 	store             model.Storage
 	coverer           coverer
 	enforceMembership bool
+	// now is the engine's clock, injected so impersonation time-box expiry is
+	// deterministic in tests. It defaults to time.Now and is only consulted on the
+	// impersonated decision path (CheckAs/EnumerateAs/ExplainAs); the
+	// non-impersonated hot path never reads it.
+	now func() time.Time
 }
 
 // Option configures an Engine at construction. Options compose; the last one to
@@ -266,11 +278,26 @@ type Option func(*Engine)
 // WithScopeResolution to consult a grant's pluggable scope resolver for object
 // membership.
 func New(store model.Storage, opts ...Option) *Engine {
-	e := &Engine{store: store, coverer: literalCoverer{}}
+	e := &Engine{store: store, coverer: literalCoverer{}, now: time.Now}
 	for _, opt := range opts {
 		opt(e)
 	}
+	if e.now == nil {
+		e.now = time.Now
+	}
 	return e
+}
+
+// WithClock overrides the engine's clock. It governs impersonation time-box
+// expiry on the CheckAs/EnumerateAs/ExplainAs path, so tests can advance time
+// deterministically instead of sleeping. Production uses the default time.Now.
+// The non-impersonated decision path does not consult the clock.
+func WithClock(now func() time.Time) Option {
+	return func(e *Engine) {
+		if now != nil {
+			e.now = now
+		}
+	}
 }
 
 // WithScopeResolution makes the engine consult each grant's scope resolver — as

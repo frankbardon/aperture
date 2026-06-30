@@ -74,6 +74,16 @@ func (e *Engine) Enumerate(ctx context.Context, req EnumerateRequest) ([]string,
 	if err != nil {
 		return nil, err
 	}
+	return e.enumerateWithSubjects(ctx, req, query, subjects)
+}
+
+// enumerateWithSubjects runs the Enumerate algorithm over an already-resolved
+// subject set. It is shared by Enumerate (subjects = the principal's own set)
+// and EnumerateAs (subjects = the impersonation-elevated set), so the impersonated
+// enumeration is the exact same deny-overrides walk over a different subject set —
+// no impersonation-specific decision logic. decReq.Principal stays the requesting
+// principal so a rule-backed scope strategy still sees the real operator.
+func (e *Engine) enumerateWithSubjects(ctx context.Context, req EnumerateRequest, query identity.Pattern, subjects []model.Subject) ([]string, error) {
 	grants, err := e.store.GrantsForSubjects(ctx, req.Account, subjects)
 	if err != nil {
 		return nil, aerr.Wrap(aerr.APERTURE_STORAGE,

@@ -37,6 +37,12 @@ type Trace struct {
 	// Decision is the final verdict, reason, and deciding grant ids — identical
 	// to what Check returns for the same request.
 	Decision Decision
+	// Impersonation, when non-nil, records that the trace was resolved under an
+	// ACTIVE impersonation session. Subjects above is then the EFFECTIVE subject
+	// set (the target's, or the operator∪target union for augment), while
+	// Request.Principal remains the real operator — so the trace shows both who
+	// asked and whose authority answered. Nil on the non-impersonated path.
+	Impersonation *ImpersonationContext
 }
 
 // GrantEvaluation is one grant's contribution to a decision: what it is, whether
@@ -101,6 +107,15 @@ func (e *Engine) Explain(ctx context.Context, req Request) (Trace, error) {
 	if err != nil {
 		return Trace{}, err
 	}
+	return e.explainWithSubjects(ctx, req, object, subjects)
+}
+
+// explainWithSubjects builds a Trace over an already-resolved subject set. It is
+// shared by Explain (the principal's own subject set) and ExplainAs (the
+// impersonation-elevated set), so an impersonated trace records the same
+// derivation against a different subject set. req.Principal stays the requesting
+// principal in the trace's Request; the caller attaches any impersonation context.
+func (e *Engine) explainWithSubjects(ctx context.Context, req Request, object identity.Identity, subjects []model.Subject) (Trace, error) {
 	grants, err := e.store.GrantsForSubjects(ctx, req.Account, subjects)
 	if err != nil {
 		return Trace{}, aerr.Wrap(aerr.APERTURE_STORAGE,

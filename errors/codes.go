@@ -116,6 +116,20 @@ const (
 	// permission; an unflagged permission can never be handed on, regardless of
 	// the delegator's own authority.
 	APERTURE_DELEGATION_NOT_DELEGATABLE Code = "APERTURE_DELEGATION_NOT_DELEGATABLE"
+	// APERTURE_IMPERSONATION_DENIED — an operator tried to start an impersonation
+	// session it is not authorized to open: the operator or the target is not a
+	// member of the active account (cross-account impersonation is refused), the
+	// operator holds no impersonation right whose object covers the target, or a
+	// become session was requested while the operator holds only the weaker
+	// augment right. The Context "reason" names which guard failed. Start fails
+	// closed — when authority cannot be proven, no session is issued.
+	APERTURE_IMPERSONATION_DENIED Code = "APERTURE_IMPERSONATION_DENIED"
+	// APERTURE_IMPERSONATION_EXPIRED — a time-boxed impersonation session was
+	// presented past its expiry. The elevation is dropped: a surface that guards
+	// on the session up front gets this code, while the engine's decision path
+	// fails closed to the operator's own (un-elevated) authority rather than
+	// erroring. Either way an expired session never elevates.
+	APERTURE_IMPERSONATION_EXPIRED Code = "APERTURE_IMPERSONATION_EXPIRED"
 )
 
 // Metadata describes an Aperture code: the canonical human-readable Message and
@@ -275,6 +289,20 @@ var Registry = map[Code]Metadata{
 			"Set Delegatable on the permission definition to allow it to be bestowed.",
 		},
 	},
+	APERTURE_IMPERSONATION_DENIED: {
+		Message: "the operator may not impersonate this target",
+		Fixups: []string{
+			"Impersonate only within an account both the operator and the target are members of; cross-account impersonation is refused.",
+			"Confirm the operator holds an impersonation right (augment or become) whose object pattern covers the target's identity.",
+			"Become mode requires the stronger become right; an augment right alone cannot become a target.",
+		},
+	},
+	APERTURE_IMPERSONATION_EXPIRED: {
+		Message: "the impersonation session has expired",
+		Fixups: []string{
+			"Start a fresh impersonation session; sessions are time-boxed and expire automatically.",
+		},
+	},
 }
 
 // AllCodes is the registry every gate walks. Append new codes here; the
@@ -302,6 +330,8 @@ var AllCodes = []Code{
 	APERTURE_RULE_NOT_FOUND,
 	APERTURE_DELEGATION_DENIED,
 	APERTURE_DELEGATION_NOT_DELEGATABLE,
+	APERTURE_IMPERSONATION_DENIED,
+	APERTURE_IMPERSONATION_EXPIRED,
 }
 
 // Message returns the canonical message for a code, or empty when the code has
