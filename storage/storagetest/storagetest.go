@@ -46,6 +46,10 @@ func Run(t *testing.T, newStore Factory) {
 	t.Run("AuditAppendAndQuery", func(t *testing.T) { testAuditAppendAndQuery(t, newStore(t)) })
 	t.Run("AuditQueryFilters", func(t *testing.T) { testAuditQueryFilters(t, newStore(t)) })
 	t.Run("AuditRetentionPrune", func(t *testing.T) { testAuditRetentionPrune(t, newStore(t)) })
+	t.Run("TemplateCRUDAndVersions", func(t *testing.T) { testTemplateCRUDAndVersions(t, newStore(t)) })
+	t.Run("TemplateValidation", func(t *testing.T) { testTemplateValidation(t, newStore(t)) })
+	t.Run("AtomicCommit", func(t *testing.T) { testAtomicCommit(t, newStore(t)) })
+	t.Run("AtomicRollback", func(t *testing.T) { testAtomicRollback(t, newStore(t)) })
 }
 
 func ctx() context.Context { return context.Background() }
@@ -799,6 +803,228 @@ func sameSet(got []string, want ...string) bool {
 	return true
 }
 
+// ---- Template (named, versioned) ----
+
+func sampleTemplate(name string, version int) model.Template {
+	return model.Template{
+		Name:        name,
+		Version:     version,
+		Description: "provision a project member",
+		Params: []model.TemplateParam{
+			{Name: "account", Type: model.ParamSegment},
+			{Name: "project", Type: model.ParamSegment},
+		},
+		Grants: []model.TemplateGrant{
+			{
+				Subject:      model.Subject{Kind: model.SubjectPrincipal, ID: "${account}-member"},
+				PermissionID: "p-read",
+				Object:       "account:${account}/project:${project}/**",
+				Effect:       model.EffectAllow,
+			},
+		},
+	}
+}
+
+func testTemplateCRUDAndVersions(t *testing.T, s model.Storage) {
+	v1 := sampleTemplate("onboard", 1)
+	if err := s.PutTemplate(ctx(), v1); err != nil {
+		t.Fatalf("put v1: %v", err)
+	}
+	got, err := s.GetTemplate(ctx(), "onboard", 1)
+	if err != nil {
+		t.Fatalf("get v1: %v", err)
+	}
+	if !reflect.DeepEqual(normTemplate(got), normTemplate(v1)) {
+		t.Fatalf("v1 round trip mismatch:\n got %+v\nwant %+v", got, v1)
+	}
+
+	// A second version under the same name coexists with the first.
+	v2 := sampleTemplate("onboard", 2)
+	v2.Description = "v2"
+	if err := s.PutTemplate(ctx(), v2); err != nil {
+		t.Fatalf("put v2: %v", err)
+	}
+
+	// Latest selection (version <= 0) returns the highest version.
+	latest, err := s.GetTemplate(ctx(), "onboard", 0)
+	if err != nil {
+		t.Fatalf("get latest: %v", err)
+	}
+	if latest.Version != 2 {
+		t.Fatalf("latest version = %d, want 2", latest.Version)
+	}
+
+	// Explicit version still resolves the older one.
+	old, err := s.GetTemplate(ctx(), "onboard", 1)
+	if err != nil || old.Version != 1 {
+		t.Fatalf("get v1 explicit = %+v, err %v", old, err)
+	}
+
+	// List returns both versions ordered by (name, version).
+	list, err := s.ListTemplates(ctx())
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(list) != 2 || list[0].Version != 1 || list[1].Version != 2 {
+		t.Fatalf("list = %+v, want [v1, v2]", list)
+	}
+
+	// Delete one specific version: the other survives, latest is now v1.
+	if err := s.DeleteTemplate(ctx(), "onboard", 2); err != nil {
+		t.Fatalf("delete v2: %v", err)
+	}
+	latest, err = s.GetTemplate(ctx(), "onboard", 0)
+	if err != nil || latest.Version != 1 {
+		t.Fatalf("after delete v2, latest = %+v err %v, want v1", latest, err)
+	}
+
+	// Upsert replaces a version in place.
+	v1b := sampleTemplate("onboard", 1)
+	v1b.Description = "edited"
+	if err := s.PutTemplate(ctx(), v1b); err != nil {
+		t.Fatalf("upsert v1: %v", err)
+	}
+	got, _ = s.GetTemplate(ctx(), "onboard", 1)
+	if got.Description != "edited" {
+		t.Fatalf("upsert did not replace description: %q", got.Description)
+	}
+
+	// Delete-all-versions removes the name entirely.
+	if err := s.PutTemplate(ctx(), sampleTemplate("onboard", 3)); err != nil {
+		t.Fatalf("put v3: %v", err)
+	}
+	if err := s.DeleteTemplate(ctx(), "onboard", 0); err != nil {
+		t.Fatalf("delete all: %v", err)
+	}
+	mustCode(t, func() error { _, e := s.GetTemplate(ctx(), "onboard", 0); return e }(), aerr.APERTURE_NOT_FOUND)
+	mustCode(t, func() error { _, e := s.GetTemplate(ctx(), "onboard", 1); return e }(), aerr.APERTURE_NOT_FOUND)
+
+	// NOT_FOUND semantics for unknown name/version and deletes.
+	mustCode(t, func() error { _, e := s.GetTemplate(ctx(), "ghost", 0); return e }(), aerr.APERTURE_NOT_FOUND)
+	mustCode(t, func() error { _, e := s.GetTemplate(ctx(), "ghost", 7); return e }(), aerr.APERTURE_NOT_FOUND)
+	mustCode(t, s.DeleteTemplate(ctx(), "ghost", 0), aerr.APERTURE_NOT_FOUND)
+	mustCode(t, s.DeleteTemplate(ctx(), "ghost", 7), aerr.APERTURE_NOT_FOUND)
+}
+
+func testTemplateValidation(t *testing.T, s model.Storage) {
+	// No grants → TEMPLATE_INVALID, and nothing persisted.
+	bad := model.Template{Name: "bad", Version: 1}
+	mustCode(t, s.PutTemplate(ctx(), bad), aerr.APERTURE_TEMPLATE_INVALID)
+	mustCode(t, func() error { _, e := s.GetTemplate(ctx(), "bad", 1); return e }(), aerr.APERTURE_NOT_FOUND)
+
+	// A grant referencing an undeclared parameter → TEMPLATE_INVALID.
+	undeclared := model.Template{
+		Name: "undeclared", Version: 1,
+		Grants: []model.TemplateGrant{{
+			Subject: model.Subject{Kind: model.SubjectPrincipal, ID: "u"},
+			PermissionID: "p", Object: "account:${missing}/**", Effect: model.EffectAllow,
+		}},
+	}
+	mustCode(t, s.PutTemplate(ctx(), undeclared), aerr.APERTURE_TEMPLATE_INVALID)
+
+	// Version below 1 → TEMPLATE_INVALID.
+	mustCode(t, s.PutTemplate(ctx(), sampleTemplate("zero", 0)), aerr.APERTURE_TEMPLATE_INVALID)
+}
+
+// ---- Transactional apply ----
+
+func testAtomicCommit(t *testing.T, s model.Storage) {
+	mkGrant := func(id string) model.Grant {
+		return model.Grant{
+			ID: id, AccountID: "acme",
+			Subject:      model.Subject{Kind: model.SubjectPrincipal, ID: "alice"},
+			PermissionID: "p-read", Object: "account:acme/**", Effect: model.EffectAllow,
+		}
+	}
+	err := s.Atomic(ctx(), func(tx model.Storage) error {
+		if e := tx.PutGrant(ctx(), mkGrant("g1")); e != nil {
+			return e
+		}
+		return tx.PutGrant(ctx(), mkGrant("g2"))
+	})
+	if err != nil {
+		t.Fatalf("atomic commit: %v", err)
+	}
+	// Both grants are visible on the committed store.
+	for _, id := range []string{"g1", "g2"} {
+		if _, e := s.GetGrant(ctx(), id); e != nil {
+			t.Fatalf("committed grant %s missing: %v", id, e)
+		}
+	}
+	// A write made inside the transaction is visible to reads inside it.
+	err = s.Atomic(ctx(), func(tx model.Storage) error {
+		if e := tx.PutGrant(ctx(), mkGrant("g3")); e != nil {
+			return e
+		}
+		if _, e := tx.GetGrant(ctx(), "g3"); e != nil {
+			t.Fatalf("read-your-write inside tx failed: %v", e)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("atomic commit 2: %v", err)
+	}
+}
+
+// testAtomicRollback proves a partial failure rolls the WHOLE batch back, leaving
+// storage byte-for-byte unchanged — the honest transactional guarantee, run on
+// BOTH backends. It covers two failure modes: a write error mid-batch, and an
+// explicit error returned by fn after a successful write.
+func testAtomicRollback(t *testing.T, s model.Storage) {
+	keep := model.Grant{
+		ID: "g-keep", AccountID: "acme",
+		Subject:      model.Subject{Kind: model.SubjectPrincipal, ID: "alice"},
+		PermissionID: "p-read", Object: "account:acme/**", Effect: model.EffectAllow,
+	}
+	if err := s.PutGrant(ctx(), keep); err != nil {
+		t.Fatalf("seed keep grant: %v", err)
+	}
+	good := func(id string) model.Grant {
+		g := keep
+		g.ID = id
+		return g
+	}
+	// Mode 1: a mid-batch write fails (an invalid grant). The whole apply rolls back.
+	badGrant := model.Grant{ID: "g-bad"} // missing account/subject/effect → invalid
+	err := s.Atomic(ctx(), func(tx model.Storage) error {
+		if e := tx.PutGrant(ctx(), good("g-a")); e != nil {
+			return e
+		}
+		return tx.PutGrant(ctx(), badGrant) // returns INVALID_INPUT
+	})
+	if aerr.CodeOf(err) != aerr.APERTURE_INVALID_INPUT {
+		t.Fatalf("want INVALID_INPUT from rolled-back apply, got %v", err)
+	}
+	// g-a must NOT have persisted (rolled back); g-bad never existed; g-keep stands.
+	mustCode(t, func() error { _, e := s.GetGrant(ctx(), "g-a"); return e }(), aerr.APERTURE_NOT_FOUND)
+	mustCode(t, func() error { _, e := s.GetGrant(ctx(), "g-bad"); return e }(), aerr.APERTURE_NOT_FOUND)
+	if _, e := s.GetGrant(ctx(), "g-keep"); e != nil {
+		t.Fatalf("pre-existing grant lost after rollback: %v", e)
+	}
+
+	// Mode 2: fn returns an error AFTER a successful write — still fully rolled back.
+	sentinel := aerr.New(aerr.APERTURE_STORAGE, "boom")
+	err = s.Atomic(ctx(), func(tx model.Storage) error {
+		if e := tx.PutGrant(ctx(), good("g-b")); e != nil {
+			return e
+		}
+		return sentinel
+	})
+	if aerr.CodeOf(err) != aerr.APERTURE_STORAGE {
+		t.Fatalf("want STORAGE sentinel from rolled-back apply, got %v", err)
+	}
+	mustCode(t, func() error { _, e := s.GetGrant(ctx(), "g-b"); return e }(), aerr.APERTURE_NOT_FOUND)
+
+	// The store is exactly as it began: only g-keep, in account acme.
+	all, err := s.ListGrants(ctx(), "acme")
+	if err != nil {
+		t.Fatalf("list grants: %v", err)
+	}
+	if len(all) != 1 || all[0].ID != "g-keep" {
+		t.Fatalf("storage changed after rollbacks: %+v, want only g-keep", all)
+	}
+}
+
 // ---- normalization helpers ----
 //
 // Backends persist timestamps verbatim, but the SQLite backend round-trips them
@@ -853,4 +1079,15 @@ func normGroup(g model.Group) model.Group {
 func normGrant(g model.Grant) model.Grant {
 	g.CreatedAt, g.UpdatedAt = normTime(g.CreatedAt), normTime(g.UpdatedAt)
 	return g
+}
+
+func normTemplate(t model.Template) model.Template {
+	t.CreatedAt, t.UpdatedAt = normTime(t.CreatedAt), normTime(t.UpdatedAt)
+	if len(t.Params) == 0 {
+		t.Params = nil
+	}
+	if len(t.Grants) == 0 {
+		t.Grants = nil
+	}
+	return t
 }

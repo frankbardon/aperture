@@ -1171,6 +1171,259 @@ func (x *ListGrantsRequest) GetAccountId() string {
 	return ""
 }
 
+// TemplateKeyRequest names a template by (name, version). version <= 0 selects
+// the latest version for Get, and deletes every version for Delete.
+type TemplateKeyRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Actor         *Actor                 `protobuf:"bytes,1,opt,name=actor,proto3" json:"actor,omitempty"`
+	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	Version       int32                  `protobuf:"varint,3,opt,name=version,proto3" json:"version,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TemplateKeyRequest) Reset() {
+	*x = TemplateKeyRequest{}
+	mi := &file_service_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TemplateKeyRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TemplateKeyRequest) ProtoMessage() {}
+
+func (x *TemplateKeyRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_service_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TemplateKeyRequest.ProtoReflect.Descriptor instead.
+func (*TemplateKeyRequest) Descriptor() ([]byte, []int) {
+	return file_service_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *TemplateKeyRequest) GetActor() *Actor {
+	if x != nil {
+		return x.Actor
+	}
+	return nil
+}
+
+func (x *TemplateKeyRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *TemplateKeyRequest) GetVersion() int32 {
+	if x != nil {
+		return x.Version
+	}
+	return 0
+}
+
+// ApplyTemplateRequest applies template (name, version) into account, filling
+// the declared parameters with params and prefixing generated grant ids with
+// grant_id_prefix (optional). version <= 0 selects the latest version.
+type ApplyTemplateRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Actor         *Actor                 `protobuf:"bytes,1,opt,name=actor,proto3" json:"actor,omitempty"`
+	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	Version       int32                  `protobuf:"varint,3,opt,name=version,proto3" json:"version,omitempty"`
+	Account       string                 `protobuf:"bytes,4,opt,name=account,proto3" json:"account,omitempty"`
+	Params        map[string]string      `protobuf:"bytes,5,rep,name=params,proto3" json:"params,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	GrantIdPrefix string                 `protobuf:"bytes,6,opt,name=grant_id_prefix,json=grantIdPrefix,proto3" json:"grant_id_prefix,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ApplyTemplateRequest) Reset() {
+	*x = ApplyTemplateRequest{}
+	mi := &file_service_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ApplyTemplateRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ApplyTemplateRequest) ProtoMessage() {}
+
+func (x *ApplyTemplateRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_service_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ApplyTemplateRequest.ProtoReflect.Descriptor instead.
+func (*ApplyTemplateRequest) Descriptor() ([]byte, []int) {
+	return file_service_proto_rawDescGZIP(), []int{23}
+}
+
+func (x *ApplyTemplateRequest) GetActor() *Actor {
+	if x != nil {
+		return x.Actor
+	}
+	return nil
+}
+
+func (x *ApplyTemplateRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *ApplyTemplateRequest) GetVersion() int32 {
+	if x != nil {
+		return x.Version
+	}
+	return 0
+}
+
+func (x *ApplyTemplateRequest) GetAccount() string {
+	if x != nil {
+		return x.Account
+	}
+	return ""
+}
+
+func (x *ApplyTemplateRequest) GetParams() map[string]string {
+	if x != nil {
+		return x.Params
+	}
+	return nil
+}
+
+func (x *ApplyTemplateRequest) GetGrantIdPrefix() string {
+	if x != nil {
+		return x.GrantIdPrefix
+	}
+	return ""
+}
+
+type BulkGrantsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Actor         *Actor                 `protobuf:"bytes,1,opt,name=actor,proto3" json:"actor,omitempty"`
+	GrantsJson    []string               `protobuf:"bytes,2,rep,name=grants_json,json=grantsJson,proto3" json:"grants_json,omitempty"` // each a model.Grant as canonical JSON
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BulkGrantsRequest) Reset() {
+	*x = BulkGrantsRequest{}
+	mi := &file_service_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BulkGrantsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BulkGrantsRequest) ProtoMessage() {}
+
+func (x *BulkGrantsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_service_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BulkGrantsRequest.ProtoReflect.Descriptor instead.
+func (*BulkGrantsRequest) Descriptor() ([]byte, []int) {
+	return file_service_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *BulkGrantsRequest) GetActor() *Actor {
+	if x != nil {
+		return x.Actor
+	}
+	return nil
+}
+
+func (x *BulkGrantsRequest) GetGrantsJson() []string {
+	if x != nil {
+		return x.GrantsJson
+	}
+	return nil
+}
+
+type BulkDeleteGrantsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Actor         *Actor                 `protobuf:"bytes,1,opt,name=actor,proto3" json:"actor,omitempty"`
+	GrantIds      []string               `protobuf:"bytes,2,rep,name=grant_ids,json=grantIds,proto3" json:"grant_ids,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BulkDeleteGrantsRequest) Reset() {
+	*x = BulkDeleteGrantsRequest{}
+	mi := &file_service_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BulkDeleteGrantsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BulkDeleteGrantsRequest) ProtoMessage() {}
+
+func (x *BulkDeleteGrantsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_service_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BulkDeleteGrantsRequest.ProtoReflect.Descriptor instead.
+func (*BulkDeleteGrantsRequest) Descriptor() ([]byte, []int) {
+	return file_service_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *BulkDeleteGrantsRequest) GetActor() *Actor {
+	if x != nil {
+		return x.Actor
+	}
+	return nil
+}
+
+func (x *BulkDeleteGrantsRequest) GetGrantIds() []string {
+	if x != nil {
+		return x.GrantIds
+	}
+	return nil
+}
+
 type BestowRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// delegator is the principal bestowing; on the Twirp surface it is overridden
@@ -1183,7 +1436,7 @@ type BestowRequest struct {
 
 func (x *BestowRequest) Reset() {
 	*x = BestowRequest{}
-	mi := &file_service_proto_msgTypes[22]
+	mi := &file_service_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1195,7 +1448,7 @@ func (x *BestowRequest) String() string {
 func (*BestowRequest) ProtoMessage() {}
 
 func (x *BestowRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[22]
+	mi := &file_service_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1208,7 +1461,7 @@ func (x *BestowRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BestowRequest.ProtoReflect.Descriptor instead.
 func (*BestowRequest) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{22}
+	return file_service_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *BestowRequest) GetDelegator() string {
@@ -1235,7 +1488,7 @@ type RevokeRequest struct {
 
 func (x *RevokeRequest) Reset() {
 	*x = RevokeRequest{}
-	mi := &file_service_proto_msgTypes[23]
+	mi := &file_service_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1247,7 +1500,7 @@ func (x *RevokeRequest) String() string {
 func (*RevokeRequest) ProtoMessage() {}
 
 func (x *RevokeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[23]
+	mi := &file_service_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1260,7 +1513,7 @@ func (x *RevokeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RevokeRequest.ProtoReflect.Descriptor instead.
 func (*RevokeRequest) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{23}
+	return file_service_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *RevokeRequest) GetDelegator() string {
@@ -1289,7 +1542,7 @@ type ImpersonationStartRequest struct {
 
 func (x *ImpersonationStartRequest) Reset() {
 	*x = ImpersonationStartRequest{}
-	mi := &file_service_proto_msgTypes[24]
+	mi := &file_service_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1301,7 +1554,7 @@ func (x *ImpersonationStartRequest) String() string {
 func (*ImpersonationStartRequest) ProtoMessage() {}
 
 func (x *ImpersonationStartRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[24]
+	mi := &file_service_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1314,7 +1567,7 @@ func (x *ImpersonationStartRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ImpersonationStartRequest.ProtoReflect.Descriptor instead.
 func (*ImpersonationStartRequest) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{24}
+	return file_service_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *ImpersonationStartRequest) GetOperator() string {
@@ -1359,7 +1612,7 @@ type ImpersonationSession struct {
 
 func (x *ImpersonationSession) Reset() {
 	*x = ImpersonationSession{}
-	mi := &file_service_proto_msgTypes[25]
+	mi := &file_service_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1371,7 +1624,7 @@ func (x *ImpersonationSession) String() string {
 func (*ImpersonationSession) ProtoMessage() {}
 
 func (x *ImpersonationSession) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[25]
+	mi := &file_service_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1384,7 +1637,7 @@ func (x *ImpersonationSession) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ImpersonationSession.ProtoReflect.Descriptor instead.
 func (*ImpersonationSession) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{25}
+	return file_service_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *ImpersonationSession) GetRealActor() string {
@@ -1441,7 +1694,7 @@ type ImpersonationStopRequest struct {
 
 func (x *ImpersonationStopRequest) Reset() {
 	*x = ImpersonationStopRequest{}
-	mi := &file_service_proto_msgTypes[26]
+	mi := &file_service_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1453,7 +1706,7 @@ func (x *ImpersonationStopRequest) String() string {
 func (*ImpersonationStopRequest) ProtoMessage() {}
 
 func (x *ImpersonationStopRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[26]
+	mi := &file_service_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1466,7 +1719,7 @@ func (x *ImpersonationStopRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ImpersonationStopRequest.ProtoReflect.Descriptor instead.
 func (*ImpersonationStopRequest) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{26}
+	return file_service_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *ImpersonationStopRequest) GetOperator() string {
@@ -1565,7 +1818,28 @@ const file_service_proto_rawDesc = "" +
 	"\x11ListGrantsRequest\x12%\n" +
 	"\x05actor\x18\x01 \x01(\v2\x0f.aperture.ActorR\x05actor\x12\x1d\n" +
 	"\n" +
-	"account_id\x18\x02 \x01(\tR\taccountId\"L\n" +
+	"account_id\x18\x02 \x01(\tR\taccountId\"i\n" +
+	"\x12TemplateKeyRequest\x12%\n" +
+	"\x05actor\x18\x01 \x01(\v2\x0f.aperture.ActorR\x05actor\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12\x18\n" +
+	"\aversion\x18\x03 \x01(\x05R\aversion\"\xac\x02\n" +
+	"\x14ApplyTemplateRequest\x12%\n" +
+	"\x05actor\x18\x01 \x01(\v2\x0f.aperture.ActorR\x05actor\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12\x18\n" +
+	"\aversion\x18\x03 \x01(\x05R\aversion\x12\x18\n" +
+	"\aaccount\x18\x04 \x01(\tR\aaccount\x12B\n" +
+	"\x06params\x18\x05 \x03(\v2*.aperture.ApplyTemplateRequest.ParamsEntryR\x06params\x12&\n" +
+	"\x0fgrant_id_prefix\x18\x06 \x01(\tR\rgrantIdPrefix\x1a9\n" +
+	"\vParamsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"[\n" +
+	"\x11BulkGrantsRequest\x12%\n" +
+	"\x05actor\x18\x01 \x01(\v2\x0f.aperture.ActorR\x05actor\x12\x1f\n" +
+	"\vgrants_json\x18\x02 \x03(\tR\n" +
+	"grantsJson\"]\n" +
+	"\x17BulkDeleteGrantsRequest\x12%\n" +
+	"\x05actor\x18\x01 \x01(\v2\x0f.aperture.ActorR\x05actor\x12\x1b\n" +
+	"\tgrant_ids\x18\x02 \x03(\tR\bgrantIds\"L\n" +
 	"\rBestowRequest\x12\x1c\n" +
 	"\tdelegator\x18\x01 \x01(\tR\tdelegator\x12\x1d\n" +
 	"\n" +
@@ -1590,7 +1864,7 @@ const file_service_proto_rawDesc = "" +
 	"expires_at\x18\x06 \x01(\tR\texpiresAt\"p\n" +
 	"\x18ImpersonationStopRequest\x12\x1a\n" +
 	"\boperator\x18\x01 \x01(\tR\boperator\x128\n" +
-	"\asession\x18\x02 \x01(\v2\x1e.aperture.ImpersonationSessionR\asession2\xe2\x13\n" +
+	"\asession\x18\x02 \x01(\v2\x1e.aperture.ImpersonationSessionR\asession2\xb9\x17\n" +
 	"\x0fApertureService\x123\n" +
 	"\x05Check\x12\x16.aperture.CheckRequest\x1a\x12.aperture.Decision\x12G\n" +
 	"\n" +
@@ -1633,7 +1907,14 @@ const file_service_proto_rawDesc = "" +
 	"\bGetGrant\x12\x14.aperture.GetRequest\x1a\x18.aperture.EntityResponse\x12G\n" +
 	"\n" +
 	"ListGrants\x12\x1b.aperture.ListGrantsRequest\x1a\x1c.aperture.EntityListResponse\x127\n" +
-	"\vDeleteGrant\x12\x17.aperture.DeleteRequest\x1a\x0f.aperture.Empty\x122\n" +
+	"\vDeleteGrant\x12\x17.aperture.DeleteRequest\x1a\x0f.aperture.Empty\x127\n" +
+	"\vPutTemplate\x12\x17.aperture.EntityRequest\x1a\x0f.aperture.Empty\x12E\n" +
+	"\vGetTemplate\x12\x1c.aperture.TemplateKeyRequest\x1a\x18.aperture.EntityResponse\x12>\n" +
+	"\rListTemplates\x12\x0f.aperture.Empty\x1a\x1c.aperture.EntityListResponse\x12?\n" +
+	"\x0eDeleteTemplate\x12\x1c.aperture.TemplateKeyRequest\x1a\x0f.aperture.Empty\x12M\n" +
+	"\rApplyTemplate\x12\x1e.aperture.ApplyTemplateRequest\x1a\x1c.aperture.EntityListResponse\x12=\n" +
+	"\rBulkPutGrants\x12\x1b.aperture.BulkGrantsRequest\x1a\x0f.aperture.Empty\x12F\n" +
+	"\x10BulkDeleteGrants\x12!.aperture.BulkDeleteGrantsRequest\x1a\x0f.aperture.Empty\x122\n" +
 	"\x06Bestow\x12\x17.aperture.BestowRequest\x1a\x0f.aperture.Empty\x122\n" +
 	"\x06Revoke\x12\x17.aperture.RevokeRequest\x1a\x0f.aperture.Empty\x12Y\n" +
 	"\x12ImpersonationStart\x12#.aperture.ImpersonationStartRequest\x1a\x1e.aperture.ImpersonationSession\x12H\n" +
@@ -1651,7 +1932,7 @@ func file_service_proto_rawDescGZIP() []byte {
 	return file_service_proto_rawDescData
 }
 
-var file_service_proto_msgTypes = make([]protoimpl.MessageInfo, 27)
+var file_service_proto_msgTypes = make([]protoimpl.MessageInfo, 32)
 var file_service_proto_goTypes = []any{
 	(*Empty)(nil),                     // 0: aperture.Empty
 	(*Actor)(nil),                     // 1: aperture.Actor
@@ -1675,11 +1956,16 @@ var file_service_proto_goTypes = []any{
 	(*EntityListResponse)(nil),        // 19: aperture.EntityListResponse
 	(*MembershipKeyRequest)(nil),      // 20: aperture.MembershipKeyRequest
 	(*ListGrantsRequest)(nil),         // 21: aperture.ListGrantsRequest
-	(*BestowRequest)(nil),             // 22: aperture.BestowRequest
-	(*RevokeRequest)(nil),             // 23: aperture.RevokeRequest
-	(*ImpersonationStartRequest)(nil), // 24: aperture.ImpersonationStartRequest
-	(*ImpersonationSession)(nil),      // 25: aperture.ImpersonationSession
-	(*ImpersonationStopRequest)(nil),  // 26: aperture.ImpersonationStopRequest
+	(*TemplateKeyRequest)(nil),        // 22: aperture.TemplateKeyRequest
+	(*ApplyTemplateRequest)(nil),      // 23: aperture.ApplyTemplateRequest
+	(*BulkGrantsRequest)(nil),         // 24: aperture.BulkGrantsRequest
+	(*BulkDeleteGrantsRequest)(nil),   // 25: aperture.BulkDeleteGrantsRequest
+	(*BestowRequest)(nil),             // 26: aperture.BestowRequest
+	(*RevokeRequest)(nil),             // 27: aperture.RevokeRequest
+	(*ImpersonationStartRequest)(nil), // 28: aperture.ImpersonationStartRequest
+	(*ImpersonationSession)(nil),      // 29: aperture.ImpersonationSession
+	(*ImpersonationStopRequest)(nil),  // 30: aperture.ImpersonationStopRequest
+	nil,                               // 31: aperture.ApplyTemplateRequest.ParamsEntry
 }
 var file_service_proto_depIdxs = []int32{
 	2,  // 0: aperture.CheckBatchRequest.queries:type_name -> aperture.CheckRequest
@@ -1693,92 +1979,111 @@ var file_service_proto_depIdxs = []int32{
 	1,  // 8: aperture.DeleteRequest.actor:type_name -> aperture.Actor
 	1,  // 9: aperture.MembershipKeyRequest.actor:type_name -> aperture.Actor
 	1,  // 10: aperture.ListGrantsRequest.actor:type_name -> aperture.Actor
-	25, // 11: aperture.ImpersonationStopRequest.session:type_name -> aperture.ImpersonationSession
-	2,  // 12: aperture.ApertureService.Check:input_type -> aperture.CheckRequest
-	4,  // 13: aperture.ApertureService.CheckBatch:input_type -> aperture.CheckBatchRequest
-	7,  // 14: aperture.ApertureService.Enumerate:input_type -> aperture.EnumerateRequest
-	9,  // 15: aperture.ApertureService.EnumerateBatch:input_type -> aperture.EnumerateBatchRequest
-	2,  // 16: aperture.ApertureService.Explain:input_type -> aperture.CheckRequest
-	4,  // 17: aperture.ApertureService.ExplainBatch:input_type -> aperture.CheckBatchRequest
-	15, // 18: aperture.ApertureService.PutObjectType:input_type -> aperture.EntityRequest
-	16, // 19: aperture.ApertureService.GetObjectType:input_type -> aperture.GetRequest
-	0,  // 20: aperture.ApertureService.ListObjectTypes:input_type -> aperture.Empty
-	17, // 21: aperture.ApertureService.DeleteObjectType:input_type -> aperture.DeleteRequest
-	15, // 22: aperture.ApertureService.PutPermission:input_type -> aperture.EntityRequest
-	16, // 23: aperture.ApertureService.GetPermission:input_type -> aperture.GetRequest
-	0,  // 24: aperture.ApertureService.ListPermissions:input_type -> aperture.Empty
-	17, // 25: aperture.ApertureService.DeletePermission:input_type -> aperture.DeleteRequest
-	15, // 26: aperture.ApertureService.PutPrincipal:input_type -> aperture.EntityRequest
-	16, // 27: aperture.ApertureService.GetPrincipal:input_type -> aperture.GetRequest
-	0,  // 28: aperture.ApertureService.ListPrincipals:input_type -> aperture.Empty
-	17, // 29: aperture.ApertureService.DeletePrincipal:input_type -> aperture.DeleteRequest
-	15, // 30: aperture.ApertureService.PutRole:input_type -> aperture.EntityRequest
-	16, // 31: aperture.ApertureService.GetRole:input_type -> aperture.GetRequest
-	0,  // 32: aperture.ApertureService.ListRoles:input_type -> aperture.Empty
-	17, // 33: aperture.ApertureService.DeleteRole:input_type -> aperture.DeleteRequest
-	15, // 34: aperture.ApertureService.PutGroup:input_type -> aperture.EntityRequest
-	16, // 35: aperture.ApertureService.GetGroup:input_type -> aperture.GetRequest
-	0,  // 36: aperture.ApertureService.ListGroups:input_type -> aperture.Empty
-	17, // 37: aperture.ApertureService.DeleteGroup:input_type -> aperture.DeleteRequest
-	15, // 38: aperture.ApertureService.PutAccount:input_type -> aperture.EntityRequest
-	16, // 39: aperture.ApertureService.GetAccount:input_type -> aperture.GetRequest
-	0,  // 40: aperture.ApertureService.ListAccounts:input_type -> aperture.Empty
-	17, // 41: aperture.ApertureService.DeleteAccount:input_type -> aperture.DeleteRequest
-	15, // 42: aperture.ApertureService.PutMembership:input_type -> aperture.EntityRequest
-	20, // 43: aperture.ApertureService.DeleteMembership:input_type -> aperture.MembershipKeyRequest
-	15, // 44: aperture.ApertureService.PutGrant:input_type -> aperture.EntityRequest
-	16, // 45: aperture.ApertureService.GetGrant:input_type -> aperture.GetRequest
-	21, // 46: aperture.ApertureService.ListGrants:input_type -> aperture.ListGrantsRequest
-	17, // 47: aperture.ApertureService.DeleteGrant:input_type -> aperture.DeleteRequest
-	22, // 48: aperture.ApertureService.Bestow:input_type -> aperture.BestowRequest
-	23, // 49: aperture.ApertureService.Revoke:input_type -> aperture.RevokeRequest
-	24, // 50: aperture.ApertureService.ImpersonationStart:input_type -> aperture.ImpersonationStartRequest
-	26, // 51: aperture.ApertureService.ImpersonationStop:input_type -> aperture.ImpersonationStopRequest
-	3,  // 52: aperture.ApertureService.Check:output_type -> aperture.Decision
-	6,  // 53: aperture.ApertureService.CheckBatch:output_type -> aperture.CheckBatchResponse
-	8,  // 54: aperture.ApertureService.Enumerate:output_type -> aperture.EnumerateResponse
-	11, // 55: aperture.ApertureService.EnumerateBatch:output_type -> aperture.EnumerateBatchResponse
-	12, // 56: aperture.ApertureService.Explain:output_type -> aperture.ExplainResponse
-	14, // 57: aperture.ApertureService.ExplainBatch:output_type -> aperture.ExplainBatchResponse
-	0,  // 58: aperture.ApertureService.PutObjectType:output_type -> aperture.Empty
-	18, // 59: aperture.ApertureService.GetObjectType:output_type -> aperture.EntityResponse
-	19, // 60: aperture.ApertureService.ListObjectTypes:output_type -> aperture.EntityListResponse
-	0,  // 61: aperture.ApertureService.DeleteObjectType:output_type -> aperture.Empty
-	0,  // 62: aperture.ApertureService.PutPermission:output_type -> aperture.Empty
-	18, // 63: aperture.ApertureService.GetPermission:output_type -> aperture.EntityResponse
-	19, // 64: aperture.ApertureService.ListPermissions:output_type -> aperture.EntityListResponse
-	0,  // 65: aperture.ApertureService.DeletePermission:output_type -> aperture.Empty
-	0,  // 66: aperture.ApertureService.PutPrincipal:output_type -> aperture.Empty
-	18, // 67: aperture.ApertureService.GetPrincipal:output_type -> aperture.EntityResponse
-	19, // 68: aperture.ApertureService.ListPrincipals:output_type -> aperture.EntityListResponse
-	0,  // 69: aperture.ApertureService.DeletePrincipal:output_type -> aperture.Empty
-	0,  // 70: aperture.ApertureService.PutRole:output_type -> aperture.Empty
-	18, // 71: aperture.ApertureService.GetRole:output_type -> aperture.EntityResponse
-	19, // 72: aperture.ApertureService.ListRoles:output_type -> aperture.EntityListResponse
-	0,  // 73: aperture.ApertureService.DeleteRole:output_type -> aperture.Empty
-	0,  // 74: aperture.ApertureService.PutGroup:output_type -> aperture.Empty
-	18, // 75: aperture.ApertureService.GetGroup:output_type -> aperture.EntityResponse
-	19, // 76: aperture.ApertureService.ListGroups:output_type -> aperture.EntityListResponse
-	0,  // 77: aperture.ApertureService.DeleteGroup:output_type -> aperture.Empty
-	0,  // 78: aperture.ApertureService.PutAccount:output_type -> aperture.Empty
-	18, // 79: aperture.ApertureService.GetAccount:output_type -> aperture.EntityResponse
-	19, // 80: aperture.ApertureService.ListAccounts:output_type -> aperture.EntityListResponse
-	0,  // 81: aperture.ApertureService.DeleteAccount:output_type -> aperture.Empty
-	0,  // 82: aperture.ApertureService.PutMembership:output_type -> aperture.Empty
-	0,  // 83: aperture.ApertureService.DeleteMembership:output_type -> aperture.Empty
-	0,  // 84: aperture.ApertureService.PutGrant:output_type -> aperture.Empty
-	18, // 85: aperture.ApertureService.GetGrant:output_type -> aperture.EntityResponse
-	19, // 86: aperture.ApertureService.ListGrants:output_type -> aperture.EntityListResponse
-	0,  // 87: aperture.ApertureService.DeleteGrant:output_type -> aperture.Empty
-	0,  // 88: aperture.ApertureService.Bestow:output_type -> aperture.Empty
-	0,  // 89: aperture.ApertureService.Revoke:output_type -> aperture.Empty
-	25, // 90: aperture.ApertureService.ImpersonationStart:output_type -> aperture.ImpersonationSession
-	0,  // 91: aperture.ApertureService.ImpersonationStop:output_type -> aperture.Empty
-	52, // [52:92] is the sub-list for method output_type
-	12, // [12:52] is the sub-list for method input_type
-	12, // [12:12] is the sub-list for extension type_name
-	12, // [12:12] is the sub-list for extension extendee
-	0,  // [0:12] is the sub-list for field type_name
+	1,  // 11: aperture.TemplateKeyRequest.actor:type_name -> aperture.Actor
+	1,  // 12: aperture.ApplyTemplateRequest.actor:type_name -> aperture.Actor
+	31, // 13: aperture.ApplyTemplateRequest.params:type_name -> aperture.ApplyTemplateRequest.ParamsEntry
+	1,  // 14: aperture.BulkGrantsRequest.actor:type_name -> aperture.Actor
+	1,  // 15: aperture.BulkDeleteGrantsRequest.actor:type_name -> aperture.Actor
+	29, // 16: aperture.ImpersonationStopRequest.session:type_name -> aperture.ImpersonationSession
+	2,  // 17: aperture.ApertureService.Check:input_type -> aperture.CheckRequest
+	4,  // 18: aperture.ApertureService.CheckBatch:input_type -> aperture.CheckBatchRequest
+	7,  // 19: aperture.ApertureService.Enumerate:input_type -> aperture.EnumerateRequest
+	9,  // 20: aperture.ApertureService.EnumerateBatch:input_type -> aperture.EnumerateBatchRequest
+	2,  // 21: aperture.ApertureService.Explain:input_type -> aperture.CheckRequest
+	4,  // 22: aperture.ApertureService.ExplainBatch:input_type -> aperture.CheckBatchRequest
+	15, // 23: aperture.ApertureService.PutObjectType:input_type -> aperture.EntityRequest
+	16, // 24: aperture.ApertureService.GetObjectType:input_type -> aperture.GetRequest
+	0,  // 25: aperture.ApertureService.ListObjectTypes:input_type -> aperture.Empty
+	17, // 26: aperture.ApertureService.DeleteObjectType:input_type -> aperture.DeleteRequest
+	15, // 27: aperture.ApertureService.PutPermission:input_type -> aperture.EntityRequest
+	16, // 28: aperture.ApertureService.GetPermission:input_type -> aperture.GetRequest
+	0,  // 29: aperture.ApertureService.ListPermissions:input_type -> aperture.Empty
+	17, // 30: aperture.ApertureService.DeletePermission:input_type -> aperture.DeleteRequest
+	15, // 31: aperture.ApertureService.PutPrincipal:input_type -> aperture.EntityRequest
+	16, // 32: aperture.ApertureService.GetPrincipal:input_type -> aperture.GetRequest
+	0,  // 33: aperture.ApertureService.ListPrincipals:input_type -> aperture.Empty
+	17, // 34: aperture.ApertureService.DeletePrincipal:input_type -> aperture.DeleteRequest
+	15, // 35: aperture.ApertureService.PutRole:input_type -> aperture.EntityRequest
+	16, // 36: aperture.ApertureService.GetRole:input_type -> aperture.GetRequest
+	0,  // 37: aperture.ApertureService.ListRoles:input_type -> aperture.Empty
+	17, // 38: aperture.ApertureService.DeleteRole:input_type -> aperture.DeleteRequest
+	15, // 39: aperture.ApertureService.PutGroup:input_type -> aperture.EntityRequest
+	16, // 40: aperture.ApertureService.GetGroup:input_type -> aperture.GetRequest
+	0,  // 41: aperture.ApertureService.ListGroups:input_type -> aperture.Empty
+	17, // 42: aperture.ApertureService.DeleteGroup:input_type -> aperture.DeleteRequest
+	15, // 43: aperture.ApertureService.PutAccount:input_type -> aperture.EntityRequest
+	16, // 44: aperture.ApertureService.GetAccount:input_type -> aperture.GetRequest
+	0,  // 45: aperture.ApertureService.ListAccounts:input_type -> aperture.Empty
+	17, // 46: aperture.ApertureService.DeleteAccount:input_type -> aperture.DeleteRequest
+	15, // 47: aperture.ApertureService.PutMembership:input_type -> aperture.EntityRequest
+	20, // 48: aperture.ApertureService.DeleteMembership:input_type -> aperture.MembershipKeyRequest
+	15, // 49: aperture.ApertureService.PutGrant:input_type -> aperture.EntityRequest
+	16, // 50: aperture.ApertureService.GetGrant:input_type -> aperture.GetRequest
+	21, // 51: aperture.ApertureService.ListGrants:input_type -> aperture.ListGrantsRequest
+	17, // 52: aperture.ApertureService.DeleteGrant:input_type -> aperture.DeleteRequest
+	15, // 53: aperture.ApertureService.PutTemplate:input_type -> aperture.EntityRequest
+	22, // 54: aperture.ApertureService.GetTemplate:input_type -> aperture.TemplateKeyRequest
+	0,  // 55: aperture.ApertureService.ListTemplates:input_type -> aperture.Empty
+	22, // 56: aperture.ApertureService.DeleteTemplate:input_type -> aperture.TemplateKeyRequest
+	23, // 57: aperture.ApertureService.ApplyTemplate:input_type -> aperture.ApplyTemplateRequest
+	24, // 58: aperture.ApertureService.BulkPutGrants:input_type -> aperture.BulkGrantsRequest
+	25, // 59: aperture.ApertureService.BulkDeleteGrants:input_type -> aperture.BulkDeleteGrantsRequest
+	26, // 60: aperture.ApertureService.Bestow:input_type -> aperture.BestowRequest
+	27, // 61: aperture.ApertureService.Revoke:input_type -> aperture.RevokeRequest
+	28, // 62: aperture.ApertureService.ImpersonationStart:input_type -> aperture.ImpersonationStartRequest
+	30, // 63: aperture.ApertureService.ImpersonationStop:input_type -> aperture.ImpersonationStopRequest
+	3,  // 64: aperture.ApertureService.Check:output_type -> aperture.Decision
+	6,  // 65: aperture.ApertureService.CheckBatch:output_type -> aperture.CheckBatchResponse
+	8,  // 66: aperture.ApertureService.Enumerate:output_type -> aperture.EnumerateResponse
+	11, // 67: aperture.ApertureService.EnumerateBatch:output_type -> aperture.EnumerateBatchResponse
+	12, // 68: aperture.ApertureService.Explain:output_type -> aperture.ExplainResponse
+	14, // 69: aperture.ApertureService.ExplainBatch:output_type -> aperture.ExplainBatchResponse
+	0,  // 70: aperture.ApertureService.PutObjectType:output_type -> aperture.Empty
+	18, // 71: aperture.ApertureService.GetObjectType:output_type -> aperture.EntityResponse
+	19, // 72: aperture.ApertureService.ListObjectTypes:output_type -> aperture.EntityListResponse
+	0,  // 73: aperture.ApertureService.DeleteObjectType:output_type -> aperture.Empty
+	0,  // 74: aperture.ApertureService.PutPermission:output_type -> aperture.Empty
+	18, // 75: aperture.ApertureService.GetPermission:output_type -> aperture.EntityResponse
+	19, // 76: aperture.ApertureService.ListPermissions:output_type -> aperture.EntityListResponse
+	0,  // 77: aperture.ApertureService.DeletePermission:output_type -> aperture.Empty
+	0,  // 78: aperture.ApertureService.PutPrincipal:output_type -> aperture.Empty
+	18, // 79: aperture.ApertureService.GetPrincipal:output_type -> aperture.EntityResponse
+	19, // 80: aperture.ApertureService.ListPrincipals:output_type -> aperture.EntityListResponse
+	0,  // 81: aperture.ApertureService.DeletePrincipal:output_type -> aperture.Empty
+	0,  // 82: aperture.ApertureService.PutRole:output_type -> aperture.Empty
+	18, // 83: aperture.ApertureService.GetRole:output_type -> aperture.EntityResponse
+	19, // 84: aperture.ApertureService.ListRoles:output_type -> aperture.EntityListResponse
+	0,  // 85: aperture.ApertureService.DeleteRole:output_type -> aperture.Empty
+	0,  // 86: aperture.ApertureService.PutGroup:output_type -> aperture.Empty
+	18, // 87: aperture.ApertureService.GetGroup:output_type -> aperture.EntityResponse
+	19, // 88: aperture.ApertureService.ListGroups:output_type -> aperture.EntityListResponse
+	0,  // 89: aperture.ApertureService.DeleteGroup:output_type -> aperture.Empty
+	0,  // 90: aperture.ApertureService.PutAccount:output_type -> aperture.Empty
+	18, // 91: aperture.ApertureService.GetAccount:output_type -> aperture.EntityResponse
+	19, // 92: aperture.ApertureService.ListAccounts:output_type -> aperture.EntityListResponse
+	0,  // 93: aperture.ApertureService.DeleteAccount:output_type -> aperture.Empty
+	0,  // 94: aperture.ApertureService.PutMembership:output_type -> aperture.Empty
+	0,  // 95: aperture.ApertureService.DeleteMembership:output_type -> aperture.Empty
+	0,  // 96: aperture.ApertureService.PutGrant:output_type -> aperture.Empty
+	18, // 97: aperture.ApertureService.GetGrant:output_type -> aperture.EntityResponse
+	19, // 98: aperture.ApertureService.ListGrants:output_type -> aperture.EntityListResponse
+	0,  // 99: aperture.ApertureService.DeleteGrant:output_type -> aperture.Empty
+	0,  // 100: aperture.ApertureService.PutTemplate:output_type -> aperture.Empty
+	18, // 101: aperture.ApertureService.GetTemplate:output_type -> aperture.EntityResponse
+	19, // 102: aperture.ApertureService.ListTemplates:output_type -> aperture.EntityListResponse
+	0,  // 103: aperture.ApertureService.DeleteTemplate:output_type -> aperture.Empty
+	19, // 104: aperture.ApertureService.ApplyTemplate:output_type -> aperture.EntityListResponse
+	0,  // 105: aperture.ApertureService.BulkPutGrants:output_type -> aperture.Empty
+	0,  // 106: aperture.ApertureService.BulkDeleteGrants:output_type -> aperture.Empty
+	0,  // 107: aperture.ApertureService.Bestow:output_type -> aperture.Empty
+	0,  // 108: aperture.ApertureService.Revoke:output_type -> aperture.Empty
+	29, // 109: aperture.ApertureService.ImpersonationStart:output_type -> aperture.ImpersonationSession
+	0,  // 110: aperture.ApertureService.ImpersonationStop:output_type -> aperture.Empty
+	64, // [64:111] is the sub-list for method output_type
+	17, // [17:64] is the sub-list for method input_type
+	17, // [17:17] is the sub-list for extension type_name
+	17, // [17:17] is the sub-list for extension extendee
+	0,  // [0:17] is the sub-list for field type_name
 }
 
 func init() { file_service_proto_init() }
@@ -1792,7 +2097,7 @@ func file_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_service_proto_rawDesc), len(file_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   27,
+			NumMessages:   32,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

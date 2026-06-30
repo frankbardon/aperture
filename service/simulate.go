@@ -268,6 +268,12 @@ func (o *overlayStore) ListGrants(ctx context.Context, accountID string) ([]mode
 func (o *overlayStore) QueryAudit(ctx context.Context, filter model.AuditFilter) ([]model.AuditEvent, error) {
 	return o.base.QueryAudit(ctx, filter)
 }
+func (o *overlayStore) GetTemplate(ctx context.Context, name string, version int) (model.Template, error) {
+	return o.base.GetTemplate(ctx, name, version)
+}
+func (o *overlayStore) ListTemplates(ctx context.Context) ([]model.Template, error) {
+	return o.base.ListTemplates(ctx)
+}
 
 // --- Inert writes -----------------------------------------------------------
 //
@@ -303,6 +309,11 @@ func (o *overlayStore) DeleteGrant(context.Context, string) error             { 
 func (o *overlayStore) AppendAudit(context.Context, model.AuditEvent) error   { return errReadOnly() }
 func (o *overlayStore) PruneAudit(context.Context, model.RetentionPolicy) (int, error) {
 	return 0, errReadOnly()
+}
+func (o *overlayStore) PutTemplate(context.Context, model.Template) error { return errReadOnly() }
+func (o *overlayStore) DeleteTemplate(context.Context, string, int) error { return errReadOnly() }
+func (o *overlayStore) Atomic(context.Context, func(tx model.Storage) error) error {
+	return errReadOnly()
 }
 
 // overlayStore must satisfy model.Storage in full.

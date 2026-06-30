@@ -8,6 +8,7 @@ package memory
 import (
 	"context"
 	"sort"
+	"strconv"
 	"sync"
 
 	aerr "github.com/frankbardon/aperture/errors"
@@ -27,6 +28,8 @@ type Store struct {
 	roles       map[string]model.Role
 	groups      map[string]model.Group
 	grants      map[string]model.Grant
+	// templates holds every template version, keyed by (name, version) (E5-S1).
+	templates map[templateKey]model.Template
 	// audit is the append-only audit trail (FR-25). It is an ordered slice rather
 	// than a map because the trail is append-only and queried newest-first.
 	audit []model.AuditEvent
@@ -36,6 +39,12 @@ type Store struct {
 type membershipKey struct {
 	principalID string
 	accountID   string
+}
+
+// templateKey is the composite identity of a stored template version.
+type templateKey struct {
+	name    string
+	version int
 }
 
 // New returns an empty, ready-to-use in-memory Store.
@@ -49,6 +58,7 @@ func New() *Store {
 		roles:       make(map[string]model.Role),
 		groups:      make(map[string]model.Group),
 		grants:      make(map[string]model.Grant),
+		templates:   make(map[templateKey]model.Template),
 	}
 }
 
@@ -482,6 +492,181 @@ func (s *Store) GroupsForPrincipal(_ context.Context, principalID string) ([]mod
 		}
 	}
 	return out, nil
+}
+
+// ---- Template (named, versioned) ----
+
+func (s *Store) PutTemplate(_ context.Context, t model.Template) error {
+	if err := model.ValidateTemplate(t); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.templates[templateKey{t.Name, t.Version}] = cloneTemplate(t)
+	return nil
+}
+
+func (s *Store) GetTemplate(_ context.Context, name string, version int) (model.Template, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if version > 0 {
+		t, ok := s.templates[templateKey{name, version}]
+		if !ok {
+			return model.Template{}, notFound("template", name+":v"+itoa(version))
+		}
+		return cloneTemplate(t), nil
+	}
+	// version <= 0: select the latest (highest) version of name.
+	best := -1
+	var found model.Template
+	for k, t := range s.templates {
+		if k.name == name && k.version > best {
+			best = k.version
+			found = t
+		}
+	}
+	if best < 0 {
+		return model.Template{}, notFound("template", name)
+	}
+	return cloneTemplate(found), nil
+}
+
+func (s *Store) ListTemplates(_ context.Context) ([]model.Template, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]model.Template, 0, len(s.templates))
+	for _, t := range s.templates {
+		out = append(out, cloneTemplate(t))
+	}
+	model.SortTemplates(out)
+	return out, nil
+}
+
+func (s *Store) DeleteTemplate(_ context.Context, name string, version int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if version > 0 {
+		key := templateKey{name, version}
+		if _, ok := s.templates[key]; !ok {
+			return notFound("template", name+":v"+itoa(version))
+		}
+		delete(s.templates, key)
+		return nil
+	}
+	// version <= 0: delete every version of name.
+	removed := 0
+	for k := range s.templates {
+		if k.name == name {
+			delete(s.templates, k)
+			removed++
+		}
+	}
+	if removed == 0 {
+		return notFound("template", name)
+	}
+	return nil
+}
+
+// ---- Transactional apply ----
+
+// Atomic stages the whole batch on a snapshot and commits it only when fn
+// succeeds. The parent store is locked for the entire transaction (serializing
+// transactions), and fn operates on a CHILD store holding copies of every map —
+// so the child's own writes never touch the parent until commit, giving real
+// rollback: if fn errors, the child is discarded and the parent is unchanged. A
+// nested Atomic (s is already a child) flattens into the current staging buffer.
+func (s *Store) Atomic(ctx context.Context, fn func(tx model.Storage) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	child := s.snapshotLocked()
+	if err := fn(child); err != nil {
+		// Discard the child entirely: the parent's maps were never touched.
+		return err
+	}
+	s.commitFromLocked(child)
+	return nil
+}
+
+// snapshotLocked builds a child Store with a deep-enough copy of every map so
+// the child can be mutated without affecting the parent. The caller holds s.mu.
+func (s *Store) snapshotLocked() *Store {
+	c := New()
+	for k, v := range s.accounts {
+		c.accounts[k] = v
+	}
+	for k, v := range s.memberships {
+		c.memberships[k] = v
+	}
+	for k, v := range s.objectTypes {
+		v.Actions = cloneStrings(v.Actions)
+		c.objectTypes[k] = v
+	}
+	for k, v := range s.permissions {
+		c.permissions[k] = v
+	}
+	for k, v := range s.principals {
+		v.RoleIDs = cloneStrings(v.RoleIDs)
+		c.principals[k] = v
+	}
+	for k, v := range s.roles {
+		v.PermissionIDs = cloneStrings(v.PermissionIDs)
+		c.roles[k] = v
+	}
+	for k, v := range s.groups {
+		v.MemberPrincipalIDs = cloneStrings(v.MemberPrincipalIDs)
+		c.groups[k] = v
+	}
+	for k, v := range s.grants {
+		c.grants[k] = v
+	}
+	for k, v := range s.templates {
+		c.templates[k] = cloneTemplate(v)
+	}
+	c.audit = make([]model.AuditEvent, len(s.audit))
+	copy(c.audit, s.audit)
+	return c
+}
+
+// commitFromLocked replaces the parent's maps with the committed child's. The
+// caller holds s.mu; the child is never used again so the maps can be adopted
+// directly.
+func (s *Store) commitFromLocked(c *Store) {
+	s.accounts = c.accounts
+	s.memberships = c.memberships
+	s.objectTypes = c.objectTypes
+	s.permissions = c.permissions
+	s.principals = c.principals
+	s.roles = c.roles
+	s.groups = c.groups
+	s.grants = c.grants
+	s.templates = c.templates
+	s.audit = c.audit
+}
+
+// cloneTemplate deep-copies a template's slices so a stored template cannot be
+// mutated by the caller (and vice versa).
+func cloneTemplate(t model.Template) model.Template {
+	if len(t.Params) > 0 {
+		ps := make([]model.TemplateParam, len(t.Params))
+		copy(ps, t.Params)
+		t.Params = ps
+	} else {
+		t.Params = nil
+	}
+	if len(t.Grants) > 0 {
+		gs := make([]model.TemplateGrant, len(t.Grants))
+		copy(gs, t.Grants)
+		t.Grants = gs
+	} else {
+		t.Grants = nil
+	}
+	return t
+}
+
+// itoa is a tiny strconv.Itoa alias kept local to avoid importing strconv for a
+// single not-found message helper.
+func itoa(n int) string {
+	return strconv.Itoa(n)
 }
 
 // ---- Audit trail (append-only) ----

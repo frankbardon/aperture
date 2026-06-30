@@ -105,6 +105,65 @@ func (s *Service) recordImpersonation(ctx context.Context, operator, target, acc
 	_ = s.audit.Record(ctx, ev)
 }
 
+// recordTemplateApply records a template apply as ONE logical mutation event
+// (not one per expanded grant): the template name+version, the target account,
+// the resolved parameters, and the ids of the grants the apply expanded to,
+// carried in Details. The per-grant writes happen inside the apply's storage
+// transaction and emit no separate top-level audit event, so the apply is atomic
+// in the audit trail as well as in storage.
+func (s *Service) recordTemplateApply(ctx context.Context, actor Actor, app model.TemplateApplication, version int, grantIDs []string, err error) {
+	if s.audit == nil {
+		return
+	}
+	details := map[string]any{
+		"template": app.Name,
+		"version":  version,
+	}
+	if len(app.Params) > 0 {
+		details["params"] = app.Params
+	}
+	if len(grantIDs) > 0 {
+		details["grants"] = grantIDs
+		details["grant_count"] = len(grantIDs)
+	}
+	ev := model.AuditEvent{
+		EventType: model.AuditMutation,
+		Action:    "ApplyTemplate",
+		Actor:     actor.Principal,
+		Account:   app.Account,
+		Target:    "template:" + app.Name + ":v" + itoa(version),
+		Outcome:   outcomeOf(err),
+		Reason:    reasonOf(err),
+		Details:   details,
+	}
+	s.enrichImpersonation(ctx, &ev)
+	_ = s.audit.Record(ctx, ev)
+}
+
+// recordBulk records a bulk grant/revoke as ONE logical mutation event covering
+// the whole batch, with the affected target ids in Details.
+func (s *Service) recordBulk(ctx context.Context, actor Actor, account, action string, targets []string, err error) {
+	if s.audit == nil {
+		return
+	}
+	details := map[string]any{"count": len(targets)}
+	if len(targets) > 0 {
+		details["targets"] = targets
+	}
+	ev := model.AuditEvent{
+		EventType: model.AuditMutation,
+		Action:    action,
+		Actor:     actor.Principal,
+		Account:   account,
+		Target:    "grants:bulk",
+		Outcome:   outcomeOf(err),
+		Reason:    reasonOf(err),
+		Details:   details,
+	}
+	s.enrichImpersonation(ctx, &ev)
+	_ = s.audit.Record(ctx, ev)
+}
+
 // recordDecision records a SAMPLED decision-check event asynchronously, off the
 // Check critical path. The event is built lazily (only when the sampler keeps
 // it) so an un-sampled decision pays nothing but the sampler call. Input-

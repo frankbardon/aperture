@@ -526,6 +526,92 @@ func (h *twirpHandler) DeleteGrant(ctx context.Context, req *rpc.DeleteRequest) 
 	return empty(h.svc.DeleteGrant(ctx, actor, req.Id))
 }
 
+// ---- Template (definition = system-admin; apply = account-admin) ----
+
+func (h *twirpHandler) PutTemplate(ctx context.Context, req *rpc.EntityRequest) (*rpc.Empty, error) {
+	var t model.Template
+	if err := decodeEntity(req, &t); err != nil {
+		return nil, mapErr(err)
+	}
+	actor, err := h.actor(ctx, actorAccount(req.Actor))
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return empty(h.svc.PutTemplate(ctx, actor, t))
+}
+
+func (h *twirpHandler) GetTemplate(ctx context.Context, req *rpc.TemplateKeyRequest) (*rpc.EntityResponse, error) {
+	if _, err := h.principal(ctx); err != nil {
+		return nil, mapErr(err)
+	}
+	t, err := h.svc.GetTemplate(ctx, req.Name, int(req.Version))
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return entityResponse(t)
+}
+
+func (h *twirpHandler) ListTemplates(ctx context.Context, _ *rpc.Empty) (*rpc.EntityListResponse, error) {
+	if _, err := h.principal(ctx); err != nil {
+		return nil, mapErr(err)
+	}
+	items, err := h.svc.ListTemplates(ctx)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return entityListResponse(items)
+}
+
+func (h *twirpHandler) DeleteTemplate(ctx context.Context, req *rpc.TemplateKeyRequest) (*rpc.Empty, error) {
+	actor, err := h.actor(ctx, actorAccount(req.Actor))
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return empty(h.svc.DeleteTemplate(ctx, actor, req.Name, int(req.Version)))
+}
+
+func (h *twirpHandler) ApplyTemplate(ctx context.Context, req *rpc.ApplyTemplateRequest) (*rpc.EntityListResponse, error) {
+	actor, err := h.actor(ctx, actorAccount(req.Actor))
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	applied, err := h.svc.ApplyTemplate(ctx, actor, model.TemplateApplication{
+		Name:          req.Name,
+		Version:       int(req.Version),
+		Account:       req.Account,
+		Params:        req.Params,
+		GrantIDPrefix: req.GrantIdPrefix,
+	})
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return entityListResponse(applied)
+}
+
+// ---- Bulk grant / revoke (account-tier, transactional) ----
+
+func (h *twirpHandler) BulkPutGrants(ctx context.Context, req *rpc.BulkGrantsRequest) (*rpc.Empty, error) {
+	actor, err := h.actor(ctx, actorAccount(req.Actor))
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	grants := make([]model.Grant, len(req.GrantsJson))
+	for i, js := range req.GrantsJson {
+		if err := json.Unmarshal([]byte(js), &grants[i]); err != nil {
+			return nil, mapErr(aerr.Wrap(aerr.APERTURE_INVALID_INPUT, "twirp: grants_json is not valid JSON", err))
+		}
+	}
+	return empty(h.svc.BulkPutGrants(ctx, actor, grants))
+}
+
+func (h *twirpHandler) BulkDeleteGrants(ctx context.Context, req *rpc.BulkDeleteGrantsRequest) (*rpc.Empty, error) {
+	actor, err := h.actor(ctx, actorAccount(req.Actor))
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return empty(h.svc.BulkDeleteGrants(ctx, actor, req.GrantIds))
+}
+
 // ---- Delegation (actor = the authenticated delegator) ----
 
 func (h *twirpHandler) Bestow(ctx context.Context, req *rpc.BestowRequest) (*rpc.Empty, error) {
@@ -612,7 +698,8 @@ func codeToTwirp(code aerr.Code) twirp.ErrorCode {
 		aerr.APERTURE_ACTION_UNDECLARED, aerr.APERTURE_SCOPE_INVALID,
 		aerr.APERTURE_SCOPE_UNKNOWN_STRATEGY, aerr.APERTURE_RULE_INVALID,
 		aerr.APERTURE_RULE_UNKNOWN_VARIABLE, aerr.APERTURE_RULE_TYPE_ERROR,
-		aerr.APERTURE_PROVIDER_INVALID:
+		aerr.APERTURE_PROVIDER_INVALID, aerr.APERTURE_TEMPLATE_INVALID,
+		aerr.APERTURE_TEMPLATE_PARAM:
 		return twirp.InvalidArgument
 	case aerr.APERTURE_NOT_FOUND, aerr.APERTURE_RULE_NOT_FOUND,
 		aerr.APERTURE_PROVIDER_UNREGISTERED:

@@ -18,7 +18,8 @@ one place (FR-26, FR-28).
 - **net/http** — the minimal plain `POST /check` decision route is preserved
   (E1-S5) alongside the Twirp surface, plus `GET /healthz`.
 - **CLI** (`urfave/cli/v3`) — `check`, `enumerate`, `explain` (decisions) and
-  `put`, `get`, `list`, `delete`, `bestow`, `revoke`, `impersonate` (mutations).
+  `put`, `get`, `list`, `delete`, `bestow`, `revoke`, `impersonate`, `template`
+  (`put`/`get`/`list`/`delete`/`apply`), `bulk` (`grant`/`revoke`) (mutations).
   Each command builds the same fully-wired facade in-process; `cmd/aperture`
   stays a thin adapter.
 
@@ -40,6 +41,14 @@ Full surface:
   `Put/Get/List/Delete` for `Grant`.
 - **Delegation**: `Bestow`, `Revoke`.
 - **Impersonation**: `ImpersonationStart`, `ImpersonationStop`.
+- **Provisioning (E5-S1)**: `Put/Get/List/Delete` for `Template` (named,
+  versioned, parameterized grant bundles); `ApplyTemplate` (resolve params →
+  expand → apply transactionally → one audit event); `BulkPutGrants` /
+  `BulkDeleteGrants` (provision/deprovision many grants atomically). Template
+  DEFINITION is SYSTEM tier; APPLY and BULK write grants, so they are ACCOUNT tier
+  in the target account. All three are TRANSACTIONAL via `Storage.Atomic` — a
+  partial failure rolls the WHOLE operation back, so no grant persists if any
+  fails.
 
 ## Auth + admin-tier policy
 

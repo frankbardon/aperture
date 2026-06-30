@@ -143,6 +143,20 @@ const (
 	// configured keyring. The credential was supplied but is not trustworthy, so
 	// the request is refused rather than treated as anonymous.
 	APERTURE_INVALID_TOKEN Code = "APERTURE_INVALID_TOKEN"
+	// APERTURE_TEMPLATE_INVALID — a provisioning template is structurally
+	// malformed at DEFINITION time: an empty name, a version below 1, a parameter
+	// with an empty/duplicate name or an unknown type, no template grants, a
+	// template grant missing its subject/permission/effect/object, a malformed
+	// ${param} reference token, or a grant that references a parameter the template
+	// does not declare. Caught when the template is put, so a bad template can
+	// never reach apply.
+	APERTURE_TEMPLATE_INVALID Code = "APERTURE_TEMPLATE_INVALID"
+	// APERTURE_TEMPLATE_PARAM — a template APPLY supplied bad parameters: a
+	// required parameter is missing, an argument names a parameter the template
+	// does not declare, or a value fails its declared type (a segment-typed value
+	// that is not a legal identity component). Raised at apply time, before any
+	// grant is expanded or written, so a bad parameter set never partially applies.
+	APERTURE_TEMPLATE_PARAM Code = "APERTURE_TEMPLATE_PARAM"
 	// APERTURE_AUTHZ_DENIED — an actor attempted a model mutation without holding
 	// the admin authority tier that gates it: a system-tier (schema) mutation
 	// without effective system-admin authority over system:*, or an account-tier
@@ -344,6 +358,21 @@ var Registry = map[Code]Metadata{
 			"For a parsec adapter, confirm the token was minted by the broker sharing the configured keyring/secret.",
 		},
 	},
+	APERTURE_TEMPLATE_INVALID: {
+		Message: "the provisioning template is malformed",
+		Fixups: []string{
+			"Give the template a non-empty name, a version of at least 1, and at least one grant.",
+			"Declare every parameter a grant references; write references as ${name} with a declared parameter.",
+			"Give each template grant a valid subject, a permission id, an allow/deny effect, and a non-empty object pattern.",
+		},
+	},
+	APERTURE_TEMPLATE_PARAM: {
+		Message: "the template apply supplied invalid parameters",
+		Fixups: []string{
+			"Supply a value for every parameter the template declares, and no parameters it does not.",
+			"A segment-typed parameter value must be a legal identity component: letters, digits, and -._~@+ only.",
+		},
+	},
 	APERTURE_AUTHZ_DENIED: {
 		Message: "the actor lacks the admin authority tier required for this mutation",
 		Fixups: []string{
@@ -383,6 +412,8 @@ var AllCodes = []Code{
 	APERTURE_IMPERSONATION_EXPIRED,
 	APERTURE_UNAUTHENTICATED,
 	APERTURE_INVALID_TOKEN,
+	APERTURE_TEMPLATE_INVALID,
+	APERTURE_TEMPLATE_PARAM,
 	APERTURE_AUTHZ_DENIED,
 }
 

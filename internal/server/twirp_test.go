@@ -143,6 +143,80 @@ func TestTwirpMutationRoundTrip(t *testing.T) {
 	}
 }
 
+// TestTwirpTemplateProvisioning exercises the E5-S1 surface end to end over the
+// wire: root defines a template (system tier), applies it transactionally into
+// the account (account tier), and the expanded grants are readable.
+func TestTwirpTemplateProvisioning(t *testing.T) {
+	srv, _ := newTestServer(t)
+	c := client(srv)
+	ctx := asPrincipal(context.Background(), t, "root")
+
+	tmpl := model.Template{
+		Name: "member", Version: 1,
+		Params: []model.TemplateParam{
+			{Name: "account", Type: model.ParamSegment},
+			{Name: "who", Type: model.ParamSegment},
+		},
+		Grants: []model.TemplateGrant{{
+			Subject:      model.Subject{Kind: model.SubjectPrincipal, ID: "${who}"},
+			PermissionID: "perm-admin",
+			Object:       "account:${account}/document:*",
+			Effect:       model.EffectAllow,
+		}},
+	}
+	if _, err := c.PutTemplate(ctx, &rpc.EntityRequest{
+		Actor:      &rpc.Actor{Principal: "root", Account: acct},
+		EntityJson: mustJSON(t, tmpl),
+	}); err != nil {
+		t.Fatalf("PutTemplate: %v", err)
+	}
+
+	resp, err := c.ApplyTemplate(ctx, &rpc.ApplyTemplateRequest{
+		Actor:   &rpc.Actor{Principal: "root", Account: acct},
+		Name:    "member",
+		Account: acct,
+		Params:  map[string]string{"account": acct, "who": "alice"},
+	})
+	if err != nil {
+		t.Fatalf("ApplyTemplate: %v", err)
+	}
+	if len(resp.EntitiesJson) != 1 {
+		t.Fatalf("apply returned %d grants, want 1", len(resp.EntitiesJson))
+	}
+	var applied model.Grant
+	if err := json.Unmarshal([]byte(resp.EntitiesJson[0]), &applied); err != nil {
+		t.Fatalf("unmarshal applied grant: %v", err)
+	}
+	if applied.Subject.ID != "alice" || applied.Object != "account:acme/document:*" {
+		t.Fatalf("applied grant not substituted: %+v", applied)
+	}
+	if _, err := c.GetGrant(ctx, &rpc.GetRequest{Id: applied.ID}); err != nil {
+		t.Fatalf("applied grant not readable: %v", err)
+	}
+
+	// Bulk revoke deprovisions it.
+	if _, err := c.BulkDeleteGrants(ctx, &rpc.BulkDeleteGrantsRequest{
+		Actor:    &rpc.Actor{Principal: "root", Account: acct},
+		GrantIds: []string{applied.ID},
+	}); err != nil {
+		t.Fatalf("BulkDeleteGrants: %v", err)
+	}
+	if _, err := c.GetGrant(ctx, &rpc.GetRequest{Id: applied.ID}); err == nil {
+		t.Fatal("grant should have been bulk-revoked")
+	}
+
+	// A non-admin apply is refused (account-tier gate).
+	aliceCtx := asPrincipal(context.Background(), t, "alice")
+	if _, err := c.ApplyTemplate(aliceCtx, &rpc.ApplyTemplateRequest{
+		Actor:   &rpc.Actor{Principal: "alice", Account: acct},
+		Name:    "member",
+		Account: acct,
+		Params:  map[string]string{"account": acct, "who": "alice"},
+	}); err == nil {
+		t.Fatal("non-admin apply should be denied")
+	}
+}
+
 // TestTwirpQueryOpen confirms the decision API needs no auth: Check works
 // anonymously and returns the admin decision (root is allowed aperture.admin).
 func TestTwirpQueryOpen(t *testing.T) {

@@ -116,6 +116,23 @@ CREATE TABLE IF NOT EXISTS grants (
 CREATE INDEX IF NOT EXISTS idx_grants_account_subject
     ON grants (account_id, subject_kind, subject_id);
 
+-- Provisioning templates (E5-S1, FR-18/FR-19): named, versioned bundles of
+-- parameterized grants. Identity is the (name, version) pair so multiple
+-- versions of a name coexist; apply selects the latest by default. The typed
+-- parameter declarations and the parameterized grant templates ride as JSON
+-- value columns (a value list, not a relationship), mirroring how object-type
+-- verb sets are stored.
+CREATE TABLE IF NOT EXISTS templates (
+    name        TEXT NOT NULL,
+    version     INTEGER NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    params      TEXT NOT NULL DEFAULT '[]',   -- JSON array of {Name,Type,Description}
+    grants      TEXT NOT NULL DEFAULT '[]',   -- JSON array of template grants
+    created_at  TEXT NOT NULL DEFAULT '',
+    updated_at  TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (name, version)
+);
+
 -- Append-only audit trail (E4-S2, FR-25). Writes are inserts only; deletes
 -- happen exclusively through bulk retention pruning. The timestamp is stored as
 -- integer Unix nanoseconds so range filters and newest-first ordering compare

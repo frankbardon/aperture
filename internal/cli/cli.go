@@ -29,6 +29,9 @@ func NewApp(version string) *ucli.Command {
 			bestowCommand(),
 			revokeCommand(),
 			impersonateCommand(),
+			// Provisioning: parameterized templates + transactional bulk apply.
+			templateCommand(),
+			bulkCommand(),
 			// Server.
 			serveCommand(),
 			// Read-only MCP surface (stdio).

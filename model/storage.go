@@ -119,6 +119,36 @@ type Storage interface {
 	// The engine uses it to build the group half of a principal's subject set.
 	GroupsForPrincipal(ctx context.Context, principalID string) ([]Group, error)
 
+	// ---- Template (named, versioned; E5-S1) ----
+
+	// PutTemplate upserts a template keyed on the (Name, Version) pair: putting a
+	// new version under an existing name keeps the older versions. It validates the
+	// template (ValidateTemplate) before persisting.
+	PutTemplate(ctx context.Context, t Template) error
+	// GetTemplate returns the template for (name, version). When version <= 0 it
+	// returns the latest (highest) version of name. Returns APERTURE_NOT_FOUND when
+	// no matching version exists.
+	GetTemplate(ctx context.Context, name string, version int) (Template, error)
+	// ListTemplates returns every stored template version, ordered by name then
+	// ascending version.
+	ListTemplates(ctx context.Context) ([]Template, error)
+	// DeleteTemplate removes a template. When version <= 0 it deletes every version
+	// of name; otherwise it deletes only the named version. Returns
+	// APERTURE_NOT_FOUND when nothing matched.
+	DeleteTemplate(ctx context.Context, name string, version int) error
+
+	// ---- Transactional apply (E5-S1) ----
+
+	// Atomic runs fn inside a transaction against a tx-scoped Storage, committing
+	// when fn returns nil and rolling the WHOLE batch back when fn returns an error
+	// — no write fn performed persists if any step fails. Both backends give real
+	// atomicity (SQLite via BEGIN/COMMIT/ROLLBACK, the in-memory backend via a
+	// staged snapshot committed only on success). It is the primitive the bulk
+	// grant/revoke endpoints and template apply build on. fn MUST use the tx handed
+	// to it (not the outer Storage); a nested Atomic flattens into the current
+	// transaction so an outer rollback still covers everything.
+	Atomic(ctx context.Context, fn func(tx Storage) error) error
+
 	// ---- Audit trail (append-only, FR-25) ----
 
 	// AppendAudit appends ev to the audit trail. The trail is append-only: the

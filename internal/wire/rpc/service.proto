@@ -66,6 +66,19 @@ service ApertureService {
   rpc ListGrants(ListGrantsRequest) returns (EntityListResponse);
   rpc DeleteGrant(DeleteRequest) returns (Empty);
 
+  // ---- Templates (definition writes require system-admin; apply is account-tier) ----
+  rpc PutTemplate(EntityRequest) returns (Empty);
+  rpc GetTemplate(TemplateKeyRequest) returns (EntityResponse);
+  rpc ListTemplates(Empty) returns (EntityListResponse);
+  rpc DeleteTemplate(TemplateKeyRequest) returns (Empty);
+  // ApplyTemplate expands a template transactionally into the target account and
+  // returns the applied grants (each as canonical JSON).
+  rpc ApplyTemplate(ApplyTemplateRequest) returns (EntityListResponse);
+
+  // ---- Bulk grant/revoke (account-tier, transactional) ----
+  rpc BulkPutGrants(BulkGrantsRequest) returns (Empty);
+  rpc BulkDeleteGrants(BulkDeleteGrantsRequest) returns (Empty);
+
   // ---- Delegation (gated by the delegation subset rule, actor = delegator) ----
   rpc Bestow(BestowRequest) returns (Empty);
   rpc Revoke(RevokeRequest) returns (Empty);
@@ -199,6 +212,40 @@ message MembershipKeyRequest {
 message ListGrantsRequest {
   Actor actor = 1;
   string account_id = 2;
+}
+
+// ---- Template messages ----
+
+// TemplateKeyRequest names a template by (name, version). version <= 0 selects
+// the latest version for Get, and deletes every version for Delete.
+message TemplateKeyRequest {
+  Actor actor = 1;
+  string name = 2;
+  int32 version = 3;
+}
+
+// ApplyTemplateRequest applies template (name, version) into account, filling
+// the declared parameters with params and prefixing generated grant ids with
+// grant_id_prefix (optional). version <= 0 selects the latest version.
+message ApplyTemplateRequest {
+  Actor actor = 1;
+  string name = 2;
+  int32 version = 3;
+  string account = 4;
+  map<string, string> params = 5;
+  string grant_id_prefix = 6;
+}
+
+// ---- Bulk grant messages ----
+
+message BulkGrantsRequest {
+  Actor actor = 1;
+  repeated string grants_json = 2; // each a model.Grant as canonical JSON
+}
+
+message BulkDeleteGrantsRequest {
+  Actor actor = 1;
+  repeated string grant_ids = 2;
 }
 
 // ---- Delegation messages ----
