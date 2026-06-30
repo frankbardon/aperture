@@ -19,6 +19,24 @@
 // E4-S1 note: the Twirp handler should call exactly this facade —
 // service.New(eng).Check(ctx, service.Query{...}) returning service.Result — so
 // the gRPC/Twirp surface inherits the same fail-closed semantics for free.
+//
+// Beyond Check the facade exposes the rest of the decision API (FR-10):
+// Enumerate (which objects a principal may act on), Explain (the full decision
+// trace), and a bulk-batched form of all three. The single ops keep the
+// fail-closed contract; the batch ops return per-item results ALIGNED with their
+// queries (result[i] for query[i]) so one bad query never fails the batch — the
+// shape E4-S1 (Twirp), E4-S3 (MCP), and E6-S4 (what-if) all build on.
+//
+// Rendering per op:
+//
+//   - Check / CheckBatch keep the fail-closed contract above (operational error
+//     folds to a deny Result; an input-validation error is returned).
+//   - Enumerate / Explain return engine errors verbatim. Enumerate cannot fail
+//     open by construction — every id it returns is one Check allows, denied
+//     objects are excluded inside the engine — so an operational failure is a
+//     returned error, not a silent partial set. Explain is a diagnostic.
+//   - The batch ops carry each item's error in its BatchResult, so a partial
+//     failure is per-item, never whole-batch.
 package service
 
 import (
@@ -71,12 +89,15 @@ func New(eng *engine.Engine) *Service {
 // failure is folded into a fail-closed DENY Result with a nil error, so a
 // decision point never fails open.
 func (s *Service) Check(ctx context.Context, q Query) (Result, error) {
-	dec, err := s.eng.Check(ctx, engine.Request{
-		Account:   q.Account,
-		Principal: q.Principal,
-		Action:    q.Action,
-		Object:    q.Object,
-	})
+	dec, err := s.eng.Check(ctx, q.request())
+	return renderCheck(dec, err)
+}
+
+// renderCheck applies the fail-closed contract to one engine Check outcome: an
+// input-validation error is returned; any other engine error folds into a deny
+// Result; a clean decision passes through. It is shared by Check and CheckBatch
+// so every Check surface renders identically.
+func renderCheck(dec engine.Decision, err error) (Result, error) {
 	if err != nil {
 		switch aerr.CodeOf(err) {
 		case aerr.APERTURE_INVALID_INPUT, aerr.APERTURE_IDENTITY_INVALID:
@@ -95,4 +116,101 @@ func (s *Service) Check(ctx context.Context, q Query) (Result, error) {
 		Reason:           dec.Reason,
 		DecidingGrantIDs: dec.DecidingGrantIDs,
 	}, nil
+}
+
+// request adapts a Query to the engine's Request type.
+func (q Query) request() engine.Request {
+	return engine.Request{
+		Account:   q.Account,
+		Principal: q.Principal,
+		Action:    q.Action,
+		Object:    q.Object,
+	}
+}
+
+// EnumerateQuery is an enumeration question in surface-neutral form: which
+// objects under Pattern may Principal take Action on, in Account. Limit caps the
+// result (<= 0 means the engine's default bound). It mirrors
+// engine.EnumerateRequest so the engine type stays an engine-internal concern.
+type EnumerateQuery struct {
+	// Account is the active account the enumeration is scoped to.
+	Account string
+	// Principal is the id of the principal whose access is enumerated.
+	Principal string
+	// Action is the verb being enumerated.
+	Action string
+	// Pattern is the identity pattern bounding the search.
+	Pattern string
+	// Limit caps the number of returned object ids; <= 0 means the default.
+	Limit int
+}
+
+func (q EnumerateQuery) request() engine.EnumerateRequest {
+	return engine.EnumerateRequest{
+		Account:   q.Account,
+		Principal: q.Principal,
+		Action:    q.Action,
+		Pattern:   q.Pattern,
+		Limit:     q.Limit,
+	}
+}
+
+// Enumerate returns the object ids under q.Pattern that q.Principal may take
+// q.Action on. Every id is one Check would allow — denied objects are excluded
+// inside the engine — so the result never fails open. Engine errors (including
+// input validation) are returned verbatim for the surface to map to a status.
+func (s *Service) Enumerate(ctx context.Context, q EnumerateQuery) ([]string, error) {
+	return s.eng.Enumerate(ctx, q.request())
+}
+
+// Explain returns the full decision trace for q. The engine.Trace it returns is
+// the public contract surfaces serialize. Engine errors are returned verbatim;
+// Explain is a diagnostic, not an enforcement gate.
+func (s *Service) Explain(ctx context.Context, q Query) (engine.Trace, error) {
+	return s.eng.Explain(ctx, q.request())
+}
+
+// CheckBatch answers many queries in one call, returning results ALIGNED with qs
+// (result[i] is the rendered decision for qs[i]). Each item is rendered exactly
+// as Check: an operational failure folds into a deny Result (Err nil); an
+// input-validation failure sets the item's Err. One bad query never fails the
+// batch.
+func (s *Service) CheckBatch(ctx context.Context, qs []Query) []engine.BatchResult[Result] {
+	if qs == nil {
+		return nil
+	}
+	out := make([]engine.BatchResult[Result], len(qs))
+	for i, q := range qs {
+		res, err := s.Check(ctx, q)
+		out[i] = engine.BatchResult[Result]{Result: res, Err: err}
+	}
+	return out
+}
+
+// EnumerateBatch answers many enumeration queries in one call, aligned with qs.
+// A query that errors carries its error in the item's Err; the rest are
+// unaffected.
+func (s *Service) EnumerateBatch(ctx context.Context, qs []EnumerateQuery) []engine.BatchResult[[]string] {
+	if qs == nil {
+		return nil
+	}
+	reqs := make([]engine.EnumerateRequest, len(qs))
+	for i, q := range qs {
+		reqs[i] = q.request()
+	}
+	return s.eng.EnumerateBatch(ctx, reqs)
+}
+
+// ExplainBatch answers many explain queries in one call, aligned with qs. A
+// query that errors carries its error in the item's Err; the rest are
+// unaffected.
+func (s *Service) ExplainBatch(ctx context.Context, qs []Query) []engine.BatchResult[engine.Trace] {
+	if qs == nil {
+		return nil
+	}
+	reqs := make([]engine.Request, len(qs))
+	for i, q := range qs {
+		reqs[i] = q.request()
+	}
+	return s.eng.ExplainBatch(ctx, reqs)
 }

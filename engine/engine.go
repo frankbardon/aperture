@@ -94,6 +94,15 @@ type coverer interface {
 	// internal inconsistency, since writes validate them) or an unresolvable
 	// strategy.
 	cover(ctx context.Context, req Request, g model.Grant, perm *model.Permission, object identity.Identity) (covered bool, specificity int, err error)
+
+	// members enumerates the concrete object identities g covers that also match
+	// query, bounded by the resolver's own limit. It is the Enumerate seam: the
+	// literal default yields the grant's pattern only when it is a concrete
+	// identity (a wildcard literal grant is not concretely enumerable without a
+	// lister, so it contributes nothing); a scope strategy delegates to its
+	// resolver's Members, which may consult the ObjectLister for "all of type"
+	// strategies. perm selects the strategy exactly as cover does.
+	members(ctx context.Context, req Request, g model.Grant, perm *model.Permission, query identity.Pattern) ([]identity.Identity, error)
 }
 
 // literalCoverer is the E1 coverer: it treats Grant.Object as a literal identity
@@ -114,6 +123,33 @@ func (literalCoverer) cover(_ context.Context, _ Request, g model.Grant, _ *mode
 		return false, 0, nil
 	}
 	return true, identity.Specificity(pat), nil
+}
+
+func (literalCoverer) members(_ context.Context, _ Request, g model.Grant, _ *model.Permission, query identity.Pattern) ([]identity.Identity, error) {
+	return literalMembers(g, query)
+}
+
+// literalMembers yields a grant's concrete object for Enumerate. A literal grant
+// is concretely enumerable only when its pattern is a fixed identity (no
+// wildcards): identity.Parse succeeds exactly in that case. A wildcard literal
+// grant cannot be enumerated without a provider lister, so it contributes
+// nothing — Enumerate stays bounded rather than materialising an unbounded set.
+// A pattern that is neither a valid identity nor a valid pattern is corrupt
+// storage and surfaces an error, mirroring literalCoverer.cover.
+func literalMembers(g model.Grant, query identity.Pattern) ([]identity.Identity, error) {
+	id, err := identity.Parse(g.Object)
+	if err != nil {
+		if _, perr := identity.ParsePattern(g.Object); perr != nil {
+			return nil, aerr.Wrapf(aerr.APERTURE_STORAGE, perr,
+				"grant %s has an unparseable object pattern %q", g.ID, g.Object)
+		}
+		// Well-formed wildcard pattern: not concretely enumerable here.
+		return nil, nil
+	}
+	if !query.Matches(id) {
+		return nil, nil
+	}
+	return []identity.Identity{id}, nil
 }
 
 // scopeCoverer consults a grant's pluggable scope resolver for object membership
@@ -174,6 +210,42 @@ func (c scopeCoverer) cover(ctx context.Context, req Request, g model.Grant, per
 		return false, 0, nil
 	}
 	return true, specificity, nil
+}
+
+func (c scopeCoverer) members(ctx context.Context, req Request, g model.Grant, perm *model.Permission, query identity.Pattern) ([]identity.Identity, error) {
+	ref := ""
+	objectType := ""
+	if perm != nil {
+		ref = perm.ScopeStrategy
+		objectType = perm.ObjectType
+	}
+	spec, err := scope.ParseSpec(ref)
+	if err != nil {
+		return nil, err
+	}
+	pat, err := identity.ParsePattern(g.Object)
+	if err != nil {
+		return nil, aerr.Wrapf(aerr.APERTURE_STORAGE, err,
+			"grant %s has an unparseable object pattern %q", g.ID, g.Object)
+	}
+
+	// Literal (or unset) strategy keeps the E1 enumeration: a concrete pattern is
+	// its own sole member, a wildcard literal grant is not concretely enumerable.
+	if spec.Strategy == scope.StrategyLiteral {
+		return literalMembers(g, query)
+	}
+
+	resolver, err := c.registry.Resolve(scope.GrantContext{
+		Pattern:    pat,
+		ObjectType: objectType,
+		Spec:       spec,
+		Principal:  req.Principal,
+		Action:     req.Action,
+	}, c.deps)
+	if err != nil {
+		return nil, err
+	}
+	return resolver.Members(ctx, query)
 }
 
 // Engine is the Policy Decision Point. It is stateless beyond its storage handle
@@ -263,9 +335,18 @@ func (e *Engine) Check(ctx context.Context, req Request) (Decision, error) {
 			"engine: failed to load grants for subjects", err)
 	}
 
-	// Resolve action matches against permissions, caching each lookup so a
-	// subject with many grants on the same permission pays one query.
+	// A single permission cache is threaded through the evaluation so a subject
+	// with many grants on the same permission pays one lookup.
 	permCache := make(map[string]*model.Permission, len(grants))
+	return e.evaluate(ctx, req, object, grants, permCache)
+}
+
+// evaluate runs the deny-overrides/specificity decision for one concrete object
+// against an already-loaded grant set, reusing permCache across grants. It is
+// the shared core of Check and of Enumerate's per-candidate verdict, so the
+// "never returns a denied object" guarantee in Enumerate is the exact same
+// decision the hot path makes.
+func (e *Engine) evaluate(ctx context.Context, req Request, object identity.Identity, grants []model.Grant, permCache map[string]*model.Permission) (Decision, error) {
 	candidates := make([]candidate, 0, len(grants))
 	for _, g := range grants {
 		ok, err := e.actionMatches(ctx, g, req.Action, permCache)
