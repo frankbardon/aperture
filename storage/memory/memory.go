@@ -7,6 +7,7 @@ package memory
 
 import (
 	"context"
+	"sort"
 	"sync"
 
 	aerr "github.com/frankbardon/aperture/errors"
@@ -26,6 +27,9 @@ type Store struct {
 	roles       map[string]model.Role
 	groups      map[string]model.Group
 	grants      map[string]model.Grant
+	// audit is the append-only audit trail (FR-25). It is an ordered slice rather
+	// than a map because the trail is append-only and queried newest-first.
+	audit []model.AuditEvent
 }
 
 // membershipKey is the composite identity of a membership edge.
@@ -478,6 +482,98 @@ func (s *Store) GroupsForPrincipal(_ context.Context, principalID string) ([]mod
 		}
 	}
 	return out, nil
+}
+
+// ---- Audit trail (append-only) ----
+
+func (s *Store) AppendAudit(_ context.Context, ev model.AuditEvent) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ev.Details = cloneDetails(ev.Details)
+	s.audit = append(s.audit, ev)
+	return nil
+}
+
+func (s *Store) QueryAudit(_ context.Context, filter model.AuditFilter) ([]model.AuditEvent, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]model.AuditEvent, 0)
+	for _, ev := range s.audit {
+		if filter.Matches(ev) {
+			ev.Details = cloneDetails(ev.Details)
+			out = append(out, ev)
+		}
+	}
+	sortAuditDesc(out)
+	if filter.Limit > 0 && len(out) > filter.Limit {
+		out = out[:filter.Limit]
+	}
+	return out, nil
+}
+
+func (s *Store) PruneAudit(_ context.Context, policy model.RetentionPolicy) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	before := len(s.audit)
+
+	// Age bound: drop events strictly older than policy.Before.
+	if !policy.Before.IsZero() {
+		kept := s.audit[:0:0]
+		for _, ev := range s.audit {
+			if ev.Timestamp.Before(policy.Before) {
+				continue
+			}
+			kept = append(kept, ev)
+		}
+		s.audit = kept
+	}
+
+	// Size bound: keep only the newest MaxCount events. Order the survivors
+	// newest-first, truncate, then restore insertion (chronological) order so the
+	// trail stays append-ordered.
+	if policy.MaxCount > 0 && len(s.audit) > policy.MaxCount {
+		ordered := make([]model.AuditEvent, len(s.audit))
+		copy(ordered, s.audit)
+		sortAuditDesc(ordered)
+		ordered = ordered[:policy.MaxCount]
+		keep := make(map[string]struct{}, len(ordered))
+		for _, ev := range ordered {
+			keep[ev.ID] = struct{}{}
+		}
+		kept := s.audit[:0:0]
+		for _, ev := range s.audit {
+			if _, ok := keep[ev.ID]; ok {
+				kept = append(kept, ev)
+			}
+		}
+		s.audit = kept
+	}
+
+	return before - len(s.audit), nil
+}
+
+// sortAuditDesc orders events newest-first by (timestamp, id) so the in-memory
+// and SQLite backends return audit queries in one identical order.
+func sortAuditDesc(evs []model.AuditEvent) {
+	sort.Slice(evs, func(i, j int) bool {
+		if !evs[i].Timestamp.Equal(evs[j].Timestamp) {
+			return evs[i].Timestamp.After(evs[j].Timestamp)
+		}
+		return evs[i].ID > evs[j].ID
+	})
+}
+
+// cloneDetails shallow-copies an audit details map so a stored event cannot be
+// mutated by the caller (and vice versa). Returns nil for an empty map.
+func cloneDetails(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 // cloneStrings returns a defensive copy so callers cannot mutate stored slices

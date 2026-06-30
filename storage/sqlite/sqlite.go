@@ -924,6 +924,143 @@ func scanGrant(sc scanner) (model.Grant, error) {
 	return g, nil
 }
 
+// ---- Audit trail (append-only) ----
+
+const auditColumns = `id, ts_nanos, event_type, action, actor, effective_subject, impersonation_mode, account, target, outcome, reason, details`
+
+func (s *Store) AppendAudit(ctx context.Context, ev model.AuditEvent) error {
+	details := ""
+	if len(ev.Details) > 0 {
+		b, err := json.Marshal(ev.Details)
+		if err != nil {
+			return wrapStorage("marshal audit details", err)
+		}
+		details = string(b)
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT OR REPLACE INTO audit_log (`+auditColumns+`)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		ev.ID, ev.Timestamp.UTC().UnixNano(), string(ev.EventType), ev.Action, ev.Actor,
+		ev.EffectiveSubject, ev.ImpersonationMode, ev.Account, ev.Target, string(ev.Outcome),
+		ev.Reason, details)
+	if err != nil {
+		return wrapStorage("append audit", err)
+	}
+	return nil
+}
+
+func (s *Store) QueryAudit(ctx context.Context, filter model.AuditFilter) ([]model.AuditEvent, error) {
+	var b strings.Builder
+	b.WriteString(`SELECT `)
+	b.WriteString(auditColumns)
+	b.WriteString(` FROM audit_log`)
+	var (
+		where []string
+		args  []any
+	)
+	if filter.Actor != "" {
+		where = append(where, "actor = ?")
+		args = append(args, filter.Actor)
+	}
+	if filter.Account != "" {
+		where = append(where, "account = ?")
+		args = append(args, filter.Account)
+	}
+	if filter.EventType != "" {
+		where = append(where, "event_type = ?")
+		args = append(args, string(filter.EventType))
+	}
+	if filter.Outcome != "" {
+		where = append(where, "outcome = ?")
+		args = append(args, string(filter.Outcome))
+	}
+	if !filter.Since.IsZero() {
+		where = append(where, "ts_nanos >= ?")
+		args = append(args, filter.Since.UTC().UnixNano())
+	}
+	if !filter.Until.IsZero() {
+		where = append(where, "ts_nanos < ?")
+		args = append(args, filter.Until.UTC().UnixNano())
+	}
+	if len(where) > 0 {
+		b.WriteString(" WHERE ")
+		b.WriteString(strings.Join(where, " AND "))
+	}
+	b.WriteString(" ORDER BY ts_nanos DESC, id DESC")
+	if filter.Limit > 0 {
+		b.WriteString(" LIMIT ?")
+		args = append(args, filter.Limit)
+	}
+	rows, err := s.db.QueryContext(ctx, b.String(), args...)
+	if err != nil {
+		return nil, wrapStorage("query audit", err)
+	}
+	defer rows.Close()
+	out := make([]model.AuditEvent, 0)
+	for rows.Next() {
+		ev, err := scanAudit(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, ev)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, wrapStorage("scan audit", err)
+	}
+	return out, nil
+}
+
+func (s *Store) PruneAudit(ctx context.Context, policy model.RetentionPolicy) (int, error) {
+	var removed int
+	// Age bound: delete events strictly older than policy.Before.
+	if !policy.Before.IsZero() {
+		res, err := s.db.ExecContext(ctx,
+			`DELETE FROM audit_log WHERE ts_nanos < ?`, policy.Before.UTC().UnixNano())
+		if err != nil {
+			return removed, wrapStorage("prune audit by age", err)
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			removed += int(n)
+		}
+	}
+	// Size bound: keep only the newest MaxCount events.
+	if policy.MaxCount > 0 {
+		res, err := s.db.ExecContext(ctx, `
+			DELETE FROM audit_log WHERE id NOT IN (
+				SELECT id FROM audit_log ORDER BY ts_nanos DESC, id DESC LIMIT ?
+			)`, policy.MaxCount)
+		if err != nil {
+			return removed, wrapStorage("prune audit by size", err)
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			removed += int(n)
+		}
+	}
+	return removed, nil
+}
+
+func scanAudit(sc scanner) (model.AuditEvent, error) {
+	var (
+		ev                          model.AuditEvent
+		tsNanos                     int64
+		eventType, outcome, details string
+	)
+	if err := sc.Scan(&ev.ID, &tsNanos, &eventType, &ev.Action, &ev.Actor,
+		&ev.EffectiveSubject, &ev.ImpersonationMode, &ev.Account, &ev.Target, &outcome,
+		&ev.Reason, &details); err != nil {
+		return model.AuditEvent{}, wrapStorage("scan audit", err)
+	}
+	ev.Timestamp = time.Unix(0, tsNanos).UTC()
+	ev.EventType = model.AuditEventType(eventType)
+	ev.Outcome = model.AuditOutcome(outcome)
+	if details != "" {
+		if err := json.Unmarshal([]byte(details), &ev.Details); err != nil {
+			return model.AuditEvent{}, wrapStorage("unmarshal audit details", err)
+		}
+	}
+	return ev, nil
+}
+
 // ---- shared helpers ----
 
 // childIDs runs a single-column query returning the ordered list of ids. It

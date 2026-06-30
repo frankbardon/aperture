@@ -44,6 +44,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/frankbardon/aperture/audit"
 	"github.com/frankbardon/aperture/authz"
 	"github.com/frankbardon/aperture/delegation"
 	"github.com/frankbardon/aperture/engine"
@@ -94,6 +95,10 @@ type Service struct {
 	gate    *authz.Gate
 	deleg   *delegation.Service
 	imperso *impersonation.Service
+	// audit, when non-nil, records the append-only audit trail (E4-S2): mutations
+	// synchronously and always, decision checks sampled + async. Nil = no audit
+	// (the existing no-audit construction). Wired with WithAudit.
+	audit *audit.Recorder
 	// now is the facade clock for stamping entity timestamps on writes. It is
 	// time.Now by default; WithClock overrides it for deterministic tests.
 	now func() time.Time
@@ -155,7 +160,14 @@ func New(eng *engine.Engine, opts ...Option) *Service {
 // decision point never fails open.
 func (s *Service) Check(ctx context.Context, q Query) (Result, error) {
 	dec, err := s.eng.Check(ctx, q.request())
-	return renderCheck(dec, err)
+	res, rerr := renderCheck(dec, err)
+	// Decision audit is sampled + asynchronous (off the Check hot path). An
+	// input-validation error is a caller bug, not a decision, so skip it; an
+	// operational failure has already folded into a fail-closed deny Result.
+	if rerr == nil {
+		s.recordDecision(ctx, "Check", q.Account, q.Principal, q.Object, res.Allow, res.Reason, nil)
+	}
+	return res, rerr
 }
 
 // renderCheck applies the fail-closed contract to one engine Check outcome: an
@@ -225,14 +237,24 @@ func (q EnumerateQuery) request() engine.EnumerateRequest {
 // inside the engine — so the result never fails open. Engine errors (including
 // input validation) are returned verbatim for the surface to map to a status.
 func (s *Service) Enumerate(ctx context.Context, q EnumerateQuery) ([]string, error) {
-	return s.eng.Enumerate(ctx, q.request())
+	ids, err := s.eng.Enumerate(ctx, q.request())
+	if err == nil {
+		s.recordDecision(ctx, "Enumerate", q.Account, q.Principal, q.Pattern, true,
+			"enumerated accessible objects", map[string]any{"count": len(ids)})
+	}
+	return ids, err
 }
 
 // Explain returns the full decision trace for q. The engine.Trace it returns is
 // the public contract surfaces serialize. Engine errors are returned verbatim;
 // Explain is a diagnostic, not an enforcement gate.
 func (s *Service) Explain(ctx context.Context, q Query) (engine.Trace, error) {
-	return s.eng.Explain(ctx, q.request())
+	tr, err := s.eng.Explain(ctx, q.request())
+	if err == nil {
+		s.recordDecision(ctx, "Explain", q.Account, q.Principal, q.Object,
+			tr.Decision.Allow, tr.Decision.Reason, nil)
+	}
+	return tr, err
 }
 
 // CheckBatch answers many queries in one call, returning results ALIGNED with qs

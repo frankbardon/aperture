@@ -98,11 +98,12 @@ func (s *Service) stamp(created, updated *time.Time) {
 
 // ---- ObjectType (system tier) ----
 
-func (s *Service) PutObjectType(ctx context.Context, actor Actor, ot model.ObjectType) error {
-	if err := s.requireMutator(); err != nil {
+func (s *Service) PutObjectType(ctx context.Context, actor Actor, ot model.ObjectType) (err error) {
+	if err = s.requireMutator(); err != nil {
 		return err
 	}
-	if err := s.authorize(ctx, actor, authz.MutationPutObjectType, ""); err != nil {
+	defer func() { s.recordMutation(ctx, actor, "PutObjectType", "object_type:"+ot.Name, err) }()
+	if err = s.authorize(ctx, actor, authz.MutationPutObjectType, ""); err != nil {
 		return err
 	}
 	s.stamp(&ot.CreatedAt, &ot.UpdatedAt)
@@ -123,11 +124,12 @@ func (s *Service) ListObjectTypes(ctx context.Context) ([]model.ObjectType, erro
 	return s.store.ListObjectTypes(ctx)
 }
 
-func (s *Service) DeleteObjectType(ctx context.Context, actor Actor, name string) error {
-	if err := s.requireMutator(); err != nil {
+func (s *Service) DeleteObjectType(ctx context.Context, actor Actor, name string) (err error) {
+	if err = s.requireMutator(); err != nil {
 		return err
 	}
-	if err := s.authorize(ctx, actor, authz.MutationDeleteObjectType, ""); err != nil {
+	defer func() { s.recordMutation(ctx, actor, "DeleteObjectType", "object_type:"+name, err) }()
+	if err = s.authorize(ctx, actor, authz.MutationDeleteObjectType, ""); err != nil {
 		return err
 	}
 	return s.store.DeleteObjectType(ctx, name)
@@ -135,11 +137,12 @@ func (s *Service) DeleteObjectType(ctx context.Context, actor Actor, name string
 
 // ---- Permission (system tier) ----
 
-func (s *Service) PutPermission(ctx context.Context, actor Actor, p model.Permission) error {
-	if err := s.requireMutator(); err != nil {
+func (s *Service) PutPermission(ctx context.Context, actor Actor, p model.Permission) (err error) {
+	if err = s.requireMutator(); err != nil {
 		return err
 	}
-	if err := s.authorize(ctx, actor, authz.MutationPutPermission, ""); err != nil {
+	defer func() { s.recordMutation(ctx, actor, "PutPermission", "permission:"+p.ID, err) }()
+	if err = s.authorize(ctx, actor, authz.MutationPutPermission, ""); err != nil {
 		return err
 	}
 	s.stamp(&p.CreatedAt, &p.UpdatedAt)
@@ -160,11 +163,12 @@ func (s *Service) ListPermissions(ctx context.Context) ([]model.Permission, erro
 	return s.store.ListPermissions(ctx)
 }
 
-func (s *Service) DeletePermission(ctx context.Context, actor Actor, id string) error {
-	if err := s.requireMutator(); err != nil {
+func (s *Service) DeletePermission(ctx context.Context, actor Actor, id string) (err error) {
+	if err = s.requireMutator(); err != nil {
 		return err
 	}
-	if err := s.authorize(ctx, actor, authz.MutationDeletePermission, ""); err != nil {
+	defer func() { s.recordMutation(ctx, actor, "DeletePermission", "permission:"+id, err) }()
+	if err = s.authorize(ctx, actor, authz.MutationDeletePermission, ""); err != nil {
 		return err
 	}
 	return s.store.DeletePermission(ctx, id)
@@ -172,11 +176,12 @@ func (s *Service) DeletePermission(ctx context.Context, actor Actor, id string) 
 
 // ---- Principal (system tier) ----
 
-func (s *Service) PutPrincipal(ctx context.Context, actor Actor, p model.Principal) error {
-	if err := s.requireMutator(); err != nil {
+func (s *Service) PutPrincipal(ctx context.Context, actor Actor, p model.Principal) (err error) {
+	if err = s.requireMutator(); err != nil {
 		return err
 	}
-	if err := s.authorize(ctx, actor, authz.MutationPutPrincipal, ""); err != nil {
+	defer func() { s.recordMutation(ctx, actor, "PutPrincipal", "principal:"+p.ID, err) }()
+	if err = s.authorize(ctx, actor, authz.MutationPutPrincipal, ""); err != nil {
 		return err
 	}
 	s.stamp(&p.CreatedAt, &p.UpdatedAt)
@@ -197,11 +202,12 @@ func (s *Service) ListPrincipals(ctx context.Context) ([]model.Principal, error)
 	return s.store.ListPrincipals(ctx)
 }
 
-func (s *Service) DeletePrincipal(ctx context.Context, actor Actor, id string) error {
-	if err := s.requireMutator(); err != nil {
+func (s *Service) DeletePrincipal(ctx context.Context, actor Actor, id string) (err error) {
+	if err = s.requireMutator(); err != nil {
 		return err
 	}
-	if err := s.authorize(ctx, actor, authz.MutationDeletePrincipal, ""); err != nil {
+	defer func() { s.recordMutation(ctx, actor, "DeletePrincipal", "principal:"+id, err) }()
+	if err = s.authorize(ctx, actor, authz.MutationDeletePrincipal, ""); err != nil {
 		return err
 	}
 	return s.store.DeletePrincipal(ctx, id)
@@ -209,11 +215,12 @@ func (s *Service) DeletePrincipal(ctx context.Context, actor Actor, id string) e
 
 // ---- Role (system tier) ----
 
-func (s *Service) PutRole(ctx context.Context, actor Actor, r model.Role) error {
-	if err := s.requireMutator(); err != nil {
+func (s *Service) PutRole(ctx context.Context, actor Actor, r model.Role) (err error) {
+	if err = s.requireMutator(); err != nil {
 		return err
 	}
-	if err := s.authorize(ctx, actor, authz.MutationPutRole, ""); err != nil {
+	defer func() { s.recordMutation(ctx, actor, "PutRole", "role:"+r.ID, err) }()
+	if err = s.authorize(ctx, actor, authz.MutationPutRole, ""); err != nil {
 		return err
 	}
 	s.stamp(&r.CreatedAt, &r.UpdatedAt)
@@ -234,11 +241,12 @@ func (s *Service) ListRoles(ctx context.Context) ([]model.Role, error) {
 	return s.store.ListRoles(ctx)
 }
 
-func (s *Service) DeleteRole(ctx context.Context, actor Actor, id string) error {
-	if err := s.requireMutator(); err != nil {
+func (s *Service) DeleteRole(ctx context.Context, actor Actor, id string) (err error) {
+	if err = s.requireMutator(); err != nil {
 		return err
 	}
-	if err := s.authorize(ctx, actor, authz.MutationDeleteRole, ""); err != nil {
+	defer func() { s.recordMutation(ctx, actor, "DeleteRole", "role:"+id, err) }()
+	if err = s.authorize(ctx, actor, authz.MutationDeleteRole, ""); err != nil {
 		return err
 	}
 	return s.store.DeleteRole(ctx, id)
@@ -246,11 +254,12 @@ func (s *Service) DeleteRole(ctx context.Context, actor Actor, id string) error 
 
 // ---- Group (system tier) ----
 
-func (s *Service) PutGroup(ctx context.Context, actor Actor, g model.Group) error {
-	if err := s.requireMutator(); err != nil {
+func (s *Service) PutGroup(ctx context.Context, actor Actor, g model.Group) (err error) {
+	if err = s.requireMutator(); err != nil {
 		return err
 	}
-	if err := s.authorize(ctx, actor, authz.MutationPutGroup, ""); err != nil {
+	defer func() { s.recordMutation(ctx, actor, "PutGroup", "group:"+g.ID, err) }()
+	if err = s.authorize(ctx, actor, authz.MutationPutGroup, ""); err != nil {
 		return err
 	}
 	s.stamp(&g.CreatedAt, &g.UpdatedAt)
@@ -271,11 +280,12 @@ func (s *Service) ListGroups(ctx context.Context) ([]model.Group, error) {
 	return s.store.ListGroups(ctx)
 }
 
-func (s *Service) DeleteGroup(ctx context.Context, actor Actor, id string) error {
-	if err := s.requireMutator(); err != nil {
+func (s *Service) DeleteGroup(ctx context.Context, actor Actor, id string) (err error) {
+	if err = s.requireMutator(); err != nil {
 		return err
 	}
-	if err := s.authorize(ctx, actor, authz.MutationDeleteGroup, ""); err != nil {
+	defer func() { s.recordMutation(ctx, actor, "DeleteGroup", "group:"+id, err) }()
+	if err = s.authorize(ctx, actor, authz.MutationDeleteGroup, ""); err != nil {
 		return err
 	}
 	return s.store.DeleteGroup(ctx, id)
@@ -283,11 +293,12 @@ func (s *Service) DeleteGroup(ctx context.Context, actor Actor, id string) error
 
 // ---- Account (system tier) ----
 
-func (s *Service) PutAccount(ctx context.Context, actor Actor, a model.Account) error {
-	if err := s.requireMutator(); err != nil {
+func (s *Service) PutAccount(ctx context.Context, actor Actor, a model.Account) (err error) {
+	if err = s.requireMutator(); err != nil {
 		return err
 	}
-	if err := s.authorize(ctx, actor, authz.MutationPutAccount, ""); err != nil {
+	defer func() { s.recordMutation(ctx, actor, "PutAccount", "account:"+a.ID, err) }()
+	if err = s.authorize(ctx, actor, authz.MutationPutAccount, ""); err != nil {
 		return err
 	}
 	s.stamp(&a.CreatedAt, &a.UpdatedAt)
@@ -308,11 +319,12 @@ func (s *Service) ListAccounts(ctx context.Context) ([]model.Account, error) {
 	return s.store.ListAccounts(ctx)
 }
 
-func (s *Service) DeleteAccount(ctx context.Context, actor Actor, id string) error {
-	if err := s.requireMutator(); err != nil {
+func (s *Service) DeleteAccount(ctx context.Context, actor Actor, id string) (err error) {
+	if err = s.requireMutator(); err != nil {
 		return err
 	}
-	if err := s.authorize(ctx, actor, authz.MutationDeleteAccount, ""); err != nil {
+	defer func() { s.recordMutation(ctx, actor, "DeleteAccount", "account:"+id, err) }()
+	if err = s.authorize(ctx, actor, authz.MutationDeleteAccount, ""); err != nil {
 		return err
 	}
 	return s.store.DeleteAccount(ctx, id)
@@ -320,22 +332,28 @@ func (s *Service) DeleteAccount(ctx context.Context, actor Actor, id string) err
 
 // ---- Membership (account tier; target account is the membership's account) ----
 
-func (s *Service) PutMembership(ctx context.Context, actor Actor, m model.Membership) error {
-	if err := s.requireMutator(); err != nil {
+func (s *Service) PutMembership(ctx context.Context, actor Actor, m model.Membership) (err error) {
+	if err = s.requireMutator(); err != nil {
 		return err
 	}
-	if err := s.authorize(ctx, actor, authz.MutationPutMembership, m.AccountID); err != nil {
+	defer func() {
+		s.recordMutation(ctx, actor, "PutMembership", "membership:"+m.PrincipalID+"@"+m.AccountID, err)
+	}()
+	if err = s.authorize(ctx, actor, authz.MutationPutMembership, m.AccountID); err != nil {
 		return err
 	}
 	s.stamp(&m.CreatedAt, &m.UpdatedAt)
 	return s.store.PutMembership(ctx, m)
 }
 
-func (s *Service) DeleteMembership(ctx context.Context, actor Actor, principalID, accountID string) error {
-	if err := s.requireMutator(); err != nil {
+func (s *Service) DeleteMembership(ctx context.Context, actor Actor, principalID, accountID string) (err error) {
+	if err = s.requireMutator(); err != nil {
 		return err
 	}
-	if err := s.authorize(ctx, actor, authz.MutationDeleteMembership, accountID); err != nil {
+	defer func() {
+		s.recordMutation(ctx, actor, "DeleteMembership", "membership:"+principalID+"@"+accountID, err)
+	}()
+	if err = s.authorize(ctx, actor, authz.MutationDeleteMembership, accountID); err != nil {
 		return err
 	}
 	return s.store.DeleteMembership(ctx, principalID, accountID)
@@ -343,11 +361,12 @@ func (s *Service) DeleteMembership(ctx context.Context, actor Actor, principalID
 
 // ---- Grant (account tier; target account is the grant's account) ----
 
-func (s *Service) PutGrant(ctx context.Context, actor Actor, g model.Grant) error {
-	if err := s.requireMutator(); err != nil {
+func (s *Service) PutGrant(ctx context.Context, actor Actor, g model.Grant) (err error) {
+	if err = s.requireMutator(); err != nil {
 		return err
 	}
-	if err := s.authorize(ctx, actor, authz.MutationPutGrant, g.AccountID); err != nil {
+	defer func() { s.recordMutation(ctx, actor, "PutGrant", "grant:"+g.ID, err) }()
+	if err = s.authorize(ctx, actor, authz.MutationPutGrant, g.AccountID); err != nil {
 		return err
 	}
 	s.stamp(&g.CreatedAt, &g.UpdatedAt)
@@ -368,10 +387,11 @@ func (s *Service) ListGrants(ctx context.Context, accountID string) ([]model.Gra
 	return s.store.ListGrants(ctx, accountID)
 }
 
-func (s *Service) DeleteGrant(ctx context.Context, actor Actor, id string) error {
-	if err := s.requireMutator(); err != nil {
+func (s *Service) DeleteGrant(ctx context.Context, actor Actor, id string) (err error) {
+	if err = s.requireMutator(); err != nil {
 		return err
 	}
+	defer func() { s.recordMutation(ctx, actor, "DeleteGrant", "grant:"+id, err) }()
 	if actor.Principal == "" {
 		return aerr.New(aerr.APERTURE_UNAUTHENTICATED,
 			"service: a mutation requires an authenticated principal")
@@ -382,7 +402,7 @@ func (s *Service) DeleteGrant(ctx context.Context, actor Actor, id string) error
 	if err != nil {
 		return err // NOT_FOUND when unknown.
 	}
-	if err := s.gate.Authorize(ctx, actor.gateActor(), authz.MutationDeleteGrant, g.AccountID); err != nil {
+	if err = s.gate.Authorize(ctx, actor.gateActor(), authz.MutationDeleteGrant, g.AccountID); err != nil {
 		return err
 	}
 	return s.store.DeleteGrant(ctx, id)
@@ -393,10 +413,11 @@ func (s *Service) DeleteGrant(ctx context.Context, actor Actor, id string) error
 // Bestow grants `grant` on behalf of delegator, enforcing the delegation subset
 // rule (E3-S2). delegator must be the authenticated principal; the admin gate is
 // deliberately NOT applied (delegation carries its own authorization).
-func (s *Service) Bestow(ctx context.Context, delegator string, grant model.Grant) error {
+func (s *Service) Bestow(ctx context.Context, delegator string, grant model.Grant) (err error) {
 	if s.deleg == nil {
 		return aerr.New(aerr.APERTURE_UNIMPLEMENTED, "service: delegation is not wired")
 	}
+	defer func() { s.recordDelegation(ctx, delegator, grant.AccountID, "Bestow", "grant:"+grant.ID, err) }()
 	if delegator == "" {
 		return aerr.New(aerr.APERTURE_UNAUTHENTICATED,
 			"service: bestow requires an authenticated delegator")
@@ -406,10 +427,11 @@ func (s *Service) Bestow(ctx context.Context, delegator string, grant model.Gran
 
 // Revoke withdraws the grant on behalf of delegator, enforcing the same subset
 // rule Bestow applies.
-func (s *Service) Revoke(ctx context.Context, delegator, grantID string) error {
+func (s *Service) Revoke(ctx context.Context, delegator, grantID string) (err error) {
 	if s.deleg == nil {
 		return aerr.New(aerr.APERTURE_UNIMPLEMENTED, "service: delegation is not wired")
 	}
+	defer func() { s.recordDelegation(ctx, delegator, "", "Revoke", "grant:"+grantID, err) }()
 	if delegator == "" {
 		return aerr.New(aerr.APERTURE_UNAUTHENTICATED,
 			"service: revoke requires an authenticated delegator")
@@ -422,10 +444,11 @@ func (s *Service) Revoke(ctx context.Context, delegator, grantID string) error {
 // ImpersonationStart opens a time-boxed session for operator to impersonate
 // target in account, enforcing the impersonation guardrails (E3-S3). operator
 // must be the authenticated principal.
-func (s *Service) ImpersonationStart(ctx context.Context, operator, target, account string, mode engine.Mode) (*impersonation.Session, error) {
+func (s *Service) ImpersonationStart(ctx context.Context, operator, target, account string, mode engine.Mode) (sess *impersonation.Session, err error) {
 	if s.imperso == nil {
 		return nil, aerr.New(aerr.APERTURE_UNIMPLEMENTED, "service: impersonation is not wired")
 	}
+	defer func() { s.recordImpersonation(ctx, operator, target, account, mode, "ImpersonationStart", err) }()
 	if operator == "" {
 		return nil, aerr.New(aerr.APERTURE_UNAUTHENTICATED,
 			"service: impersonation requires an authenticated operator")
@@ -439,10 +462,21 @@ func (s *Service) ImpersonationStart(ctx context.Context, operator, target, acco
 // validates the operator and acknowledges. It exists so a surface has an explicit
 // "I am done" call and a place for E4-S2 to audit the end of a session. See
 // FOLLOWUPS for a stateful session registry.
-func (s *Service) ImpersonationStop(ctx context.Context, operator string, _ *impersonation.Session) error {
+func (s *Service) ImpersonationStop(ctx context.Context, operator string, sess *impersonation.Session) (err error) {
 	if s.imperso == nil {
 		return aerr.New(aerr.APERTURE_UNIMPLEMENTED, "service: impersonation is not wired")
 	}
+	target, mode := "", engine.Mode("")
+	if sess != nil {
+		target, mode = sess.Subject, sess.Mode
+	}
+	defer func() {
+		account := ""
+		if sess != nil {
+			account = sess.Account
+		}
+		s.recordImpersonation(ctx, operator, target, account, mode, "ImpersonationStop", err)
+	}()
 	if operator == "" {
 		return aerr.New(aerr.APERTURE_UNAUTHENTICATED,
 			"service: impersonation stop requires an authenticated operator")

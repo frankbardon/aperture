@@ -115,3 +115,30 @@ CREATE TABLE IF NOT EXISTS grants (
 
 CREATE INDEX IF NOT EXISTS idx_grants_account_subject
     ON grants (account_id, subject_kind, subject_id);
+
+-- Append-only audit trail (E4-S2, FR-25). Writes are inserts only; deletes
+-- happen exclusively through bulk retention pruning. The timestamp is stored as
+-- integer Unix nanoseconds so range filters and newest-first ordering compare
+-- numerically (RFC3339 text would mis-sort variable-length fractional seconds).
+-- A record made under impersonation carries both the real actor (actor) and the
+-- borrowed target (effective_subject + impersonation_mode). The details column
+-- is an optional JSON blob for event-specific context.
+CREATE TABLE IF NOT EXISTS audit_log (
+    id                 TEXT PRIMARY KEY,
+    ts_nanos           INTEGER NOT NULL,
+    event_type         TEXT NOT NULL,
+    action             TEXT NOT NULL DEFAULT '',
+    actor              TEXT NOT NULL DEFAULT '',
+    effective_subject  TEXT NOT NULL DEFAULT '',
+    impersonation_mode TEXT NOT NULL DEFAULT '',
+    account            TEXT NOT NULL DEFAULT '',
+    target             TEXT NOT NULL DEFAULT '',
+    outcome            TEXT NOT NULL DEFAULT '',
+    reason             TEXT NOT NULL DEFAULT '',
+    details            TEXT NOT NULL DEFAULT ''     -- JSON object, '' when none
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log (ts_nanos);
+CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_log (actor);
+CREATE INDEX IF NOT EXISTS idx_audit_account ON audit_log (account);
+CREATE INDEX IF NOT EXISTS idx_audit_event_type ON audit_log (event_type);

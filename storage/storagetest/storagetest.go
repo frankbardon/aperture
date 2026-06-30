@@ -43,6 +43,9 @@ func Run(t *testing.T, newStore Factory) {
 	t.Run("GroupsForPrincipal", func(t *testing.T) { testGroupsForPrincipal(t, newStore(t)) })
 	t.Run("NotFoundSemantics", func(t *testing.T) { testNotFoundSemantics(t, newStore(t)) })
 	t.Run("TimestampsRoundTrip", func(t *testing.T) { testTimestampsRoundTrip(t, newStore(t)) })
+	t.Run("AuditAppendAndQuery", func(t *testing.T) { testAuditAppendAndQuery(t, newStore(t)) })
+	t.Run("AuditQueryFilters", func(t *testing.T) { testAuditQueryFilters(t, newStore(t)) })
+	t.Run("AuditRetentionPrune", func(t *testing.T) { testAuditRetentionPrune(t, newStore(t)) })
 }
 
 func ctx() context.Context { return context.Background() }
@@ -591,6 +594,209 @@ func testTimestampsRoundTrip(t *testing.T, s model.Storage) {
 		t.Fatalf("timestamps not preserved: created %v (want %v), updated %v (want %v)",
 			got.CreatedAt, created, got.UpdatedAt, updated)
 	}
+}
+
+// ---- Audit trail ----
+
+// auditBase is a reference instant the audit cases stamp events relative to, so
+// ordering and time-range filters are deterministic across both backends.
+var auditBase = time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+
+func mkAudit(id string, offset time.Duration, mut func(*model.AuditEvent)) model.AuditEvent {
+	ev := model.AuditEvent{
+		ID:        id,
+		Timestamp: auditBase.Add(offset),
+		EventType: model.AuditMutation,
+		Action:    "PutGrant",
+		Actor:     "alice",
+		Account:   "acme",
+		Target:    "grant:g1",
+		Outcome:   model.OutcomeSuccess,
+		Reason:    "ok",
+	}
+	if mut != nil {
+		mut(&ev)
+	}
+	return ev
+}
+
+func testAuditAppendAndQuery(t *testing.T, s model.Storage) {
+	// A round trip preserving every field, including the impersonation linkage
+	// (real actor + effective subject + mode) and the details JSON blob.
+	ev := mkAudit("a1", 0, func(e *model.AuditEvent) {
+		e.EventType = model.AuditDecision
+		e.Action = "Check"
+		e.Actor = "operator"
+		e.EffectiveSubject = "target"
+		e.ImpersonationMode = "become"
+		e.Outcome = model.OutcomeAllow
+		e.Target = "account:acme/document:42"
+		e.Details = map[string]any{"deciding": "g7"}
+	})
+	if err := s.AppendAudit(ctx(), ev); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	got, err := s.QueryAudit(ctx(), model.AuditFilter{})
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want 1 event, got %d", len(got))
+	}
+	g := got[0]
+	if g.ID != "a1" || g.Actor != "operator" || g.EffectiveSubject != "target" ||
+		g.ImpersonationMode != "become" || g.Outcome != model.OutcomeAllow ||
+		g.EventType != model.AuditDecision || g.Target != "account:acme/document:42" {
+		t.Fatalf("round trip mismatch: %+v", g)
+	}
+	if !g.Timestamp.Equal(ev.Timestamp) {
+		t.Fatalf("timestamp not preserved: got %v want %v", g.Timestamp, ev.Timestamp)
+	}
+	if g.Details["deciding"] != "g7" {
+		t.Fatalf("details not preserved: %+v", g.Details)
+	}
+}
+
+func testAuditQueryFilters(t *testing.T, s model.Storage) {
+	events := []model.AuditEvent{
+		mkAudit("e1", 0, func(e *model.AuditEvent) {
+			e.Actor = "alice"
+			e.Account = "acme"
+			e.EventType = model.AuditMutation
+			e.Outcome = model.OutcomeSuccess
+		}),
+		mkAudit("e2", time.Minute, func(e *model.AuditEvent) {
+			e.Actor = "bob"
+			e.Account = "acme"
+			e.EventType = model.AuditDecision
+			e.Outcome = model.OutcomeDeny
+		}),
+		mkAudit("e3", 2*time.Minute, func(e *model.AuditEvent) {
+			e.Actor = "alice"
+			e.Account = "other"
+			e.EventType = model.AuditDecision
+			e.Outcome = model.OutcomeAllow
+		}),
+		mkAudit("e4", 3*time.Minute, func(e *model.AuditEvent) {
+			e.Actor = "alice"
+			e.Account = "acme"
+			e.EventType = model.AuditMutation
+			e.Outcome = model.OutcomeFailure
+		}),
+	}
+	for _, ev := range events {
+		if err := s.AppendAudit(ctx(), ev); err != nil {
+			t.Fatalf("append %s: %v", ev.ID, err)
+		}
+	}
+
+	// Newest-first ordering across the whole trail.
+	all, err := s.QueryAudit(ctx(), model.AuditFilter{})
+	if err != nil {
+		t.Fatalf("query all: %v", err)
+	}
+	if ids := auditIDs(all); !reflect.DeepEqual(ids, []string{"e4", "e3", "e2", "e1"}) {
+		t.Fatalf("ordering = %v, want newest-first [e4 e3 e2 e1]", ids)
+	}
+
+	// Filter by actor.
+	if ids := auditIDs(mustQuery(t, s, model.AuditFilter{Actor: "alice"})); !sameSet(ids, "e1", "e3", "e4") {
+		t.Fatalf("actor filter = %v, want {e1,e3,e4}", ids)
+	}
+	// Filter by account.
+	if ids := auditIDs(mustQuery(t, s, model.AuditFilter{Account: "acme"})); !sameSet(ids, "e1", "e2", "e4") {
+		t.Fatalf("account filter = %v, want {e1,e2,e4}", ids)
+	}
+	// Filter by event type.
+	if ids := auditIDs(mustQuery(t, s, model.AuditFilter{EventType: model.AuditDecision})); !sameSet(ids, "e2", "e3") {
+		t.Fatalf("event-type filter = %v, want {e2,e3}", ids)
+	}
+	// Filter by outcome.
+	if ids := auditIDs(mustQuery(t, s, model.AuditFilter{Outcome: model.OutcomeFailure})); !sameSet(ids, "e4") {
+		t.Fatalf("outcome filter = %v, want {e4}", ids)
+	}
+	// Time range: [base+1m, base+3m) → e2, e3 (e4 at +3m is excluded by Until).
+	rng := mustQuery(t, s, model.AuditFilter{Since: auditBase.Add(time.Minute), Until: auditBase.Add(3 * time.Minute)})
+	if ids := auditIDs(rng); !sameSet(ids, "e2", "e3") {
+		t.Fatalf("time-range filter = %v, want {e2,e3}", ids)
+	}
+	// Combined filter + limit.
+	combined := mustQuery(t, s, model.AuditFilter{Actor: "alice", Account: "acme", Limit: 1})
+	if len(combined) != 1 || combined[0].ID != "e4" {
+		t.Fatalf("combined+limit = %v, want [e4]", auditIDs(combined))
+	}
+}
+
+func testAuditRetentionPrune(t *testing.T, s model.Storage) {
+	for i := 0; i < 5; i++ {
+		ev := mkAudit(string(rune('a'+i)), time.Duration(i)*time.Minute, nil)
+		if err := s.AppendAudit(ctx(), ev); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+	}
+
+	// Age prune: drop everything strictly older than base+2m (removes a, b).
+	removed, err := s.PruneAudit(ctx(), model.RetentionPolicy{Before: auditBase.Add(2 * time.Minute)})
+	if err != nil {
+		t.Fatalf("prune by age: %v", err)
+	}
+	if removed != 2 {
+		t.Fatalf("age prune removed %d, want 2", removed)
+	}
+	if ids := auditIDs(mustQuery(t, s, model.AuditFilter{})); !reflect.DeepEqual(ids, []string{"e", "d", "c"}) {
+		t.Fatalf("after age prune = %v, want [e d c]", ids)
+	}
+
+	// Size prune: keep only the 2 newest (removes c).
+	removed, err = s.PruneAudit(ctx(), model.RetentionPolicy{MaxCount: 2})
+	if err != nil {
+		t.Fatalf("prune by size: %v", err)
+	}
+	if removed != 1 {
+		t.Fatalf("size prune removed %d, want 1", removed)
+	}
+	if ids := auditIDs(mustQuery(t, s, model.AuditFilter{})); !reflect.DeepEqual(ids, []string{"e", "d"}) {
+		t.Fatalf("after size prune = %v, want [e d]", ids)
+	}
+
+	// A no-op policy removes nothing.
+	removed, _ = s.PruneAudit(ctx(), model.RetentionPolicy{})
+	if removed != 0 {
+		t.Fatalf("empty policy removed %d, want 0", removed)
+	}
+}
+
+func mustQuery(t *testing.T, s model.Storage, f model.AuditFilter) []model.AuditEvent {
+	t.Helper()
+	out, err := s.QueryAudit(ctx(), f)
+	if err != nil {
+		t.Fatalf("query %+v: %v", f, err)
+	}
+	return out
+}
+
+func auditIDs(evs []model.AuditEvent) []string {
+	out := make([]string, len(evs))
+	for i, ev := range evs {
+		out[i] = ev.ID
+	}
+	return out
+}
+
+func sameSet(got []string, want ...string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	set := map[string]bool{}
+	for _, g := range got {
+		set[g] = true
+	}
+	for _, w := range want {
+		if !set[w] {
+			return false
+		}
+	}
+	return true
 }
 
 // ---- normalization helpers ----

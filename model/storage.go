@@ -118,4 +118,21 @@ type Storage interface {
 	// GroupsForPrincipal returns every group that lists principalID as a member.
 	// The engine uses it to build the group half of a principal's subject set.
 	GroupsForPrincipal(ctx context.Context, principalID string) ([]Group, error)
+
+	// ---- Audit trail (append-only, FR-25) ----
+
+	// AppendAudit appends ev to the audit trail. The trail is append-only: the
+	// only writes are Append (one event), and the only deletes are bulk retention
+	// pruning (PruneAudit) — there is no update or single-event delete, so a
+	// recorded event cannot be silently altered. Underlying backend failures
+	// surface as APERTURE_STORAGE.
+	AppendAudit(ctx context.Context, ev AuditEvent) error
+	// QueryAudit returns the audit events matching filter, newest-first (by
+	// timestamp, then id, descending). A zero filter returns the whole trail
+	// (subject to its Limit). It is the queryable API the E6-S4 viewer builds on.
+	QueryAudit(ctx context.Context, filter AuditFilter) ([]AuditEvent, error)
+	// PruneAudit deletes the events the retention policy no longer keeps (older
+	// than policy.Before, then any beyond policy.MaxCount newest) and returns the
+	// number of events removed.
+	PruneAudit(ctx context.Context, policy RetentionPolicy) (int, error)
 }
