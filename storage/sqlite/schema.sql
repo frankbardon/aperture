@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS permissions (
     object_type    TEXT NOT NULL,
     action         TEXT NOT NULL,
     scope_strategy TEXT NOT NULL DEFAULT '',
+    delegatable    INTEGER NOT NULL DEFAULT 0,  -- 0/1: may this permission be bestowed (E3-S2)
     description    TEXT NOT NULL DEFAULT '',
     created_at     TEXT NOT NULL DEFAULT '',
     updated_at     TEXT NOT NULL DEFAULT ''

@@ -32,6 +32,7 @@ func Run(t *testing.T, newStore Factory) {
 	t.Run("ObjectTypeCRUD", func(t *testing.T) { testObjectTypeCRUD(t, newStore(t)) })
 	t.Run("PermissionTypedAction", func(t *testing.T) { testPermissionTypedAction(t, newStore(t)) })
 	t.Run("PermissionUnknownObjectType", func(t *testing.T) { testPermissionUnknownObjectType(t, newStore(t)) })
+	t.Run("PermissionDelegatable", func(t *testing.T) { testPermissionDelegatable(t, newStore(t)) })
 	t.Run("PrincipalCRUD", func(t *testing.T) { testPrincipalCRUD(t, newStore(t)) })
 	t.Run("RoleCRUD", func(t *testing.T) { testRoleCRUD(t, newStore(t)) })
 	t.Run("GroupCRUD", func(t *testing.T) { testGroupCRUD(t, newStore(t)) })
@@ -263,6 +264,39 @@ func testPermissionTypedAction(t *testing.T, s model.Storage) {
 
 	if err := s.DeletePermission(ctx(), "p-read"); err != nil {
 		t.Fatalf("delete permission: %v", err)
+	}
+}
+
+// testPermissionDelegatable round-trips the delegatable flag (E3-S2) through the
+// backend: it must persist true and default to false, identically on both
+// stores.
+func testPermissionDelegatable(t *testing.T, s model.Storage) {
+	seedDocumentType(t, s)
+
+	// Flag set: must survive the round trip.
+	on := model.Permission{ID: "p-deleg", ObjectType: "document", Action: "read", Delegatable: true}
+	if err := s.PutPermission(ctx(), on); err != nil {
+		t.Fatalf("put delegatable permission: %v", err)
+	}
+	got, err := s.GetPermission(ctx(), "p-deleg")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !got.Delegatable {
+		t.Fatalf("delegatable flag not preserved: %+v", got)
+	}
+
+	// Flag unset: defaults to false.
+	off := model.Permission{ID: "p-plain", ObjectType: "document", Action: "write"}
+	if err := s.PutPermission(ctx(), off); err != nil {
+		t.Fatalf("put non-delegatable permission: %v", err)
+	}
+	got, err = s.GetPermission(ctx(), "p-plain")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Delegatable {
+		t.Fatalf("delegatable defaulted to true: %+v", got)
 	}
 }
 

@@ -429,6 +429,35 @@ func (e *Engine) evaluate(ctx context.Context, req Request, object identity.Iden
 	return decide(req, candidates), nil
 }
 
+// EffectiveGrants returns every grant that binds to principal within account:
+// the account-scoped grants for the principal's full subject set
+// ({principal} ∪ roles ∪ groups), exactly the set Check resolves over. It is the
+// delegation subsystem's (E3-S2) view of "what may this principal do here" — the
+// basis for the bestow subset rule — and is account-scoped, so a principal's
+// authority in one account never bleeds into a bestow stamped to another.
+//
+// It returns the grants verbatim (no action/object filtering); the caller pairs
+// each with its permission to apply the subset rule. An unknown principal
+// surfaces as APERTURE_NOT_FOUND; a storage fault as APERTURE_STORAGE.
+func (e *Engine) EffectiveGrants(ctx context.Context, account, principal string) ([]model.Grant, error) {
+	switch {
+	case account == "":
+		return nil, aerr.New(aerr.APERTURE_INVALID_INPUT, "engine: account is empty")
+	case principal == "":
+		return nil, aerr.New(aerr.APERTURE_INVALID_INPUT, "engine: principal is empty")
+	}
+	subjects, err := e.subjectSet(ctx, principal)
+	if err != nil {
+		return nil, err
+	}
+	grants, err := e.store.GrantsForSubjects(ctx, account, subjects)
+	if err != nil {
+		return nil, aerr.Wrap(aerr.APERTURE_STORAGE,
+			"engine: failed to load effective grants for principal", err)
+	}
+	return grants, nil
+}
+
 // subjectSet expands a principal into the set of subjects whose grants apply to
 // it: the principal itself, every role it is assigned, and every group it belongs
 // to. The expansion is the union {principal} ∪ roles ∪ groups.

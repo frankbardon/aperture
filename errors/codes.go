@@ -103,6 +103,19 @@ const (
 	// configured rule source cannot resolve. Raised before evaluation when the
 	// rule-backed inclusive/exclusive path looks up its rule.
 	APERTURE_RULE_NOT_FOUND Code = "APERTURE_RULE_NOT_FOUND"
+	// APERTURE_DELEGATION_DENIED — a delegator tried to bestow (or revoke) a grant
+	// that exceeds the authority they hold in the active account: it is not a
+	// subset of their own effective allow grants, they hold no "may delegate"
+	// right over the target object, or the grant is stamped to an account they are
+	// not a member of (a cross-account bestow). The Context "reason" names which
+	// of these failed. Bestow fails closed — when authority cannot be proven, it
+	// is denied.
+	APERTURE_DELEGATION_DENIED Code = "APERTURE_DELEGATION_DENIED"
+	// APERTURE_DELEGATION_NOT_DELEGATABLE — a delegator tried to bestow a grant on
+	// a permission that is not flagged delegatable. Delegation is opt-in per
+	// permission; an unflagged permission can never be handed on, regardless of
+	// the delegator's own authority.
+	APERTURE_DELEGATION_NOT_DELEGATABLE Code = "APERTURE_DELEGATION_NOT_DELEGATABLE"
 )
 
 // Metadata describes an Aperture code: the canonical human-readable Message and
@@ -248,6 +261,20 @@ var Registry = map[Code]Metadata{
 			"Confirm the rule reference exists in the configured rule source.",
 		},
 	},
+	APERTURE_DELEGATION_DENIED: {
+		Message: "the delegator may not bestow this grant",
+		Fixups: []string{
+			"Bestow only grants that are a subset of your own effective allow grants in the account (same action and scope strategy, an equal-or-more-specific object pattern).",
+			"Confirm you hold a 'may delegate' right whose object pattern covers the grant's object.",
+			"Bestow grants only within an account you are a member of; cross-account bestowal is rejected.",
+		},
+	},
+	APERTURE_DELEGATION_NOT_DELEGATABLE: {
+		Message: "the permission is not flagged delegatable",
+		Fixups: []string{
+			"Set Delegatable on the permission definition to allow it to be bestowed.",
+		},
+	},
 }
 
 // AllCodes is the registry every gate walks. Append new codes here; the
@@ -273,6 +300,8 @@ var AllCodes = []Code{
 	APERTURE_RULE_TYPE_ERROR,
 	APERTURE_RULE_EVAL,
 	APERTURE_RULE_NOT_FOUND,
+	APERTURE_DELEGATION_DENIED,
+	APERTURE_DELEGATION_NOT_DELEGATABLE,
 }
 
 // Message returns the canonical message for a code, or empty when the code has

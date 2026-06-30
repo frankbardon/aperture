@@ -135,6 +135,12 @@ type Permission struct {
 	Action string
 	// ScopeStrategy is an opaque scope-strategy reference, resolved in E2-S1.
 	ScopeStrategy string
+	// Delegatable marks the permission as eligible for bestowal (E3-S2): a
+	// delegator may only hand a grant on this permission to another principal
+	// when this flag is set. It is an opt-in, fail-closed gate — a permission is
+	// non-delegatable until explicitly flagged — so the right to delegate never
+	// leaks to permissions whose authors did not intend it.
+	Delegatable bool
 	// Description is optional human-readable documentation.
 	Description string
 	CreatedAt   time.Time

@@ -96,6 +96,14 @@ func decodeTime(s string) (time.Time, error) {
 	return t.UTC(), nil
 }
 
+// encodeBool stores a Go bool as SQLite's integer 0/1 convention.
+func encodeBool(b bool) int64 {
+	if b {
+		return 1
+	}
+	return 0
+}
+
 func wrapStorage(op string, err error) error {
 	return aerr.Wrap(aerr.APERTURE_STORAGE, op, err)
 }
@@ -378,9 +386,9 @@ func (s *Store) PutPermission(ctx context.Context, p model.Permission) error {
 		return err
 	}
 	_, err = s.db.ExecContext(ctx, `
-		INSERT OR REPLACE INTO permissions (id, object_type, action, scope_strategy, description, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		p.ID, p.ObjectType, p.Action, p.ScopeStrategy, p.Description, encodeTime(p.CreatedAt), encodeTime(p.UpdatedAt))
+		INSERT OR REPLACE INTO permissions (id, object_type, action, scope_strategy, delegatable, description, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		p.ID, p.ObjectType, p.Action, p.ScopeStrategy, encodeBool(p.Delegatable), p.Description, encodeTime(p.CreatedAt), encodeTime(p.UpdatedAt))
 	if err != nil {
 		return wrapStorage("put permission", err)
 	}
@@ -389,7 +397,7 @@ func (s *Store) PutPermission(ctx context.Context, p model.Permission) error {
 
 func (s *Store) GetPermission(ctx context.Context, id string) (model.Permission, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, object_type, action, scope_strategy, description, created_at, updated_at FROM permissions WHERE id = ?`, id)
+		`SELECT id, object_type, action, scope_strategy, delegatable, description, created_at, updated_at FROM permissions WHERE id = ?`, id)
 	p, err := scanPermission(row)
 	if isNoRows(err) {
 		return model.Permission{}, notFound("permission", id)
@@ -399,7 +407,7 @@ func (s *Store) GetPermission(ctx context.Context, id string) (model.Permission,
 
 func (s *Store) ListPermissions(ctx context.Context) ([]model.Permission, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, object_type, action, scope_strategy, description, created_at, updated_at FROM permissions ORDER BY id`)
+		`SELECT id, object_type, action, scope_strategy, delegatable, description, created_at, updated_at FROM permissions ORDER BY id`)
 	if err != nil {
 		return nil, wrapStorage("list permissions", err)
 	}
@@ -422,14 +430,16 @@ func (s *Store) DeletePermission(ctx context.Context, id string) error {
 func scanPermission(sc scanner) (model.Permission, error) {
 	var (
 		p                model.Permission
+		delegatable      int64
 		created, updated string
 	)
-	if err := sc.Scan(&p.ID, &p.ObjectType, &p.Action, &p.ScopeStrategy, &p.Description, &created, &updated); err != nil {
+	if err := sc.Scan(&p.ID, &p.ObjectType, &p.Action, &p.ScopeStrategy, &delegatable, &p.Description, &created, &updated); err != nil {
 		if isNoRows(err) {
 			return model.Permission{}, err
 		}
 		return model.Permission{}, wrapStorage("scan permission", err)
 	}
+	p.Delegatable = delegatable != 0
 	var err error
 	if p.CreatedAt, err = decodeTime(created); err != nil {
 		return model.Permission{}, err
