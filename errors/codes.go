@@ -26,6 +26,11 @@ const (
 	// APERTURE_INVALID_INPUT — caller-supplied input failed validation before
 	// any decision or mutation was attempted.
 	APERTURE_INVALID_INPUT Code = "APERTURE_INVALID_INPUT"
+	// APERTURE_IDENTITY_INVALID — an object-identity or pattern string is
+	// malformed: empty input or segment, a segment missing its `type:id` colon,
+	// an empty type/id component, or an illegal character. Raised by the
+	// identity grammar parser before the value can be matched or stored.
+	APERTURE_IDENTITY_INVALID Code = "APERTURE_IDENTITY_INVALID"
 	// APERTURE_NOT_FOUND — a referenced principal, role, object, or grant does
 	// not exist in the active account scope.
 	APERTURE_NOT_FOUND Code = "APERTURE_NOT_FOUND"
@@ -70,6 +75,14 @@ var Registry = map[Code]Metadata{
 			"Re-check the request shape against the command or API contract.",
 		},
 	},
+	APERTURE_IDENTITY_INVALID: {
+		Message: "object identity is malformed",
+		Fixups: []string{
+			"Use type:id segments joined by '/', e.g. account:acme/project:atlas/document:42.",
+			"Ensure no segment is empty and every segment carries a ':' with a non-empty type and id.",
+			"Remove illegal characters; types and ids allow letters, digits, and -._~@+ only ('*' marks a wildcard in patterns).",
+		},
+	},
 	APERTURE_NOT_FOUND: {
 		Message: "the referenced entity was not found",
 		Fixups: []string{
@@ -96,6 +109,7 @@ var AllCodes = []Code{
 	APERTURE_BOOT,
 	APERTURE_UNIMPLEMENTED,
 	APERTURE_INVALID_INPUT,
+	APERTURE_IDENTITY_INVALID,
 	APERTURE_NOT_FOUND,
 	APERTURE_STORAGE,
 	APERTURE_CONFIG_INVALID,
