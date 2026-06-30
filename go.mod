@@ -3,6 +3,7 @@ module github.com/frankbardon/aperture
 go 1.26.1
 
 require (
+	github.com/expr-lang/expr v1.17.8
 	github.com/frankbardon/pulse v0.24.0
 	github.com/urfave/cli/v3 v3.10.1
 	gopkg.in/yaml.v3 v3.0.1

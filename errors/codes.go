@@ -79,6 +79,30 @@ const (
 	// already carry an Aperture or pulse code (e.g. APERTURE_NOT_FOUND for an
 	// absent object) pass through unwrapped instead.
 	APERTURE_PROVIDER_FETCH Code = "APERTURE_PROVIDER_FETCH"
+	// APERTURE_RULE_INVALID — a rule AST is structurally malformed: an unknown
+	// node type, a logical node with the wrong child count, a comparison missing
+	// an operand, an empty/ill-typed literal, or a variable reference whose path
+	// is not a dotted identifier. Raised by AST validation before a rule can be
+	// compiled.
+	APERTURE_RULE_INVALID Code = "APERTURE_RULE_INVALID"
+	// APERTURE_RULE_UNKNOWN_VARIABLE — a rule references a variable whose root is
+	// not one of the exposed context roots (object, principal, account, action).
+	// Raised by AST validation before evaluation, so a typo'd or unbound variable
+	// is caught at compile time rather than silently reading nil.
+	APERTURE_RULE_UNKNOWN_VARIABLE Code = "APERTURE_RULE_UNKNOWN_VARIABLE"
+	// APERTURE_RULE_TYPE_ERROR — a rule fails the expression type-checker at
+	// compile time: a type-incompatible comparison, a non-boolean result, or a
+	// call to a function that is not registered. Surfaced before evaluation so an
+	// ill-typed rule never reaches the hot path.
+	APERTURE_RULE_TYPE_ERROR Code = "APERTURE_RULE_TYPE_ERROR"
+	// APERTURE_RULE_EVAL — a compiled rule failed at evaluation time: the
+	// expression runtime returned an error, or the result was not a boolean. The
+	// underlying cause is wrapped verbatim.
+	APERTURE_RULE_EVAL Code = "APERTURE_RULE_EVAL"
+	// APERTURE_RULE_NOT_FOUND — a scope strategy named a rule reference that the
+	// configured rule source cannot resolve. Raised before evaluation when the
+	// rule-backed inclusive/exclusive path looks up its rule.
+	APERTURE_RULE_NOT_FOUND Code = "APERTURE_RULE_NOT_FOUND"
 )
 
 // Metadata describes an Aperture code: the canonical human-readable Message and
@@ -189,6 +213,41 @@ var Registry = map[Code]Metadata{
 			"Return APERTURE_NOT_FOUND from the provider for an object that does not exist.",
 		},
 	},
+	APERTURE_RULE_INVALID: {
+		Message: "rule AST is malformed",
+		Fixups: []string{
+			"Give each logical node the right child count: and/or take two or more, not takes exactly one.",
+			"Give every comparison a left and right operand, and every literal a scalar value.",
+			"Write variable references as dotted identifier paths, e.g. object.classification.",
+		},
+	},
+	APERTURE_RULE_UNKNOWN_VARIABLE: {
+		Message: "rule references an unknown variable",
+		Fixups: []string{
+			"Reference variables under a known context root: object, principal, account, or action.",
+			"Check for a typo in the variable's root segment.",
+		},
+	},
+	APERTURE_RULE_TYPE_ERROR: {
+		Message: "rule failed expression type checking",
+		Fixups: []string{
+			"Compare compatible types and make the rule evaluate to a boolean.",
+			"Call only functions registered with the rules engine.",
+		},
+	},
+	APERTURE_RULE_EVAL: {
+		Message: "rule evaluation failed",
+		Fixups: []string{
+			"Inspect the wrapped cause for the underlying evaluation failure.",
+			"Ensure the rule expression yields a boolean for the supplied context.",
+		},
+	},
+	APERTURE_RULE_NOT_FOUND: {
+		Message: "the referenced rule was not found",
+		Fixups: []string{
+			"Confirm the rule reference exists in the configured rule source.",
+		},
+	},
 }
 
 // AllCodes is the registry every gate walks. Append new codes here; the
@@ -209,6 +268,11 @@ var AllCodes = []Code{
 	APERTURE_PROVIDER_INVALID,
 	APERTURE_PROVIDER_UNREGISTERED,
 	APERTURE_PROVIDER_FETCH,
+	APERTURE_RULE_INVALID,
+	APERTURE_RULE_UNKNOWN_VARIABLE,
+	APERTURE_RULE_TYPE_ERROR,
+	APERTURE_RULE_EVAL,
+	APERTURE_RULE_NOT_FOUND,
 }
 
 // Message returns the canonical message for a code, or empty when the code has
