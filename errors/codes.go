@@ -65,6 +65,20 @@ const (
 	// configured with a rule reference, but no RuleEvaluator is wired. Rule-backed
 	// scope membership lands in E2-S3; until then the rule path returns this code.
 	APERTURE_SCOPE_RULE_UNCONFIGURED Code = "APERTURE_SCOPE_RULE_UNCONFIGURED"
+	// APERTURE_PROVIDER_INVALID — an ObjectProvider registration is malformed: an
+	// empty object-type key, a nil provider, or a duplicate registration for a
+	// type that already has a provider. Raised by the provider registry at
+	// registration time, before any object metadata can be fetched.
+	APERTURE_PROVIDER_INVALID Code = "APERTURE_PROVIDER_INVALID"
+	// APERTURE_PROVIDER_UNREGISTERED — metadata for an object-type was requested
+	// (fetch, enumerate, or invalidate) but no ObjectProvider is registered for
+	// that type. The object-type is the identity's terminal segment type.
+	APERTURE_PROVIDER_UNREGISTERED Code = "APERTURE_PROVIDER_UNREGISTERED"
+	// APERTURE_PROVIDER_FETCH — a host ObjectProvider's Fetch/List/Query returned
+	// a plain (uncoded) error. The cause is wrapped verbatim; provider errors that
+	// already carry an Aperture or pulse code (e.g. APERTURE_NOT_FOUND for an
+	// absent object) pass through unwrapped instead.
+	APERTURE_PROVIDER_FETCH Code = "APERTURE_PROVIDER_FETCH"
 )
 
 // Metadata describes an Aperture code: the canonical human-readable Message and
@@ -154,6 +168,27 @@ var Registry = map[Code]Metadata{
 		Message:            "scope rule path requires a rule evaluator that is not configured",
 		FixupNotApplicable: true,
 	},
+	APERTURE_PROVIDER_INVALID: {
+		Message: "object provider registration is invalid",
+		Fixups: []string{
+			"Register a non-nil provider under a non-empty object-type key.",
+			"Register each object type at most once; check for a duplicate registration.",
+		},
+	},
+	APERTURE_PROVIDER_UNREGISTERED: {
+		Message: "no object provider is registered for the object type",
+		Fixups: []string{
+			"Register an ObjectProvider for the object type before fetching its metadata.",
+			"Confirm the object identity's terminal segment type matches a registered provider key.",
+		},
+	},
+	APERTURE_PROVIDER_FETCH: {
+		Message: "object provider returned an error",
+		Fixups: []string{
+			"Inspect the wrapped cause for the underlying provider failure.",
+			"Return APERTURE_NOT_FOUND from the provider for an object that does not exist.",
+		},
+	},
 }
 
 // AllCodes is the registry every gate walks. Append new codes here; the
@@ -171,6 +206,9 @@ var AllCodes = []Code{
 	APERTURE_SCOPE_UNKNOWN_STRATEGY,
 	APERTURE_SCOPE_LISTER_UNCONFIGURED,
 	APERTURE_SCOPE_RULE_UNCONFIGURED,
+	APERTURE_PROVIDER_INVALID,
+	APERTURE_PROVIDER_UNREGISTERED,
+	APERTURE_PROVIDER_FETCH,
 }
 
 // Message returns the canonical message for a code, or empty when the code has
