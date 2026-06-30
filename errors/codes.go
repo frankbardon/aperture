@@ -130,6 +130,18 @@ const (
 	// fails closed to the operator's own (un-elevated) authority rather than
 	// erroring. Either way an expired session never elevates.
 	APERTURE_IMPERSONATION_EXPIRED Code = "APERTURE_IMPERSONATION_EXPIRED"
+	// APERTURE_AUTHZ_DENIED — an actor attempted a model mutation without holding
+	// the admin authority tier that gates it: a system-tier (schema) mutation
+	// without effective system-admin authority over system:*, or an account-tier
+	// (grants/delegation) mutation without effective account-admin authority over
+	// account:<acct>/admin:* in the TARGET account. Account-admin authority is
+	// confined to its own account — an admin of one account is denied a mutation
+	// scoped to another. The authority is resolved through the ordinary engine (an
+	// effective-grant Check on the reserved admin action against the tier's
+	// authority identity), so the denial is auditable and explainable like any
+	// other decision. The gate fails closed — when the required tier cannot be
+	// proven, the mutation is refused.
+	APERTURE_AUTHZ_DENIED Code = "APERTURE_AUTHZ_DENIED"
 )
 
 // Metadata describes an Aperture code: the canonical human-readable Message and
@@ -303,6 +315,14 @@ var Registry = map[Code]Metadata{
 			"Start a fresh impersonation session; sessions are time-boxed and expire automatically.",
 		},
 	},
+	APERTURE_AUTHZ_DENIED: {
+		Message: "the actor lacks the admin authority tier required for this mutation",
+		Fixups: []string{
+			"Schema mutations (permission types, roles, object-types, providers, templates, rules) require system-admin authority: an allow grant on the admin action whose object covers system:*.",
+			"Grant and delegation mutations require account-admin authority in the TARGET account: an allow grant on the admin action whose object covers account:<acct>/admin:*.",
+			"Account-admin authority is confined to its own account; obtain authority in the account the mutation targets, or hold a broader (e.g. **) grant.",
+		},
+	},
 }
 
 // AllCodes is the registry every gate walks. Append new codes here; the
@@ -332,6 +352,7 @@ var AllCodes = []Code{
 	APERTURE_DELEGATION_NOT_DELEGATABLE,
 	APERTURE_IMPERSONATION_DENIED,
 	APERTURE_IMPERSONATION_EXPIRED,
+	APERTURE_AUTHZ_DENIED,
 }
 
 // Message returns the canonical message for a code, or empty when the code has
