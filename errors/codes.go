@@ -45,6 +45,26 @@ const (
 	// set. Typed-action validation rejects free-form actions before a permission
 	// can be persisted or granted.
 	APERTURE_ACTION_UNDECLARED Code = "APERTURE_ACTION_UNDECLARED"
+	// APERTURE_SCOPE_INVALID — a permission's scope-strategy reference is
+	// malformed: an unparseable spec, an unknown parameter, an empty value, or a
+	// strategy whose required configuration (e.g. an inclusive/exclusive id-list
+	// or rule) is missing. Raised by the scope resolver before a grant's object
+	// membership can be decided.
+	APERTURE_SCOPE_INVALID Code = "APERTURE_SCOPE_INVALID"
+	// APERTURE_SCOPE_UNKNOWN_STRATEGY — a grant's permission names a scope
+	// strategy key that is not registered in the active scope registry. Built-in
+	// keys are literal, implicit, inclusive, and exclusive; host code may register
+	// more.
+	APERTURE_SCOPE_UNKNOWN_STRATEGY Code = "APERTURE_SCOPE_UNKNOWN_STRATEGY"
+	// APERTURE_SCOPE_LISTER_UNCONFIGURED — an implicit or exclusive resolver was
+	// asked to enumerate ("all objects of the type"), but no ObjectLister is
+	// configured. Enumeration is supplied by the object provider in E2-S2; until
+	// then Members returns this code. Contains never needs the lister.
+	APERTURE_SCOPE_LISTER_UNCONFIGURED Code = "APERTURE_SCOPE_LISTER_UNCONFIGURED"
+	// APERTURE_SCOPE_RULE_UNCONFIGURED — an inclusive or exclusive resolver was
+	// configured with a rule reference, but no RuleEvaluator is wired. Rule-backed
+	// scope membership lands in E2-S3; until then the rule path returns this code.
+	APERTURE_SCOPE_RULE_UNCONFIGURED Code = "APERTURE_SCOPE_RULE_UNCONFIGURED"
 )
 
 // Metadata describes an Aperture code: the canonical human-readable Message and
@@ -113,6 +133,27 @@ var Registry = map[Code]Metadata{
 			"List the object type's actions to see the validated verb set.",
 		},
 	},
+	APERTURE_SCOPE_INVALID: {
+		Message: "scope strategy reference is malformed",
+		Fixups: []string{
+			"Use 'strategy' or 'strategy;param=value' form, e.g. inclusive;ids=account:acme/document:42.",
+			"Give an inclusive/exclusive strategy an 'ids' list or a 'rule' reference; implicit takes no configuration.",
+		},
+	},
+	APERTURE_SCOPE_UNKNOWN_STRATEGY: {
+		Message: "scope strategy is not registered",
+		Fixups: []string{
+			"Use a built-in strategy (literal, implicit, inclusive, exclusive) or register the custom key with the scope registry.",
+		},
+	},
+	APERTURE_SCOPE_LISTER_UNCONFIGURED: {
+		Message:            "scope enumeration requires an object lister that is not configured",
+		FixupNotApplicable: true,
+	},
+	APERTURE_SCOPE_RULE_UNCONFIGURED: {
+		Message:            "scope rule path requires a rule evaluator that is not configured",
+		FixupNotApplicable: true,
+	},
 }
 
 // AllCodes is the registry every gate walks. Append new codes here; the
@@ -126,6 +167,10 @@ var AllCodes = []Code{
 	APERTURE_STORAGE,
 	APERTURE_CONFIG_INVALID,
 	APERTURE_ACTION_UNDECLARED,
+	APERTURE_SCOPE_INVALID,
+	APERTURE_SCOPE_UNKNOWN_STRATEGY,
+	APERTURE_SCOPE_LISTER_UNCONFIGURED,
+	APERTURE_SCOPE_RULE_UNCONFIGURED,
 }
 
 // Message returns the canonical message for a code, or empty when the code has

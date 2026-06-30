@@ -42,6 +42,7 @@ import (
 	aerr "github.com/frankbardon/aperture/errors"
 	"github.com/frankbardon/aperture/identity"
 	"github.com/frankbardon/aperture/model"
+	"github.com/frankbardon/aperture/scope"
 )
 
 // Request is the input to Check: the principal asking, the action and object in
@@ -80,20 +81,28 @@ type Decision struct {
 // coverer answers "does this grant cover this object, and at what specificity?".
 // It is the seam scope strategies plug behind in E2: today a grant's object set
 // is a single literal pattern, tomorrow it is whatever a scope resolver yields,
-// and the resolution logic in Check is unaffected either way.
+// and the resolution logic in Check is unaffected either way. The grant's
+// permission is threaded through because a scope strategy is selected by the
+// permission's scope-strategy reference and bounded by its object type; the
+// literal default ignores it. The request supplies the principal/action context
+// a rule-backed strategy needs.
 type coverer interface {
 	// cover reports whether g applies to object and, when it does, the
-	// specificity at which it applies (higher = more specific). It returns an
-	// error only on a malformed grant pattern (an internal inconsistency, since
-	// PutGrant validates the pattern at write time).
-	cover(g model.Grant, object identity.Identity) (covered bool, specificity int, err error)
+	// specificity at which it applies (higher = more specific). perm is the
+	// grant's resolved permission (never nil when a candidate reached here). It
+	// returns an error on a malformed grant pattern or scope reference (an
+	// internal inconsistency, since writes validate them) or an unresolvable
+	// strategy.
+	cover(ctx context.Context, req Request, g model.Grant, perm *model.Permission, object identity.Identity) (covered bool, specificity int, err error)
 }
 
 // literalCoverer is the E1 coverer: it treats Grant.Object as a literal identity
 // pattern and matches it against the requested object with the identity matcher.
+// It is the default, so an engine constructed without scope options keeps exact
+// E1 behaviour.
 type literalCoverer struct{}
 
-func (literalCoverer) cover(g model.Grant, object identity.Identity) (bool, int, error) {
+func (literalCoverer) cover(_ context.Context, _ Request, g model.Grant, _ *model.Permission, object identity.Identity) (bool, int, error) {
 	pat, err := identity.ParsePattern(g.Object)
 	if err != nil {
 		// PutGrant validates the pattern, so reaching here means the stored grant
@@ -107,6 +116,66 @@ func (literalCoverer) cover(g model.Grant, object identity.Identity) (bool, int,
 	return true, identity.Specificity(pat), nil
 }
 
+// scopeCoverer consults a grant's pluggable scope resolver for object membership
+// instead of only literal pattern matching. It preserves E1 behaviour for grants
+// whose permission declares no strategy or the literal strategy: those still
+// resolve by pure pattern match, so the literal default is never penalised. For
+// any other strategy it parses the permission's scope reference, builds the
+// resolver from the registry, and asks it whether the object is a member. The
+// grant's pattern still supplies specificity, so the deny-overrides tiebreak is
+// unchanged regardless of strategy.
+type scopeCoverer struct {
+	registry *scope.Registry
+	deps     scope.Deps
+}
+
+func (c scopeCoverer) cover(ctx context.Context, req Request, g model.Grant, perm *model.Permission, object identity.Identity) (bool, int, error) {
+	ref := ""
+	objectType := ""
+	if perm != nil {
+		ref = perm.ScopeStrategy
+		objectType = perm.ObjectType
+	}
+	spec, err := scope.ParseSpec(ref)
+	if err != nil {
+		return false, 0, err
+	}
+
+	pat, err := identity.ParsePattern(g.Object)
+	if err != nil {
+		return false, 0, aerr.Wrapf(aerr.APERTURE_STORAGE, err,
+			"grant %s has an unparseable object pattern %q", g.ID, g.Object)
+	}
+	specificity := identity.Specificity(pat)
+
+	// Literal (or unset) strategy is the E1 path: pure pattern match, no resolver.
+	if spec.Strategy == scope.StrategyLiteral {
+		if !pat.Matches(object) {
+			return false, 0, nil
+		}
+		return true, specificity, nil
+	}
+
+	resolver, err := c.registry.Resolve(scope.GrantContext{
+		Pattern:    pat,
+		ObjectType: objectType,
+		Spec:       spec,
+		Principal:  req.Principal,
+		Action:     req.Action,
+	}, c.deps)
+	if err != nil {
+		return false, 0, err
+	}
+	covered, err := resolver.Contains(ctx, object)
+	if err != nil {
+		return false, 0, err
+	}
+	if !covered {
+		return false, 0, nil
+	}
+	return true, specificity, nil
+}
+
 // Engine is the Policy Decision Point. It is stateless beyond its storage handle
 // and coverer, and safe for concurrent use to whatever degree the underlying
 // Storage is.
@@ -115,11 +184,51 @@ type Engine struct {
 	coverer coverer
 }
 
-// New returns an Engine backed by store. The coverer defaults to the E1 literal
-// identity-pattern matcher.
-func New(store model.Storage) *Engine {
-	return &Engine{store: store, coverer: literalCoverer{}}
+// Option configures an Engine at construction. Options compose; the last one to
+// set a given facet wins.
+type Option func(*Engine)
+
+// New returns an Engine backed by store. With no options the coverer is the E1
+// literal identity-pattern matcher, preserving exact E1 behaviour. Pass
+// WithScopeResolution to consult a grant's pluggable scope resolver for object
+// membership.
+func New(store model.Storage, opts ...Option) *Engine {
+	e := &Engine{store: store, coverer: literalCoverer{}}
+	for _, opt := range opts {
+		opt(e)
+	}
+	return e
 }
+
+// WithScopeResolution makes the engine consult each grant's scope resolver — as
+// selected by its permission's scope-strategy reference and built from registry
+// — for object membership, instead of only literal pattern matching. Grants with
+// no strategy (or the literal strategy) still resolve by pattern match, so E1
+// behaviour is preserved. The optional ScopeDeps supply the object lister
+// (E2-S2) and rule evaluator (E2-S3) seams; omit them and the resolvers fall
+// back to inert defaults that report those dependencies are unconfigured.
+//
+// A nil registry is treated as scope.DefaultRegistry() so the three built-in
+// strategies are available out of the box.
+func WithScopeResolution(registry *scope.Registry, deps ...ScopeDeps) Option {
+	return func(e *Engine) {
+		reg := registry
+		if reg == nil {
+			reg = scope.DefaultRegistry()
+		}
+		var d scope.Deps
+		if len(deps) > 0 {
+			d = scope.Deps(deps[0])
+		}
+		e.coverer = scopeCoverer{registry: reg, deps: d}
+	}
+}
+
+// ScopeDeps are the runtime dependencies the scope resolvers may consult: the
+// object lister (E2-S2) and the rule evaluator (E2-S3). It mirrors scope.Deps so
+// callers do not import the scope package's seam types directly when they only
+// need to wire the engine.
+type ScopeDeps = scope.Deps
 
 // candidate is a grant that matched the request, tagged with the specificity at
 // which it applies.
@@ -166,7 +275,10 @@ func (e *Engine) Check(ctx context.Context, req Request) (Decision, error) {
 		if !ok {
 			continue
 		}
-		covered, spec, err := e.coverer.cover(g, object)
+		// actionMatches has populated permCache with a non-nil permission for a
+		// matched grant; the scope coverer needs it to select the strategy.
+		perm := permCache[g.PermissionID]
+		covered, spec, err := e.coverer.cover(ctx, req, g, perm, object)
 		if err != nil {
 			return Decision{}, err
 		}
