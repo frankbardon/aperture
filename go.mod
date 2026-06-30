@@ -5,6 +5,7 @@ go 1.26.1
 require (
 	github.com/frankbardon/pulse v0.24.0
 	github.com/urfave/cli/v3 v3.10.1
+	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.53.0
 )
 

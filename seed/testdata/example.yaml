@@ -1,0 +1,76 @@
+# Aperture example seed — the generic org -> project -> document domain.
+#
+# It models account "acme" with one project ("atlas") of documents. Engineering
+# can read everything under atlas; editors can additionally write; one document
+# ("secret") is carved out with a more-specific deny to demonstrate
+# deny-overrides + specificity. This fixture backs the CLI/HTTP demo and the
+# end-to-end test, and is the default model the `check` command loads when no
+# --seed is given.
+
+object_types:
+  - name: project
+    description: A workspace grouping documents.
+    actions: [read, write, delete]
+  - name: document
+    description: A protected document within a project.
+    actions: [read, write, delete, share]
+
+permissions:
+  - id: perm-doc-read
+    object_type: document
+    action: read
+  - id: perm-doc-write
+    object_type: document
+    action: write
+  - id: perm-doc-delete
+    object_type: document
+    action: delete
+
+principals:
+  - id: alice
+    kind: user
+    identity: user:alice
+    display_name: Alice (editor)
+    roles: [editor]
+  - id: bob
+    kind: user
+    identity: user:bob
+    display_name: Bob (viewer)
+    roles: [viewer]
+
+roles:
+  - id: editor
+    name: Editor
+    description: May read and write documents.
+  - id: viewer
+    name: Viewer
+    description: May read documents.
+
+groups:
+  - id: engineering
+    name: Engineering
+    description: Everyone on the engineering team.
+    members: [alice, bob]
+
+grants:
+  # Engineering may read every document under project atlas.
+  - id: g-eng-read-atlas
+    account: acme
+    subject: {kind: group, id: engineering}
+    permission: perm-doc-read
+    object: "account:acme/project:atlas/**"
+    effect: allow
+  # Editors may additionally write every document under project atlas.
+  - id: g-editor-write-atlas
+    account: acme
+    subject: {kind: role, id: editor}
+    permission: perm-doc-write
+    object: "account:acme/project:atlas/**"
+    effect: allow
+  # One document is sealed: a more-specific deny overrides the engineering read.
+  - id: g-deny-secret-read
+    account: acme
+    subject: {kind: group, id: engineering}
+    permission: perm-doc-read
+    object: "account:acme/project:atlas/document:secret"
+    effect: deny
