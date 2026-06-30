@@ -31,6 +31,8 @@ func NewApp(version string) *ucli.Command {
 			impersonateCommand(),
 			// Server.
 			serveCommand(),
+			// Read-only MCP surface (stdio).
+			mcpCommand(),
 		},
 	}
 }

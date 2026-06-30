@@ -343,6 +343,19 @@ func WithMembershipEnforcement() Option {
 	return func(e *Engine) { e.enforceMembership = true }
 }
 
+// WithStore returns a shallow copy of e that reads from store instead of e's own
+// storage handle, preserving the coverer, membership policy, and clock. It is the
+// READ-ONLY what-if seam (E4-S3 MCP Simulate / E6-S4 simulator): a caller layers
+// a hypothetical overlay over the live storage and evaluates Check / Explain /
+// Enumerate against the returned copy without ever writing — the engine performs
+// no writes, and a read-only overlay's mutators are inert. e itself is unchanged,
+// so the live engine and the transient what-if engine never interfere.
+func (e *Engine) WithStore(store model.Storage) *Engine {
+	clone := *e
+	clone.store = store
+	return &clone
+}
+
 // requireMembership reports whether the request may proceed under the active
 // membership policy. With enforcement off it always returns true. With
 // enforcement on it returns whether principal is a member of account; a storage
