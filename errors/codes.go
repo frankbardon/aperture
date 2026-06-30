@@ -40,6 +40,11 @@ const (
 	// APERTURE_CONFIG_INVALID — configuration (env vars or YAML) was read but is
 	// malformed or internally inconsistent.
 	APERTURE_CONFIG_INVALID Code = "APERTURE_CONFIG_INVALID"
+	// APERTURE_ACTION_UNDECLARED — a permission was declared against an action
+	// verb that the target object type does not declare in its validated verb
+	// set. Typed-action validation rejects free-form actions before a permission
+	// can be persisted or granted.
+	APERTURE_ACTION_UNDECLARED Code = "APERTURE_ACTION_UNDECLARED"
 )
 
 // Metadata describes an Aperture code: the canonical human-readable Message and
@@ -101,6 +106,13 @@ var Registry = map[Code]Metadata{
 			"Validate the YAML config and APERTURE_* env vars against the docs.",
 		},
 	},
+	APERTURE_ACTION_UNDECLARED: {
+		Message: "action is not declared on the object type",
+		Fixups: []string{
+			"Add the action verb to the object type's declared action set, or grant a verb the type already declares.",
+			"List the object type's actions to see the validated verb set.",
+		},
+	},
 }
 
 // AllCodes is the registry every gate walks. Append new codes here; the
@@ -113,6 +125,7 @@ var AllCodes = []Code{
 	APERTURE_NOT_FOUND,
 	APERTURE_STORAGE,
 	APERTURE_CONFIG_INVALID,
+	APERTURE_ACTION_UNDECLARED,
 }
 
 // Message returns the canonical message for a code, or empty when the code has
