@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/frankbardon/aperture/auth"
 	"github.com/frankbardon/aperture/engine"
 	aerr "github.com/frankbardon/aperture/errors"
 	"github.com/frankbardon/aperture/internal/server"
@@ -44,6 +45,11 @@ func serveCommand() *ucli.Command {
 				Name:  "store",
 				Usage: "sqlite DSN for the backing store (defaults to in-memory)",
 			},
+			&ucli.StringFlag{
+				Name:    "auth",
+				Usage:   "authenticator adapter: dev|oidc|parsec (overrides APERTURE_AUTH_MODE; defaults to dev — bearer is the principal id, no external IdP)",
+				Sources: ucli.EnvVars(auth.EnvMode),
+			},
 		},
 		Action: runServe,
 	}
@@ -58,7 +64,20 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 	}
 	defer func() { _ = store.Close() }()
 
-	handler := server.New(service.New(engine.New(store)))
+	// Construct the authenticator from configuration (env + the --auth flag), then
+	// apply it as request middleware so HTTP requests resolve to an Aperture
+	// principal. The default adapter is dev/static (bearer == principal id), so
+	// Aperture runs with NO external IdP; oidc and parsec are opt-in via config.
+	authCfg := auth.ConfigFromEnv()
+	if mode := cmd.String("auth"); mode != "" {
+		authCfg.Mode = auth.Mode(mode)
+	}
+	authn, err := authCfg.Build(ctx)
+	if err != nil {
+		return aerr.Wrap(aerr.APERTURE_BOOT, "cli: building the authenticator failed", err)
+	}
+
+	handler := server.Authenticate(authn, server.New(service.New(engine.New(store))))
 
 	addr := cmd.String("addr")
 	httpServer := &http.Server{

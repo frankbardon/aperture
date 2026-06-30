@@ -130,6 +130,19 @@ const (
 	// fails closed to the operator's own (un-elevated) authority rather than
 	// erroring. Either way an expired session never elevates.
 	APERTURE_IMPERSONATION_EXPIRED Code = "APERTURE_IMPERSONATION_EXPIRED"
+	// APERTURE_UNAUTHENTICATED — a request could not be resolved to a known
+	// principal: no credential was presented where one is required, or the
+	// configured authenticator could not derive a principal id from the presented
+	// credential (e.g. an empty bearer to the dev authenticator, or a verified
+	// token missing the configured principal claim). It is distinct from
+	// APERTURE_AUTHZ_DENIED — the caller is unknown, not under-privileged.
+	APERTURE_UNAUTHENTICATED Code = "APERTURE_UNAUTHENTICATED"
+	// APERTURE_INVALID_TOKEN — a presented bearer credential failed verification:
+	// a malformed JWT, a bad signature, an unknown/mismatched issuer or audience,
+	// an expired token, or a parsec-broker token that does not verify against the
+	// configured keyring. The credential was supplied but is not trustworthy, so
+	// the request is refused rather than treated as anonymous.
+	APERTURE_INVALID_TOKEN Code = "APERTURE_INVALID_TOKEN"
 	// APERTURE_AUTHZ_DENIED — an actor attempted a model mutation without holding
 	// the admin authority tier that gates it: a system-tier (schema) mutation
 	// without effective system-admin authority over system:*, or an account-tier
@@ -315,6 +328,22 @@ var Registry = map[Code]Metadata{
 			"Start a fresh impersonation session; sessions are time-boxed and expire automatically.",
 		},
 	},
+	APERTURE_UNAUTHENTICATED: {
+		Message: "the request could not be resolved to a known principal",
+		Fixups: []string{
+			"Present a credential: send an Authorization: Bearer <token> header.",
+			"With the dev/static authenticator the bearer IS the principal id; send a non-empty value.",
+			"Confirm the verified token carries the configured principal claim (APERTURE_AUTH_PRINCIPAL_CLAIM, default 'sub').",
+		},
+	},
+	APERTURE_INVALID_TOKEN: {
+		Message: "the presented bearer credential failed verification",
+		Fixups: []string{
+			"Confirm the token is a well-formed JWT signed by the configured issuer's keys.",
+			"Check the token issuer and audience match APERTURE_OIDC_ISSUER and APERTURE_OIDC_AUDIENCE, and that it has not expired.",
+			"For a parsec adapter, confirm the token was minted by the broker sharing the configured keyring/secret.",
+		},
+	},
 	APERTURE_AUTHZ_DENIED: {
 		Message: "the actor lacks the admin authority tier required for this mutation",
 		Fixups: []string{
@@ -352,6 +381,8 @@ var AllCodes = []Code{
 	APERTURE_DELEGATION_NOT_DELEGATABLE,
 	APERTURE_IMPERSONATION_DENIED,
 	APERTURE_IMPERSONATION_EXPIRED,
+	APERTURE_UNAUTHENTICATED,
+	APERTURE_INVALID_TOKEN,
 	APERTURE_AUTHZ_DENIED,
 }
 
