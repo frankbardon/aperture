@@ -1,4 +1,4 @@
-.PHONY: build run clean test fmt vet lint proto
+.PHONY: build run clean test bench fmt vet lint proto
 
 BINARY_NAME=aperture
 BUILD_DIR=bin
@@ -28,6 +28,21 @@ clean:
 
 test:
 	$(GO) test ./...
+
+# bench runs the performance benchmark suite in ./bench (INFORMATIONAL): it
+# prints ns/op, allocs/op, and the computed p99 (p99-ns) + sustained throughput
+# (checks/sec) for a cached Check on a sizable seeded model, with decision audit
+# both ON and OFF, plus the bounded Enumerate benchmark.
+#
+# The HARD NFR assertion (p99 cached Check < 1ms AND >= 10k checks/sec/instance)
+# is the gated test TestCheckNFR, kept out of the default `make test` so a
+# loaded CI machine never flakes the build. Run it explicitly:
+#
+#   APERTURE_BENCH_ASSERT=1 $(GO) test -run TestCheckNFR ./bench/
+#
+# See docs/benchmarks.md for the methodology and the latest committed numbers.
+bench:
+	$(GO) test -run '^$$' -bench=. -benchmem ./bench/
 
 fmt:
 	$(GO) fmt ./...

@@ -116,10 +116,10 @@ type coverer interface {
 // pattern and matches it against the requested object with the identity matcher.
 // It is the default, so an engine constructed without scope options keeps exact
 // E1 behaviour.
-type literalCoverer struct{}
+type literalCoverer struct{ cache *patternCache }
 
-func (literalCoverer) cover(_ context.Context, _ Request, g model.Grant, _ *model.Permission, object identity.Identity) (bool, int, error) {
-	pat, err := identity.ParsePattern(g.Object)
+func (c literalCoverer) cover(_ context.Context, _ Request, g model.Grant, _ *model.Permission, object identity.Identity) (bool, int, error) {
+	pat, err := c.cache.orParse(g.Object)
 	if err != nil {
 		// PutGrant validates the pattern, so reaching here means the stored grant
 		// is corrupt. Surface it rather than silently dropping the grant.
@@ -134,6 +134,16 @@ func (literalCoverer) cover(_ context.Context, _ Request, g model.Grant, _ *mode
 
 func (literalCoverer) members(_ context.Context, _ Request, g model.Grant, _ *model.Permission, query identity.Pattern) ([]identity.Identity, error) {
 	return literalMembers(g, query)
+}
+
+// pattern resolves a grant's object pattern through the cache when one is wired,
+// falling back to a direct parse for a zero-value coverer (defensive — New always
+// wires a cache). It centralises the cached-parse used by both coverers.
+func (c *patternCache) orParse(s string) (identity.Pattern, error) {
+	if c == nil {
+		return identity.ParsePattern(s)
+	}
+	return c.pattern(s)
 }
 
 // literalMembers yields a grant's concrete object for Enumerate. A literal grant
@@ -170,6 +180,7 @@ func literalMembers(g model.Grant, query identity.Pattern) ([]identity.Identity,
 type scopeCoverer struct {
 	registry *scope.Registry
 	deps     scope.Deps
+	cache    *patternCache
 }
 
 func (c scopeCoverer) cover(ctx context.Context, req Request, g model.Grant, perm *model.Permission, object identity.Identity) (bool, int, error) {
@@ -184,7 +195,7 @@ func (c scopeCoverer) cover(ctx context.Context, req Request, g model.Grant, per
 		return false, 0, err
 	}
 
-	pat, err := identity.ParsePattern(g.Object)
+	pat, err := c.cache.orParse(g.Object)
 	if err != nil {
 		return false, 0, aerr.Wrapf(aerr.APERTURE_STORAGE, err,
 			"grant %s has an unparseable object pattern %q", g.ID, g.Object)
@@ -230,7 +241,7 @@ func (c scopeCoverer) members(ctx context.Context, req Request, g model.Grant, p
 	if err != nil {
 		return nil, err
 	}
-	pat, err := identity.ParsePattern(g.Object)
+	pat, err := c.cache.orParse(g.Object)
 	if err != nil {
 		return nil, aerr.Wrapf(aerr.APERTURE_STORAGE, err,
 			"grant %s has an unparseable object pattern %q", g.ID, g.Object)
@@ -278,7 +289,7 @@ type Option func(*Engine)
 // WithScopeResolution to consult a grant's pluggable scope resolver for object
 // membership.
 func New(store model.Storage, opts ...Option) *Engine {
-	e := &Engine{store: store, coverer: literalCoverer{}, now: time.Now}
+	e := &Engine{store: store, coverer: literalCoverer{cache: newPatternCache()}, now: time.Now}
 	for _, opt := range opts {
 		opt(e)
 	}
@@ -320,7 +331,7 @@ func WithScopeResolution(registry *scope.Registry, deps ...ScopeDeps) Option {
 		if len(deps) > 0 {
 			d = scope.Deps(deps[0])
 		}
-		e.coverer = scopeCoverer{registry: reg, deps: d}
+		e.coverer = scopeCoverer{registry: reg, deps: d, cache: newPatternCache()}
 	}
 }
 
