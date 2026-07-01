@@ -18,8 +18,12 @@ frontend is pre-built, committed blobs behind `//go:embed`.
   `internal/server/static.go`). `index.html` is the shell; `css/bera.css` is the
   authoritative BERA styling; `js/app.js` is the shell Alpine component; per-screen
   components live alongside it (`js/crud.js` fills the Model section, E6-S2, with a
-  data-driven entity-CRUD component driving the Twirp entity RPCs); `vendor/` holds
-  the pre-built blobs (see `vendor/README.md` for pinned versions + regeneration).
+  data-driven entity-CRUD component driving the Twirp entity RPCs; `js/grants.js`
+  fills the Grants section, E6-S3, with a three-tab provisioning component — raw
+  grant management, template apply with a client-side preview + bulk provisioning,
+  and delegation bestow/revoke — over the grant / template / delegation RPCs);
+  `vendor/` holds the pre-built blobs (see `vendor/README.md` for pinned versions
+  + regeneration).
 - Served by `staticHandler()`, mounted **LAST** on the mux in `server.New`
   (`mux.Handle("/", …)`). net/http resolves by longest matching pattern, so the
   Twirp prefix, `POST /check`, and `GET /healthz` win over root `/` — the file
