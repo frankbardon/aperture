@@ -1,0 +1,418 @@
+syntax = "proto3";
+
+package aperture;
+option go_package = "github.com/frankbardon/aperture/internal/wire/rpc";
+
+// ApertureService is Aperture's full access-control RPC: the decision API
+// (Check / Enumerate / Explain, single and bulk) plus the model mutations
+// (CRUD for the RBAC entities, grants, delegation, and impersonation). It is
+// the Twirp mirror of the service.Service facade — every RPC is a thin
+// translation onto exactly one facade method, so HTTP / Twirp / CLI share one
+// code path with one auth + admin-tier policy.
+//
+// Wire-shape convention (mirrors orbit): simple, hot-path messages are typed
+// (Check / Enumerate carry their fields directly). Rich or nested shapes —
+// the model entities (with their timestamps) and the recursive decision Trace —
+// ride as a canonical JSON string in a `*_json` field rather than being modelled
+// in proto. This keeps the on-wire contract identical to the library's JSON
+// encoding, keeps the proto small, and sidesteps modelling self-referential
+// shapes (the rule AST) the brief flags as reflector-hostile.
+service ApertureService {
+  // ---- Decision API (open: no auth required, preserves the E1-S5 path) ----
+  rpc Check(CheckRequest) returns (Decision);
+  rpc CheckBatch(CheckBatchRequest) returns (CheckBatchResponse);
+  rpc Enumerate(EnumerateRequest) returns (EnumerateResponse);
+  rpc EnumerateBatch(EnumerateBatchRequest) returns (EnumerateBatchResponse);
+  rpc Explain(CheckRequest) returns (ExplainResponse);
+  rpc ExplainBatch(CheckBatchRequest) returns (ExplainBatchResponse);
+
+  // ---- Schema entities (reads require auth; writes require system-admin) ----
+  rpc PutObjectType(EntityRequest) returns (Empty);
+  rpc GetObjectType(GetRequest) returns (EntityResponse);
+  rpc ListObjectTypes(Empty) returns (EntityListResponse);
+  rpc DeleteObjectType(DeleteRequest) returns (Empty);
+
+  rpc PutPermission(EntityRequest) returns (Empty);
+  rpc GetPermission(GetRequest) returns (EntityResponse);
+  rpc ListPermissions(Empty) returns (EntityListResponse);
+  rpc DeletePermission(DeleteRequest) returns (Empty);
+
+  rpc PutPrincipal(EntityRequest) returns (Empty);
+  rpc GetPrincipal(GetRequest) returns (EntityResponse);
+  rpc ListPrincipals(Empty) returns (EntityListResponse);
+  rpc DeletePrincipal(DeleteRequest) returns (Empty);
+
+  rpc PutRole(EntityRequest) returns (Empty);
+  rpc GetRole(GetRequest) returns (EntityResponse);
+  rpc ListRoles(Empty) returns (EntityListResponse);
+  rpc DeleteRole(DeleteRequest) returns (Empty);
+
+  rpc PutGroup(EntityRequest) returns (Empty);
+  rpc GetGroup(GetRequest) returns (EntityResponse);
+  rpc ListGroups(Empty) returns (EntityListResponse);
+  rpc DeleteGroup(DeleteRequest) returns (Empty);
+
+  rpc PutAccount(EntityRequest) returns (Empty);
+  rpc GetAccount(GetRequest) returns (EntityResponse);
+  rpc ListAccounts(Empty) returns (EntityListResponse);
+  rpc DeleteAccount(DeleteRequest) returns (Empty);
+
+  // ---- Rules (definition writes require system-admin; reads require auth) ----
+  // Rules are GLOBAL schema (like object types and templates): the named,
+  // persisted rule-AST definitions the node editor (E7) authors and the
+  // rule-backed scope strategies (E2-S1) resolve. The AST rides as a model.Rule
+  // JSON in rule_json — the exact rules.Node serialization the editor and the
+  // state file share.
+  rpc PutRule(RuleRequest) returns (Empty);
+  rpc GetRule(GetRequest) returns (RuleResponse);
+  rpc ListRules(Empty) returns (RuleListResponse);
+  rpc DeleteRule(DeleteRequest) returns (Empty);
+  // ValidateRule compiles/validates a rule AST WITHOUT persisting it, so the node
+  // editor can check a rule before it saves. It returns Empty on success and an
+  // APERTURE_RULE_* coded error (surfaced on the canvas) on failure. It touches
+  // no storage and writes nothing; it requires an authenticated principal.
+  rpc ValidateRule(RuleRequest) returns (Empty);
+
+  // ---- Read-only what-if over a hypothetical overlay (E7-S3 live preview) ----
+  // Simulate / SimulateExplain render the decision (and full Explain trace) for a
+  // query as it WOULD be under a hypothetical overlay, WITHOUT persisting any of
+  // it. They back the rule editor's live preview: the overlay carries the UNSAVED
+  // rule being edited (rules_json) plus any synthetic grants/permissions/
+  // principals needed to exercise it, so an operator sees the would-be verdict for
+  // the edit before saving. Nothing is written and nothing is audited.
+  rpc Simulate(SimulateRequest) returns (Decision);
+  rpc SimulateExplain(SimulateRequest) returns (ExplainResponse);
+
+  // ---- Account-scoped entities (writes require account-admin) ----
+  rpc PutMembership(EntityRequest) returns (Empty);
+  rpc DeleteMembership(MembershipKeyRequest) returns (Empty);
+
+  rpc PutGrant(EntityRequest) returns (Empty);
+  rpc GetGrant(GetRequest) returns (EntityResponse);
+  rpc ListGrants(ListGrantsRequest) returns (EntityListResponse);
+  rpc DeleteGrant(DeleteRequest) returns (Empty);
+
+  // ---- Templates (definition writes require system-admin; apply is account-tier) ----
+  rpc PutTemplate(EntityRequest) returns (Empty);
+  rpc GetTemplate(TemplateKeyRequest) returns (EntityResponse);
+  rpc ListTemplates(Empty) returns (EntityListResponse);
+  rpc DeleteTemplate(TemplateKeyRequest) returns (Empty);
+  // ApplyTemplate expands a template transactionally into the target account and
+  // returns the applied grants (each as canonical JSON).
+  rpc ApplyTemplate(ApplyTemplateRequest) returns (EntityListResponse);
+
+  // ---- Bulk grant/revoke (account-tier, transactional) ----
+  rpc BulkPutGrants(BulkGrantsRequest) returns (Empty);
+  rpc BulkDeleteGrants(BulkDeleteGrantsRequest) returns (Empty);
+
+  // ---- Declarative state (E5-S2) ----
+  // Export serializes the whole model to one declarative state file as canonical
+  // JSON (system-admin tier read). Import applies such a file as an idempotent,
+  // transactional upsert (system-admin tier mutation).
+  rpc Export(ExportRequest) returns (ExportResponse);
+  rpc Import(ImportRequest) returns (Empty);
+
+  // ---- Audit query (E6-S4) ----
+  // QueryAudit returns the append-only audit events matching a filter, newest
+  // first. It is a gated READ (it records nothing): a system-admin may query the
+  // whole trail; an account-admin may query events scoped to their own account
+  // (the request's account filter). It backs the audit viewer (E6-S4).
+  rpc QueryAudit(QueryAuditRequest) returns (QueryAuditResponse);
+
+  // ---- Delegation (gated by the delegation subset rule, actor = delegator) ----
+  rpc Bestow(BestowRequest) returns (Empty);
+  rpc Revoke(RevokeRequest) returns (Empty);
+
+  // ---- Impersonation (gated by impersonation's own rule, actor = operator) ----
+  rpc ImpersonationStart(ImpersonationStartRequest) returns (ImpersonationSession);
+  rpc ImpersonationStop(ImpersonationStopRequest) returns (Empty);
+}
+
+message Empty {}
+
+// Actor carries the authenticated caller a mutation is attributed to: the
+// principal id and the active account. On the Twirp surface the principal is
+// overridden by the authenticated identity from the auth middleware; the
+// account is taken from the request.
+message Actor {
+  string principal = 1;
+  string account = 2;
+}
+
+// ---- Decision messages ----
+
+message CheckRequest {
+  string account = 1;
+  string principal = 2;
+  string action = 3;
+  string object = 4;
+}
+
+message Decision {
+  bool allow = 1;
+  string reason = 2;
+  repeated string deciding_grant_ids = 3;
+}
+
+message CheckBatchRequest {
+  repeated CheckRequest queries = 1;
+}
+
+// BatchDecision is one aligned item of a batch result: either a decision or an
+// error code+message for a per-item input-validation failure.
+message BatchDecision {
+  Decision decision = 1;
+  string error_code = 2;
+  string error_message = 3;
+}
+
+message CheckBatchResponse {
+  repeated BatchDecision results = 1;
+}
+
+message EnumerateRequest {
+  string account = 1;
+  string principal = 2;
+  string action = 3;
+  string pattern = 4;
+  int32 limit = 5;
+}
+
+message EnumerateResponse {
+  repeated string object_ids = 1;
+}
+
+message EnumerateBatchRequest {
+  repeated EnumerateRequest queries = 1;
+}
+
+message BatchEnumeration {
+  repeated string object_ids = 1;
+  string error_code = 2;
+  string error_message = 3;
+}
+
+message EnumerateBatchResponse {
+  repeated BatchEnumeration results = 1;
+}
+
+// ExplainResponse carries the engine Trace as canonical JSON (trace_json) — the
+// recursive/nested derivation shape is not modelled in proto.
+message ExplainResponse {
+  string trace_json = 1;
+}
+
+message BatchTrace {
+  string trace_json = 1;
+  string error_code = 2;
+  string error_message = 3;
+}
+
+message ExplainBatchResponse {
+  repeated BatchTrace results = 1;
+}
+
+// ---- Entity CRUD messages ----
+
+// EntityRequest carries a mutation's actor plus the entity body as canonical
+// JSON (the library's JSON encoding of the model.* struct).
+message EntityRequest {
+  Actor actor = 1;
+  string entity_json = 2;
+}
+
+// GetRequest names an entity by id (object types and permissions are keyed by
+// name/id; the facade routes per RPC).
+message GetRequest {
+  Actor actor = 1;
+  string id = 2;
+}
+
+message DeleteRequest {
+  Actor actor = 1;
+  string id = 2;
+}
+
+// EntityResponse returns one entity body as canonical JSON.
+message EntityResponse {
+  string entity_json = 1;
+}
+
+// EntityListResponse returns a list of entity bodies, each as canonical JSON.
+message EntityListResponse {
+  repeated string entities_json = 1;
+}
+
+// ---- Rule messages ----
+
+// RuleRequest carries a mutation's actor plus the rule body as canonical JSON
+// (the model.Rule shape: Name / Description / AST, the AST being the exact
+// rules.Node serialization). It backs PutRule and the non-persisting ValidateRule.
+message RuleRequest {
+  Actor actor = 1;
+  string rule_json = 2;
+}
+
+// RuleResponse returns one rule body as canonical JSON.
+message RuleResponse {
+  string rule_json = 1;
+}
+
+// RuleListResponse returns every stored rule, each as canonical JSON.
+message RuleListResponse {
+  repeated string rules_json = 1;
+}
+
+// SimulateRequest carries the actor, the decision query, and the hypothetical
+// overlay layered over the live model for a READ-ONLY what-if. rules_json are
+// overlay model.Rule definitions (the UNSAVED rule being edited shadows a stored
+// one of the same name); grants_json / permissions_json / principals_json are
+// synthetic entities that let the preview exercise the rule without persisting.
+// Nothing here is ever written.
+message SimulateRequest {
+  Actor actor = 1;
+  CheckRequest query = 2;
+  repeated string rules_json = 3;
+  repeated string grants_json = 4;
+  repeated string permissions_json = 5;
+  repeated string principals_json = 6;
+}
+
+message MembershipKeyRequest {
+  Actor actor = 1;
+  string principal_id = 2;
+  string account_id = 3;
+}
+
+message ListGrantsRequest {
+  Actor actor = 1;
+  string account_id = 2;
+}
+
+// ---- Template messages ----
+
+// TemplateKeyRequest names a template by (name, version). version <= 0 selects
+// the latest version for Get, and deletes every version for Delete.
+message TemplateKeyRequest {
+  Actor actor = 1;
+  string name = 2;
+  int32 version = 3;
+}
+
+// ApplyTemplateRequest applies template (name, version) into account, filling
+// the declared parameters with params and prefixing generated grant ids with
+// grant_id_prefix (optional). version <= 0 selects the latest version.
+message ApplyTemplateRequest {
+  Actor actor = 1;
+  string name = 2;
+  int32 version = 3;
+  string account = 4;
+  map<string, string> params = 5;
+  string grant_id_prefix = 6;
+}
+
+// ---- Bulk grant messages ----
+
+message BulkGrantsRequest {
+  Actor actor = 1;
+  repeated string grants_json = 2; // each a model.Grant as canonical JSON
+}
+
+message BulkDeleteGrantsRequest {
+  Actor actor = 1;
+  repeated string grant_ids = 2;
+}
+
+// ---- Declarative state messages (E5-S2) ----
+
+// ExportRequest carries only the actor; the whole model is read out. On the
+// Twirp surface the principal is the authenticated identity; actor.account is
+// where the system-admin authority is resolved.
+message ExportRequest {
+  Actor actor = 1;
+}
+
+// ExportResponse returns the whole model as one declarative state file, encoded
+// as canonical JSON (the seed.Document shape).
+message ExportResponse {
+  string document_json = 1;
+}
+
+// ImportRequest applies a declarative state file (document_json, the
+// seed.Document shape as JSON) as an idempotent transactional upsert.
+message ImportRequest {
+  Actor actor = 1;
+  string document_json = 2;
+}
+
+// ---- Audit query messages (E6-S4) ----
+
+// QueryAuditRequest carries the authenticated actor plus the AuditFilter fields
+// — every filter field is an optional narrowing predicate, ANDed together, and
+// an all-empty filter matches everything. On the Twirp surface the actor's
+// principal is the authenticated identity; actor.account is where the reader's
+// admin authority is resolved.
+message QueryAuditRequest {
+  Actor actor = 1;
+  // filter_actor narrows to events whose REAL actor equals this principal id.
+  string filter_actor = 2;
+  // account narrows to events scoped to this account. An account-admin (not a
+  // system-admin) MUST set it to their own account, which also gates the read.
+  string account = 3;
+  // event_type narrows to one category: "mutation" | "decision" |
+  // "impersonation" | "delegation".
+  string event_type = 4;
+  // outcome narrows to one result: "allow" | "deny" | "success" | "failure".
+  string outcome = 5;
+  // since / until are RFC3339 time bounds (since inclusive lower, until
+  // exclusive upper); empty means unbounded.
+  string since = 6;
+  string until = 7;
+  // limit caps the number of returned events; <= 0 means no cap.
+  int32 limit = 8;
+}
+
+// QueryAuditResponse returns the matching audit events newest-first, each a
+// model.AuditEvent as canonical JSON (the shape the audit viewer renders).
+message QueryAuditResponse {
+  repeated string events_json = 1;
+}
+
+// ---- Delegation messages ----
+
+message BestowRequest {
+  // delegator is the principal bestowing; on the Twirp surface it is overridden
+  // by the authenticated identity. grant_json is the model.Grant to bestow.
+  string delegator = 1;
+  string grant_json = 2;
+}
+
+message RevokeRequest {
+  string delegator = 1;
+  string grant_id = 2;
+}
+
+// ---- Impersonation messages ----
+
+message ImpersonationStartRequest {
+  string operator = 1;
+  string target = 2;
+  string account = 3;
+  string mode = 4; // "augment" | "become"
+}
+
+message ImpersonationSession {
+  string real_actor = 1;
+  string subject = 2;
+  string account = 3;
+  string mode = 4;
+  string started_at = 5;  // RFC3339
+  string expires_at = 6;  // RFC3339
+}
+
+message ImpersonationStopRequest {
+  string operator = 1;
+  // The session being discarded, echoed for symmetry/audit; impersonation
+  // sessions are stateless time-boxed values, so stop is a client-side discard.
+  ImpersonationSession session = 2;
+}

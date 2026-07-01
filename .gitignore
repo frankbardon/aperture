@@ -1,0 +1,39 @@
+# Environment
+.env
+.env.*
+!.env.dist
+
+# Build output
+bin/*
+!bin/.gitkeep
+
+# Local dev binary dropped at repo root
+/aperture
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+# Module vendor dir at the repo root only — anchored so it does not match an
+# embedded frontend vendor dir under static/vendor/ in later stories.
+/vendor/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Claude / planning scratch — never committed
+.claude/settings.local.json
+.planning/
+.worktrees/

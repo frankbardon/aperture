@@ -1,0 +1,1565 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Aperture · access control</title>
+    <!--
+      Vendored, committed pre-built blobs (no node build). See vendor/README.md
+      for versions + regeneration. bera.css is the authoritative BERA styling;
+      Tailwind/DaisyUI are available to later domain screens.
+    -->
+    <link rel="stylesheet" href="/css/bera.css" />
+    <script defer src="/js/app.js"></script>
+    <script defer src="/js/crud.js"></script>
+    <script defer src="/js/grants.js"></script>
+    <script defer src="/js/audit.js"></script>
+    <script defer src="/js/whatif.js"></script>
+    <script defer src="/js/portability.js"></script>
+    <script defer src="/js/rules-serializer.js"></script>
+    <script defer src="/js/rules.js"></script>
+    <script defer src="/vendor/alpine.min.js"></script>
+  </head>
+  <body>
+    <!--
+      Lucide icon sprite (stroke-only, 1.5px per BERA §7). Inlined so the binary
+      stays self-contained — no icon CDN, no icon JS. Add symbols here as the nav
+      grows; reference with <use href="#icon-…">.
+    -->
+    <svg width="0" height="0" style="position: absolute" aria-hidden="true">
+      <defs>
+        <g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <symbol id="icon-aperture" viewBox="0 0 24 24">
+            <circle cx="12" cy="12" r="10" />
+            <line x1="14.31" x2="20.05" y1="8" y2="17.94" />
+            <line x1="9.69" x2="21.17" y1="8" y2="8" />
+            <line x1="7.38" x2="13.12" y1="12" y2="2.06" />
+            <line x1="9.69" x2="3.95" y1="16" y2="6.06" />
+            <line x1="14.31" x2="2.83" y1="16" y2="16" />
+            <line x1="16.62" x2="10.88" y1="12" y2="21.94" />
+          </symbol>
+          <symbol id="icon-crud" viewBox="0 0 24 24">
+            <path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z" />
+            <path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65" />
+            <path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65" />
+          </symbol>
+          <symbol id="icon-grants" viewBox="0 0 24 24">
+            <path d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 0 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z" />
+            <circle cx="16.5" cy="7.5" r=".5" fill="currentColor" />
+          </symbol>
+          <symbol id="icon-audit" viewBox="0 0 24 24">
+            <path d="M15 12h-5" />
+            <path d="M15 8h-5" />
+            <path d="M19 17V5a2 2 0 0 0-2-2H4" />
+            <path d="M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3" />
+          </symbol>
+          <symbol id="icon-rules" viewBox="0 0 24 24">
+            <rect width="8" height="8" x="3" y="3" rx="2" />
+            <path d="M7 11v4a2 2 0 0 0 2 2h4" />
+            <rect width="8" height="8" x="13" y="13" rx="2" />
+          </symbol>
+          <symbol id="icon-whatif" viewBox="0 0 24 24">
+            <circle cx="12" cy="12" r="10" />
+            <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
+            <path d="M12 17h.01" />
+          </symbol>
+          <symbol id="icon-portability" viewBox="0 0 24 24">
+            <path d="M12 3v12" />
+            <path d="m8 11 4 4 4-4" />
+            <path d="M8 5H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-4" />
+          </symbol>
+        </g>
+      </defs>
+    </svg>
+
+    <div x-data="shell()" x-cloak>
+      <div class="shell">
+        <!-- Fixed left sidebar (~232px) -->
+        <aside class="shell__sidebar">
+          <div class="shell__brand">
+            <span class="shell__brand-mark">
+              <svg width="14" height="14"><use href="#icon-aperture" /></svg>
+            </span>
+            <span class="shell__wordmark">Aperture</span>
+          </div>
+          <nav class="shell__nav">
+            <div class="shell__nav-group">
+              <div class="shell__nav-heading">Access control</div>
+              <template x-for="section in sections" :key="section.id">
+                <a
+                  class="bera-nav-item"
+                  :class="{ 'bera-nav-item--active': active === section.id }"
+                  :href="section.route"
+                >
+                  <svg><use :href="'#icon-' + section.id" /></svg>
+                  <span x-text="section.label"></span>
+                </a>
+              </template>
+            </div>
+          </nav>
+        </aside>
+
+        <!-- Top utility bar (~52px) -->
+        <header class="shell__topbar">
+          <span class="shell__topbar-title" x-text="activeSection.label"></span>
+          <div class="shell__topbar-spacer"></div>
+          <template x-if="signedIn">
+            <div class="shell__identity">
+              <span>Signed in as</span>
+              <span class="shell__identity-id" x-text="principal"></span>
+              <button class="bera-btn bera-btn--secondary" @click="signOut()">Sign out</button>
+            </div>
+          </template>
+        </header>
+
+        <!-- Flex content area. The Model (crud) section is filled by E6-S2; the
+             other sections keep the shell placeholder until their story lands. -->
+        <main class="shell__content">
+          <!-- Model management (E6-S2): principals, roles, groups, permissions,
+               object types + their typed action sets. Its own Alpine scope. -->
+          <div x-show="active === 'crud'" x-data="crud()">
+            <div class="bera-section-head">
+              <h1 class="bera-h3">Model</h1>
+              <span class="bera-caption" x-show="account">
+                Account <span class="bera-mono" x-text="account"></span>
+              </span>
+            </div>
+
+            <!-- Not signed in: factual gate, no editing surface. -->
+            <template x-if="!principal">
+              <div class="bera-empty">
+                <p class="bera-body">Sign in to manage the model.</p>
+              </div>
+            </template>
+
+            <template x-if="principal">
+              <div>
+                <!-- Tier gate: read-only viewers are told why editing is hidden. -->
+                <template x-if="tierChecked && !canEdit">
+                  <div class="bera-alert bera-alert--info">
+                    <span>
+                      You are signed in as <span class="bera-mono" x-text="principal"></span>.
+                      Editing the model requires system-admin authority; you have read-only access.
+                    </span>
+                  </div>
+                </template>
+
+                <div class="bera-toolbar">
+                  <div class="bera-tabs">
+                    <template x-for="t in types" :key="t.key">
+                      <button
+                        class="bera-tab"
+                        :class="{ 'bera-tab--active': activeType === t.key }"
+                        @click="selectType(t.key)"
+                        x-text="t.label"
+                      ></button>
+                    </template>
+                  </div>
+                  <div class="bera-toolbar__spacer"></div>
+                  <template x-if="accounts.length > 1">
+                    <select class="bera-select" style="width: auto" x-model="account" @change="onAccountChange()">
+                      <template x-for="a in accounts" :key="a.ID">
+                        <option :value="a.ID" x-text="a.Name || a.ID"></option>
+                      </template>
+                    </select>
+                  </template>
+                  <button class="bera-btn bera-btn--secondary" @click="load()">Reload</button>
+                  <button
+                    class="bera-btn bera-btn--primary"
+                    x-show="canEdit"
+                    @click="openCreate()"
+                    x-text="'New ' + currentType.singular"
+                  ></button>
+                </div>
+
+                <template x-if="error">
+                  <div class="bera-alert bera-alert--danger">
+                    <span class="bera-alert__code" x-text="error.code"></span>
+                    <span x-text="error.msg"></span>
+                  </div>
+                </template>
+
+                <template x-if="loading">
+                  <p class="bera-body bera-muted">Loading.</p>
+                </template>
+
+                <template x-if="!loading && !error && rows.length === 0">
+                  <div class="bera-empty">
+                    <p class="bera-body" x-text="emptyText()"></p>
+                  </div>
+                </template>
+
+                <template x-if="!loading && rows.length > 0">
+                  <div class="bera-table-wrap">
+                    <table class="bera-table">
+                      <thead>
+                        <tr>
+                          <template x-for="col in currentType.columns" :key="col.key">
+                            <th x-text="col.label"></th>
+                          </template>
+                          <th style="text-align: right">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <template x-for="row in rows" :key="rowId(row)">
+                          <tr>
+                            <template x-for="col in currentType.columns" :key="col.key">
+                              <td :class="col.mono ? 'bera-cell-mono' : ''">
+                                <template x-if="col.badge">
+                                  <span
+                                    class="bera-badge"
+                                    :class="'bera-badge--' + String(row[col.key] || '').toLowerCase()"
+                                    x-text="row[col.key] || '—'"
+                                  ></span>
+                                </template>
+                                <template x-if="!col.badge">
+                                  <span x-text="cellText(row, col)"></span>
+                                </template>
+                              </td>
+                            </template>
+                            <td style="text-align: right">
+                              <template x-if="canEdit">
+                                <span class="bera-row-actions">
+                                  <button class="bera-linkbtn" @click="openEdit(row)">Edit</button>
+                                  <button class="bera-linkbtn bera-linkbtn--danger" @click="askDelete(row)">Delete</button>
+                                </span>
+                              </template>
+                              <template x-if="!canEdit">
+                                <span class="bera-muted">—</span>
+                              </template>
+                            </td>
+                          </tr>
+                        </template>
+                      </tbody>
+                    </table>
+                  </div>
+                </template>
+
+                <!-- Create / edit modal -->
+                <template x-if="modal.open">
+                  <div class="bera-scrim" @keydown.escape.window="closeModal()">
+                    <div class="bera-modal__panel">
+                      <h2 class="bera-modal__title" x-text="(modal.mode === 'create' ? 'New ' : 'Edit ') + currentType.singular"></h2>
+                      <p class="bera-caption" style="margin-bottom: 16px">Fields are validated against the API.</p>
+
+                      <template x-if="modal.error">
+                        <div class="bera-alert bera-alert--danger">
+                          <span class="bera-alert__code" x-text="modal.error.code"></span>
+                          <span x-text="modal.error.msg"></span>
+                        </div>
+                      </template>
+
+                      <form @submit.prevent="save()">
+                        <template x-for="field in currentType.fields" :key="field.key">
+                          <div class="bera-field">
+                            <label class="bera-label" x-text="field.label"></label>
+
+                            <template x-if="field.widget === 'text'">
+                              <input
+                                class="bera-input"
+                                :class="field.mono ? 'bera-cell-mono' : ''"
+                                x-model="modal.form[field.key]"
+                                :placeholder="field.placeholder || ''"
+                                :disabled="field.lockOnEdit && modal.mode === 'edit'"
+                              />
+                            </template>
+
+                            <template x-if="field.widget === 'textarea'">
+                              <textarea class="bera-textarea" x-model="modal.form[field.key]"></textarea>
+                            </template>
+
+                            <template x-if="field.widget === 'select'">
+                              <select class="bera-select" x-model="modal.form[field.key]">
+                                <template x-for="o in field.options" :key="o">
+                                  <option :value="o" x-text="o"></option>
+                                </template>
+                              </select>
+                            </template>
+
+                            <template x-if="field.widget === 'refselect'">
+                              <select class="bera-select" x-model="modal.form[field.key]">
+                                <option value="">Select an option</option>
+                                <template x-for="o in refOptions(field)" :key="o.value">
+                                  <option :value="o.value" x-text="o.label"></option>
+                                </template>
+                              </select>
+                            </template>
+
+                            <template x-if="field.widget === 'actionselect'">
+                              <select class="bera-select" x-model="modal.form[field.key]">
+                                <option value="">Select an action</option>
+                                <template x-for="a in actionOptions()" :key="a">
+                                  <option :value="a" x-text="a"></option>
+                                </template>
+                              </select>
+                            </template>
+
+                            <template x-if="field.widget === 'refchecks'">
+                              <div class="bera-checks">
+                                <template x-if="refOptions(field).length === 0">
+                                  <span class="bera-caption">No options available.</span>
+                                </template>
+                                <template x-for="o in refOptions(field)" :key="o.value">
+                                  <label class="bera-check" :class="(modal.form[field.key] || []).includes(o.value) ? 'bera-check--on' : ''">
+                                    <input type="checkbox" :checked="(modal.form[field.key] || []).includes(o.value)" @change="toggleRef(field.key, o.value)" />
+                                    <span class="bera-cell-mono" x-text="o.label"></span>
+                                  </label>
+                                </template>
+                              </div>
+                            </template>
+
+                            <template x-if="field.widget === 'taglist'">
+                              <input
+                                class="bera-input bera-cell-mono"
+                                x-model="modal.tagText[field.key]"
+                                placeholder="read, write, delete"
+                              />
+                            </template>
+
+                            <template x-if="field.widget === 'checkbox'">
+                              <label class="bera-check" :class="modal.form[field.key] ? 'bera-check--on' : ''">
+                                <input type="checkbox" x-model="modal.form[field.key]" />
+                                <span>Delegatable</span>
+                              </label>
+                            </template>
+
+                            <template x-if="field.hint">
+                              <p class="bera-field__hint" x-text="field.hint"></p>
+                            </template>
+                          </div>
+                        </template>
+
+                        <div class="bera-modal__foot">
+                          <button type="button" class="bera-btn bera-btn--secondary" @click="closeModal()">Cancel</button>
+                          <button type="submit" class="bera-btn bera-btn--primary" :disabled="modal.saving" x-text="modal.saving ? 'Saving' : 'Save'"></button>
+                        </div>
+                      </form>
+                    </div>
+                  </div>
+                </template>
+
+                <!-- Delete confirmation (state-of-the-world) -->
+                <template x-if="confirm.open">
+                  <div class="bera-scrim" @keydown.escape.window="confirm.open = false">
+                    <div class="bera-modal__panel" style="max-width: 460px">
+                      <h2 class="bera-modal__title">Confirm deletion</h2>
+                      <p class="bera-body" x-text="confirm.message"></p>
+                      <template x-if="confirm.error">
+                        <div class="bera-alert bera-alert--danger" style="margin-top: 16px">
+                          <span class="bera-alert__code" x-text="confirm.error.code"></span>
+                          <span x-text="confirm.error.msg"></span>
+                        </div>
+                      </template>
+                      <div class="bera-modal__foot">
+                        <button class="bera-btn bera-btn--secondary" @click="confirm.open = false">Cancel</button>
+                        <button class="bera-btn bera-btn--primary" :disabled="confirm.deleting" @click="doDelete()" x-text="confirm.deleting ? 'Deleting' : 'Delete'"></button>
+                      </div>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </template>
+          </div>
+
+          <!-- Provisioning (E6-S3): grant management, template apply + bulk, and
+               delegation. Its own Alpine scope over the Twirp facade. -->
+          <div x-show="active === 'grants'" x-data="grants()">
+            <div class="bera-section-head">
+              <h1 class="bera-h3">Grants</h1>
+              <span class="bera-caption" x-show="account">
+                Account <span class="bera-mono" x-text="account"></span>
+              </span>
+            </div>
+
+            <template x-if="!principal">
+              <div class="bera-empty">
+                <p class="bera-body">Sign in to manage grants, templates and delegation.</p>
+              </div>
+            </template>
+
+            <template x-if="principal">
+              <div>
+                <template x-if="tierChecked && !canGrant">
+                  <div class="bera-alert bera-alert--info">
+                    <span>
+                      You are signed in as <span class="bera-mono" x-text="principal"></span>.
+                      Provisioning grants requires account-admin authority in this account; you
+                      have read-only access. Bestowing a delegated subset of your own grants may
+                      still be permitted — the server decides.
+                    </span>
+                  </div>
+                </template>
+
+                <div class="bera-toolbar">
+                  <div class="bera-tabs">
+                    <template x-for="t in tabs" :key="t.key">
+                      <button
+                        class="bera-tab"
+                        :class="{ 'bera-tab--active': activeTab === t.key }"
+                        @click="selectTab(t.key)"
+                        x-text="t.label"
+                      ></button>
+                    </template>
+                  </div>
+                  <div class="bera-toolbar__spacer"></div>
+                  <template x-if="accounts.length > 1">
+                    <select class="bera-select" style="width: auto" x-model="account" @change="onAccountChange()">
+                      <template x-for="a in accounts" :key="a.ID">
+                        <option :value="a.ID" x-text="a.Name || a.ID"></option>
+                      </template>
+                    </select>
+                  </template>
+                  <button class="bera-btn bera-btn--secondary" @click="loadTab()">Reload</button>
+                </div>
+
+                <template x-if="error">
+                  <div class="bera-alert bera-alert--danger">
+                    <span class="bera-alert__code" x-text="error.code"></span>
+                    <span x-text="error.msg"></span>
+                  </div>
+                </template>
+
+                <template x-if="loading">
+                  <p class="bera-body bera-muted">Loading.</p>
+                </template>
+
+                <!-- ============ GRANTS TAB ============ -->
+                <div x-show="activeTab === 'grants'">
+                  <div class="bera-toolbar">
+                    <div class="bera-toolbar__spacer"></div>
+                    <button class="bera-btn bera-btn--primary" x-show="canGrant" @click="openCreateGrant()">New grant</button>
+                  </div>
+
+                  <template x-if="!loading && rows.length === 0">
+                    <div class="bera-empty"><p class="bera-body">No grants in this account yet.</p></div>
+                  </template>
+
+                  <template x-if="!loading && rows.length > 0">
+                    <div class="bera-table-wrap">
+                      <table class="bera-table">
+                        <thead>
+                          <tr>
+                            <th>Id</th><th>Subject</th><th>Permission</th><th>Object</th><th>Effect</th><th>Scope strategy</th>
+                            <th style="text-align: right">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <template x-for="g in rows" :key="g.ID">
+                            <tr>
+                              <td class="bera-cell-mono" x-text="g.ID"></td>
+                              <td class="bera-cell-mono" x-text="subjectText(g)"></td>
+                              <td class="bera-cell-mono" x-text="permLabel(g.PermissionID)"></td>
+                              <td class="bera-cell-mono" x-text="g.Object"></td>
+                              <td><span class="bera-badge" :class="'bera-badge--' + g.Effect" x-text="g.Effect"></span></td>
+                              <td class="bera-cell-mono" x-text="permScope(g.PermissionID) || '—'"></td>
+                              <td style="text-align: right">
+                                <template x-if="canGrant">
+                                  <span class="bera-row-actions">
+                                    <button class="bera-linkbtn" @click="openEditGrant(g)">Edit</button>
+                                    <button class="bera-linkbtn bera-linkbtn--danger" @click="askDeleteGrant(g)">Delete</button>
+                                  </span>
+                                </template>
+                                <template x-if="!canGrant"><span class="bera-muted">—</span></template>
+                              </td>
+                            </tr>
+                          </template>
+                        </tbody>
+                      </table>
+                    </div>
+                  </template>
+                </div>
+
+                <!-- ============ TEMPLATES TAB ============ -->
+                <div x-show="activeTab === 'templates'">
+                  <div class="bera-toolbar">
+                    <div class="bera-toolbar__spacer"></div>
+                    <button class="bera-btn bera-btn--primary" x-show="canDefineTemplate" @click="openCreateTemplate()">New template</button>
+                  </div>
+
+                  <template x-if="!loading && templates.length === 0">
+                    <div class="bera-empty"><p class="bera-body">No templates defined yet.</p></div>
+                  </template>
+
+                  <template x-if="!loading && templates.length > 0">
+                    <div class="bera-table-wrap">
+                      <table class="bera-table">
+                        <thead>
+                          <tr>
+                            <th>Name</th><th>Version</th><th>Parameters</th><th>Grants</th><th>Description</th>
+                            <th style="text-align: right">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <template x-for="t in templates" :key="t.Name + '-v' + t.Version">
+                            <tr>
+                              <td class="bera-cell-mono" x-text="t.Name"></td>
+                              <td class="bera-cell-mono" x-text="t.Version"></td>
+                              <td class="bera-cell-mono" x-text="(t.Params || []).map(p => p.Name).join(', ') || '—'"></td>
+                              <td x-text="(t.Grants || []).length"></td>
+                              <td x-text="t.Description || '—'"></td>
+                              <td style="text-align: right">
+                                <span class="bera-row-actions">
+                                  <button class="bera-linkbtn" x-show="canGrant" @click="openApply(t, 'single')">Apply</button>
+                                  <button class="bera-linkbtn" x-show="canGrant" @click="openApply(t, 'bulk')">Bulk apply</button>
+                                  <button class="bera-linkbtn" x-show="canDefineTemplate" @click="openEditTemplate(t)">Edit</button>
+                                  <button class="bera-linkbtn bera-linkbtn--danger" x-show="canDefineTemplate" @click="askDeleteTemplate(t)">Delete</button>
+                                </span>
+                              </td>
+                            </tr>
+                          </template>
+                        </tbody>
+                      </table>
+                    </div>
+                  </template>
+                </div>
+
+                <!-- ============ DELEGATION TAB ============ -->
+                <div x-show="activeTab === 'delegation'">
+                  <p class="bera-caption" style="margin: 8px 0 12px">
+                    Bestowing as <span class="bera-mono" x-text="principal"></span>. You may hand a
+                    delegatable subset of your own grants to another principal, scoped to
+                    <span class="bera-mono" x-text="account"></span>. The server enforces the subset,
+                    delegatable and may-delegate rules.
+                  </p>
+                  <template x-if="tierChecked && !hasDelegateRight()">
+                    <div class="bera-alert bera-alert--info">
+                      <span>You hold no may-delegate right in this account, so a bestow will be
+                        rejected. This is a hint; the server is the source of truth.</span>
+                    </div>
+                  </template>
+
+                  <template x-if="!loading && eligibleHeld().length === 0">
+                    <div class="bera-empty">
+                      <p class="bera-body">You hold no delegatable grants to bestow in this account.</p>
+                    </div>
+                  </template>
+
+                  <template x-if="!loading && eligibleHeld().length > 0">
+                    <div class="bera-table-wrap">
+                      <table class="bera-table">
+                        <thead>
+                          <tr>
+                            <th>Held grant</th><th>Subject</th><th>Permission</th><th>Object</th>
+                            <th style="text-align: right">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <template x-for="g in eligibleHeld()" :key="g.ID">
+                            <tr>
+                              <td class="bera-cell-mono" x-text="g.ID"></td>
+                              <td class="bera-cell-mono" x-text="subjectText(g)"></td>
+                              <td class="bera-cell-mono" x-text="permLabel(g.PermissionID)"></td>
+                              <td class="bera-cell-mono" x-text="g.Object"></td>
+                              <td style="text-align: right">
+                                <span class="bera-row-actions">
+                                  <button class="bera-linkbtn" @click="openBestow(g)">Bestow subset</button>
+                                  <button class="bera-linkbtn bera-linkbtn--danger" @click="askRevoke(g)">Revoke</button>
+                                </span>
+                              </td>
+                            </tr>
+                          </template>
+                        </tbody>
+                      </table>
+                    </div>
+                  </template>
+                </div>
+
+                <!-- ---- grant create/edit modal ---- -->
+                <template x-if="grantModal.open">
+                  <div class="bera-scrim" @keydown.escape.window="grantModal.open = false">
+                    <div class="bera-modal__panel">
+                      <h2 class="bera-modal__title" x-text="(grantModal.mode === 'create' ? 'New grant' : 'Edit grant')"></h2>
+                      <p class="bera-caption" style="margin-bottom: 16px">
+                        Grants are scoped to account <span class="bera-mono" x-text="account"></span>. Scope strategy is a
+                        property of the referenced permission.
+                      </p>
+                      <template x-if="grantModal.error">
+                        <div class="bera-alert bera-alert--danger">
+                          <span class="bera-alert__code" x-text="grantModal.error.code"></span>
+                          <span x-text="grantModal.error.msg"></span>
+                        </div>
+                      </template>
+                      <form @submit.prevent="saveGrant()">
+                        <div class="bera-field">
+                          <label class="bera-label">Grant id</label>
+                          <input class="bera-input bera-cell-mono" x-model="grantModal.form.ID" :disabled="grantModal.mode === 'edit'" placeholder="g-alice-doc" />
+                        </div>
+                        <div class="bera-field">
+                          <label class="bera-label">Subject kind</label>
+                          <select class="bera-select" x-model="grantModal.form.Subject.Kind">
+                            <option value="principal">principal</option>
+                            <option value="role">role</option>
+                            <option value="group">group</option>
+                          </select>
+                        </div>
+                        <div class="bera-field">
+                          <label class="bera-label">Subject</label>
+                          <select class="bera-select" x-model="grantModal.form.Subject.ID">
+                            <option value="">Select a subject</option>
+                            <template x-for="o in subjectOptions(grantModal.form.Subject.Kind)" :key="o.ID">
+                              <option :value="o.ID" x-text="o.ID + (o.Name ? ' (' + o.Name + ')' : '')"></option>
+                            </template>
+                          </select>
+                        </div>
+                        <div class="bera-field">
+                          <label class="bera-label">Scope strategy filter</label>
+                          <select class="bera-select" x-model="grantModal.strategyFilter">
+                            <template x-for="s in strategyOptions()" :key="s">
+                              <option :value="s" x-text="s === '' ? 'Any strategy' : s"></option>
+                            </template>
+                          </select>
+                          <p class="bera-field__hint">Narrows the permission list to permissions carrying this scope strategy.</p>
+                        </div>
+                        <div class="bera-field">
+                          <label class="bera-label">Permission</label>
+                          <select class="bera-select" x-model="grantModal.form.PermissionID">
+                            <option value="">Select a permission</option>
+                            <template x-for="p in filteredPermissions()" :key="p.ID">
+                              <option :value="p.ID" x-text="permLabel(p.ID)"></option>
+                            </template>
+                          </select>
+                        </div>
+                        <div class="bera-field">
+                          <label class="bera-label">Object pattern</label>
+                          <input class="bera-input bera-cell-mono" x-model="grantModal.form.Object" placeholder="account:demo/document:*" />
+                        </div>
+                        <div class="bera-field">
+                          <label class="bera-label">Effect</label>
+                          <select class="bera-select" x-model="grantModal.form.Effect">
+                            <option value="allow">allow</option>
+                            <option value="deny">deny</option>
+                          </select>
+                        </div>
+                        <div class="bera-modal__foot">
+                          <button type="button" class="bera-btn bera-btn--secondary" @click="grantModal.open = false">Cancel</button>
+                          <button type="submit" class="bera-btn bera-btn--primary" :disabled="grantModal.saving" x-text="grantModal.saving ? 'Saving' : 'Save'"></button>
+                        </div>
+                      </form>
+                    </div>
+                  </div>
+                </template>
+
+                <!-- ---- grant delete confirm ---- -->
+                <template x-if="confirm.open">
+                  <div class="bera-scrim" @keydown.escape.window="confirm.open = false">
+                    <div class="bera-modal__panel" style="max-width: 460px">
+                      <h2 class="bera-modal__title">Revoke grant</h2>
+                      <p class="bera-body">Delete grant <span class="bera-mono" x-text="confirm.grant.ID"></span> from account <span class="bera-mono" x-text="account"></span>?</p>
+                      <template x-if="confirm.error">
+                        <div class="bera-alert bera-alert--danger" style="margin-top: 16px">
+                          <span class="bera-alert__code" x-text="confirm.error.code"></span>
+                          <span x-text="confirm.error.msg"></span>
+                        </div>
+                      </template>
+                      <div class="bera-modal__foot">
+                        <button class="bera-btn bera-btn--secondary" @click="confirm.open = false">Cancel</button>
+                        <button class="bera-btn bera-btn--primary" :disabled="confirm.saving" @click="doDeleteGrant()" x-text="confirm.saving ? 'Deleting' : 'Delete'"></button>
+                      </div>
+                    </div>
+                  </div>
+                </template>
+
+                <!-- ---- template editor modal ---- -->
+                <template x-if="tmplModal.open">
+                  <div class="bera-scrim" @keydown.escape.window="tmplModal.open = false">
+                    <div class="bera-modal__panel" style="max-width: 1080px">
+                      <h2 class="bera-modal__title" x-text="tmplModal.mode === 'create' ? 'New template' : 'Edit template'"></h2>
+                      <p class="bera-caption" style="margin-bottom: 16px">
+                        Parameters are referenced as <span class="bera-mono">${name}</span> in grant subjects and objects.
+                      </p>
+                      <template x-if="tmplModal.error">
+                        <div class="bera-alert bera-alert--danger">
+                          <span class="bera-alert__code" x-text="tmplModal.error.code"></span>
+                          <span x-text="tmplModal.error.msg"></span>
+                        </div>
+                      </template>
+                      <form @submit.prevent="saveTemplate()">
+                        <div class="bera-field">
+                          <label class="bera-label">Name</label>
+                          <input class="bera-input bera-cell-mono" x-model="tmplModal.form.Name" :disabled="tmplModal.mode === 'edit'" placeholder="project-member" />
+                        </div>
+                        <div class="bera-field">
+                          <label class="bera-label">Version</label>
+                          <input class="bera-input" type="number" min="1" x-model.number="tmplModal.form.Version" />
+                        </div>
+                        <div class="bera-field">
+                          <label class="bera-label">Description</label>
+                          <textarea class="bera-textarea" x-model="tmplModal.form.Description"></textarea>
+                        </div>
+
+                        <label class="bera-label">Parameters</label>
+                        <template x-for="(p, i) in tmplModal.form.Params" :key="i">
+                          <div class="bera-toolbar" style="gap: 8px; margin-bottom: 8px">
+                            <input class="bera-input bera-cell-mono" style="flex: 1" x-model="p.Name" placeholder="name" />
+                            <select class="bera-select" style="width: auto" x-model="p.Type">
+                              <option value="segment">segment</option>
+                              <option value="string">string</option>
+                            </select>
+                            <input class="bera-input" style="flex: 1" x-model="p.Description" placeholder="description" />
+                            <button type="button" class="bera-linkbtn bera-linkbtn--danger" @click="removeParam(i)">Remove</button>
+                          </div>
+                        </template>
+                        <button type="button" class="bera-btn bera-btn--secondary" @click="addParam()" style="margin-bottom: 16px">Add parameter</button>
+
+                        <label class="bera-label">Grants</label>
+                        <template x-for="(g, i) in tmplModal.form.Grants" :key="i">
+                          <div class="bera-toolbar" style="gap: 8px; margin-bottom: 8px; flex-wrap: wrap">
+                            <select class="bera-select" style="width: auto" x-model="g.Subject.Kind">
+                              <option value="principal">principal</option>
+                              <option value="role">role</option>
+                              <option value="group">group</option>
+                            </select>
+                            <input class="bera-input bera-cell-mono" style="flex: 1" x-model="g.Subject.ID" placeholder="${who}" />
+                            <select class="bera-select" style="width: auto" x-model="g.PermissionID">
+                              <option value="">permission</option>
+                              <template x-for="p in refs.permissions" :key="p.ID">
+                                <option :value="p.ID" x-text="p.ID"></option>
+                              </template>
+                            </select>
+                            <input class="bera-input bera-cell-mono" style="flex: 1" x-model="g.Object" placeholder="account:${account}/document:*" />
+                            <select class="bera-select" style="width: auto" x-model="g.Effect">
+                              <option value="allow">allow</option>
+                              <option value="deny">deny</option>
+                            </select>
+                            <button type="button" class="bera-linkbtn bera-linkbtn--danger" @click="removeTemplateGrant(i)">Remove</button>
+                          </div>
+                        </template>
+                        <button type="button" class="bera-btn bera-btn--secondary" @click="addTemplateGrant()">Add grant</button>
+
+                        <div class="bera-modal__foot">
+                          <button type="button" class="bera-btn bera-btn--secondary" @click="tmplModal.open = false">Cancel</button>
+                          <button type="submit" class="bera-btn bera-btn--primary" :disabled="tmplModal.saving" x-text="tmplModal.saving ? 'Saving' : 'Save template'"></button>
+                        </div>
+                      </form>
+                    </div>
+                  </div>
+                </template>
+
+                <!-- ---- template delete confirm ---- -->
+                <template x-if="tmplConfirm.open">
+                  <div class="bera-scrim" @keydown.escape.window="tmplConfirm.open = false">
+                    <div class="bera-modal__panel" style="max-width: 460px">
+                      <h2 class="bera-modal__title">Delete template</h2>
+                      <p class="bera-body">Delete template <span class="bera-mono" x-text="tmplConfirm.tmpl.Name"></span> version <span class="bera-mono" x-text="tmplConfirm.tmpl.Version"></span>?</p>
+                      <template x-if="tmplConfirm.error">
+                        <div class="bera-alert bera-alert--danger" style="margin-top: 16px">
+                          <span class="bera-alert__code" x-text="tmplConfirm.error.code"></span>
+                          <span x-text="tmplConfirm.error.msg"></span>
+                        </div>
+                      </template>
+                      <div class="bera-modal__foot">
+                        <button class="bera-btn bera-btn--secondary" @click="tmplConfirm.open = false">Cancel</button>
+                        <button class="bera-btn bera-btn--primary" :disabled="tmplConfirm.saving" @click="doDeleteTemplate()" x-text="tmplConfirm.saving ? 'Deleting' : 'Delete'"></button>
+                      </div>
+                    </div>
+                  </div>
+                </template>
+
+                <!-- ---- template apply modal (single + bulk, with preview) ---- -->
+                <template x-if="apply.open">
+                  <div class="bera-scrim" @keydown.escape.window="apply.open = false">
+                    <div class="bera-modal__panel" style="max-width: 1080px">
+                      <h2 class="bera-modal__title">
+                        <span x-text="apply.mode === 'bulk' ? 'Bulk apply template' : 'Apply template'"></span>
+                        <span class="bera-mono" x-text="apply.name + ' v' + apply.version"></span>
+                      </h2>
+                      <p class="bera-caption" style="margin-bottom: 16px">
+                        Fill the parameters, review the expanded grants below, then apply.
+                        <span x-show="apply.mode === 'single'">Apply is transactional — all grants land or none do.</span>
+                        <span x-show="apply.mode === 'bulk'">Bulk provisioning writes every principal's grants in one atomic operation.</span>
+                      </p>
+                      <template x-if="apply.error">
+                        <div class="bera-alert bera-alert--danger">
+                          <span class="bera-alert__code" x-text="apply.error.code"></span>
+                          <span x-text="apply.error.msg"></span>
+                        </div>
+                      </template>
+
+                      <template x-if="apply.applied.length > 0">
+                        <div class="bera-alert bera-alert--info">
+                          <span>Applied <span x-text="apply.applied.length"></span> grant(s) to account <span class="bera-mono" x-text="apply.targetAccount"></span>.</span>
+                        </div>
+                      </template>
+
+                      <div class="bera-field">
+                        <label class="bera-label">Target account</label>
+                        <input class="bera-input bera-cell-mono" x-model="apply.targetAccount" @input="recomputePreview()" />
+                      </div>
+                      <div class="bera-field">
+                        <label class="bera-label">Grant id prefix (optional)</label>
+                        <input class="bera-input bera-cell-mono" x-model="apply.prefix" @input="recomputePreview()" :placeholder="apply.name + '-v' + apply.version" />
+                      </div>
+
+                      <!-- bulk: pick the per-principal parameter + the principals -->
+                      <template x-if="apply.mode === 'bulk'">
+                        <div>
+                          <div class="bera-field">
+                            <label class="bera-label">Per-principal parameter</label>
+                            <select class="bera-select" x-model="apply.subjectParam" @change="recomputePreview()">
+                              <template x-for="p in (apply.template.Params || [])" :key="p.Name">
+                                <option :value="p.Name" x-text="p.Name"></option>
+                              </template>
+                            </select>
+                            <p class="bera-field__hint">This parameter is filled with each selected principal's id.</p>
+                          </div>
+                          <div class="bera-field">
+                            <label class="bera-label">Principals to provision</label>
+                            <div class="bera-checks">
+                              <template x-for="p in refs.principals" :key="p.ID">
+                                <label class="bera-check" :class="apply.principals.includes(p.ID) ? 'bera-check--on' : ''">
+                                  <input type="checkbox" :checked="apply.principals.includes(p.ID)" @change="toggleBulkPrincipal(p.ID)" />
+                                  <span class="bera-cell-mono" x-text="p.ID"></span>
+                                </label>
+                              </template>
+                            </div>
+                          </div>
+                        </div>
+                      </template>
+
+                      <!-- the remaining declared parameters -->
+                      <template x-for="p in (apply.template.Params || [])" :key="p.Name">
+                        <div class="bera-field" x-show="!(apply.mode === 'bulk' && p.Name === apply.subjectParam)">
+                          <label class="bera-label" x-text="p.Name + ' (' + p.Type + ')'"></label>
+                          <input class="bera-input bera-cell-mono" x-model="apply.params[p.Name]" @input="recomputePreview()" :placeholder="p.Description || p.Name" />
+                        </div>
+                      </template>
+
+                      <label class="bera-label" style="margin-top: 12px">Preview — would-be grants</label>
+                      <template x-if="apply.preview.length === 0">
+                        <p class="bera-caption">Fill the parameters to preview the expanded grants.</p>
+                      </template>
+                      <template x-if="apply.preview.length > 0">
+                        <div class="bera-table-wrap">
+                          <table class="bera-table">
+                            <thead><tr><th>Id</th><th>Subject</th><th>Permission</th><th>Object</th><th>Effect</th></tr></thead>
+                            <tbody>
+                              <template x-for="(g, i) in apply.preview" :key="i">
+                                <tr>
+                                  <td class="bera-cell-mono" x-text="g.ID"></td>
+                                  <td class="bera-cell-mono" x-text="g.Subject.Kind + ':' + g.Subject.ID"></td>
+                                  <td class="bera-cell-mono" x-text="g.PermissionID"></td>
+                                  <td class="bera-cell-mono" x-text="g.Object"></td>
+                                  <td><span class="bera-badge" :class="'bera-badge--' + g.Effect" x-text="g.Effect"></span></td>
+                                </tr>
+                              </template>
+                            </tbody>
+                          </table>
+                        </div>
+                      </template>
+
+                      <div class="bera-modal__foot">
+                        <button type="button" class="bera-btn bera-btn--secondary" @click="apply.open = false">Close</button>
+                        <button
+                          type="button"
+                          class="bera-btn bera-btn--primary"
+                          :disabled="apply.applying || apply.preview.length === 0"
+                          @click="applyTemplate()"
+                          x-text="apply.applying ? 'Applying' : (apply.mode === 'bulk' ? 'Provision ' + apply.principals.length + ' principal(s)' : 'Apply template')"
+                        ></button>
+                      </div>
+                    </div>
+                  </div>
+                </template>
+
+                <!-- ---- bestow modal ---- -->
+                <template x-if="bestow.open">
+                  <div class="bera-scrim" @keydown.escape.window="bestow.open = false">
+                    <div class="bera-modal__panel">
+                      <h2 class="bera-modal__title">Bestow a delegated grant</h2>
+                      <p class="bera-caption" style="margin-bottom: 16px">
+                        You are handing a subset of your own authority to another principal, scoped to
+                        account <span class="bera-mono" x-text="account"></span>. Narrow the object to a
+                        more-specific pattern than the held grant.
+                      </p>
+                      <template x-if="bestow.error">
+                        <div class="bera-alert bera-alert--danger">
+                          <span class="bera-alert__code" x-text="bestow.error.code"></span>
+                          <span x-text="bestow.error.msg"></span>
+                        </div>
+                      </template>
+                      <form @submit.prevent="doBestow()">
+                        <div class="bera-field">
+                          <label class="bera-label">From held grant</label>
+                          <select class="bera-select" x-model="bestow.selectedHeldId" @change="onSelectHeld()">
+                            <option value="">Select one of your delegatable grants</option>
+                            <template x-for="g in eligibleHeld()" :key="g.ID">
+                              <option :value="g.ID" x-text="g.ID + ' — ' + permLabel(g.PermissionID) + ' over ' + g.Object"></option>
+                            </template>
+                          </select>
+                        </div>
+                        <div class="bera-field">
+                          <label class="bera-label">New grant id</label>
+                          <input class="bera-input bera-cell-mono" x-model="bestow.form.ID" placeholder="g-bob-atlas" />
+                        </div>
+                        <div class="bera-field">
+                          <label class="bera-label">Grantee kind</label>
+                          <select class="bera-select" x-model="bestow.form.Subject.Kind">
+                            <option value="principal">principal</option>
+                            <option value="role">role</option>
+                            <option value="group">group</option>
+                          </select>
+                        </div>
+                        <div class="bera-field">
+                          <label class="bera-label">Grantee</label>
+                          <select class="bera-select" x-model="bestow.form.Subject.ID">
+                            <option value="">Select a grantee</option>
+                            <template x-for="o in subjectOptions(bestow.form.Subject.Kind)" :key="o.ID">
+                              <option :value="o.ID" x-text="o.ID + (o.Name ? ' (' + o.Name + ')' : '')"></option>
+                            </template>
+                          </select>
+                        </div>
+                        <div class="bera-field">
+                          <label class="bera-label">Permission</label>
+                          <input class="bera-input bera-cell-mono" :value="permLabel(bestow.form.PermissionID)" disabled />
+                          <p class="bera-field__hint">Inherited from the held grant — a bestow may only hand on the same permission.</p>
+                        </div>
+                        <div class="bera-field">
+                          <label class="bera-label">Object pattern</label>
+                          <input class="bera-input bera-cell-mono" x-model="bestow.form.Object" placeholder="account:demo/project:atlas/document:42" />
+                        </div>
+                        <div class="bera-modal__foot">
+                          <button type="button" class="bera-btn bera-btn--secondary" @click="bestow.open = false">Cancel</button>
+                          <button type="submit" class="bera-btn bera-btn--primary" :disabled="bestow.saving" x-text="bestow.saving ? 'Bestowing' : 'Bestow'"></button>
+                        </div>
+                      </form>
+                    </div>
+                  </div>
+                </template>
+
+                <!-- ---- revoke confirm ---- -->
+                <template x-if="revokeConfirm.open">
+                  <div class="bera-scrim" @keydown.escape.window="revokeConfirm.open = false">
+                    <div class="bera-modal__panel" style="max-width: 460px">
+                      <h2 class="bera-modal__title">Revoke delegated grant</h2>
+                      <p class="bera-body">Revoke grant <span class="bera-mono" x-text="revokeConfirm.grant.ID"></span>? Revoke enforces the same authority as bestow.</p>
+                      <template x-if="revokeConfirm.error">
+                        <div class="bera-alert bera-alert--danger" style="margin-top: 16px">
+                          <span class="bera-alert__code" x-text="revokeConfirm.error.code"></span>
+                          <span x-text="revokeConfirm.error.msg"></span>
+                        </div>
+                      </template>
+                      <div class="bera-modal__foot">
+                        <button class="bera-btn bera-btn--secondary" @click="revokeConfirm.open = false">Cancel</button>
+                        <button class="bera-btn bera-btn--primary" :disabled="revokeConfirm.saving" @click="doRevoke()" x-text="revokeConfirm.saving ? 'Revoking' : 'Revoke'"></button>
+                      </div>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </template>
+          </div>
+
+          <!-- Audit viewer (E6-S4): a read-only queryable table over the append-
+               only audit trail. Its own Alpine scope over the Twirp facade. -->
+          <div x-show="active === 'audit'" x-data="audit()">
+            <div class="bera-section-head">
+              <h1 class="bera-h3">Audit</h1>
+              <span class="bera-caption" x-show="account">
+                Account <span class="bera-mono" x-text="account"></span>
+              </span>
+            </div>
+
+            <template x-if="!principal">
+              <div class="bera-empty">
+                <p class="bera-body">Sign in to query the audit trail.</p>
+              </div>
+            </template>
+
+            <template x-if="principal">
+              <div>
+                <template x-if="tierChecked && !canRead">
+                  <div class="bera-alert bera-alert--info">
+                    <span>
+                      You are signed in as <span class="bera-mono" x-text="principal"></span>.
+                      Reading the audit trail requires system-admin authority (the whole trail) or
+                      account-admin authority (this account only); you have neither, so the trail is
+                      empty for you.
+                    </span>
+                  </div>
+                </template>
+                <template x-if="tierChecked && !canReadAll && canReadAccount">
+                  <div class="bera-alert bera-alert--info">
+                    <span>
+                      As an account-admin you see only events scoped to account
+                      <span class="bera-mono" x-text="account"></span>.
+                    </span>
+                  </div>
+                </template>
+
+                <div class="bera-toolbar" style="flex-wrap: wrap; gap: 8px">
+                  <div class="bera-field" style="margin: 0">
+                    <label class="bera-label">Actor</label>
+                    <input class="bera-input bera-cell-mono" style="width: 160px" x-model="filter.actor" placeholder="principal id" @keydown.enter="load()" />
+                  </div>
+                  <div class="bera-field" style="margin: 0">
+                    <label class="bera-label">Event type</label>
+                    <select class="bera-select" style="width: auto" x-model="filter.eventType">
+                      <option value="">All</option>
+                      <template x-for="t in eventTypes" :key="t"><option :value="t" x-text="t"></option></template>
+                    </select>
+                  </div>
+                  <div class="bera-field" style="margin: 0">
+                    <label class="bera-label">Outcome</label>
+                    <select class="bera-select" style="width: auto" x-model="filter.outcome">
+                      <option value="">All</option>
+                      <template x-for="o in outcomes" :key="o"><option :value="o" x-text="o"></option></template>
+                    </select>
+                  </div>
+                  <div class="bera-field" style="margin: 0">
+                    <label class="bera-label">Since</label>
+                    <input class="bera-input" type="datetime-local" x-model="filter.since" />
+                  </div>
+                  <div class="bera-field" style="margin: 0">
+                    <label class="bera-label">Until</label>
+                    <input class="bera-input" type="datetime-local" x-model="filter.until" />
+                  </div>
+                  <div class="bera-field" style="margin: 0">
+                    <label class="bera-label">Limit</label>
+                    <input class="bera-input" type="number" min="1" style="width: 90px" x-model.number="filter.limit" />
+                  </div>
+                  <div class="bera-toolbar__spacer"></div>
+                  <template x-if="accounts.length > 1">
+                    <select class="bera-select" style="width: auto" x-model="account" @change="onAccountChange()">
+                      <template x-for="a in accounts" :key="a.ID">
+                        <option :value="a.ID" x-text="a.Name || a.ID"></option>
+                      </template>
+                    </select>
+                  </template>
+                  <button class="bera-btn bera-btn--secondary" @click="resetFilter()">Reset</button>
+                  <button class="bera-btn bera-btn--primary" @click="load()">Query</button>
+                </div>
+
+                <template x-if="error">
+                  <div class="bera-alert bera-alert--danger">
+                    <span class="bera-alert__code" x-text="error.code"></span>
+                    <span x-text="error.msg"></span>
+                  </div>
+                </template>
+
+                <template x-if="loading">
+                  <p class="bera-body bera-muted">Loading.</p>
+                </template>
+
+                <template x-if="!loading && !error && rows.length === 0">
+                  <div class="bera-empty"><p class="bera-body">No audit events match this query.</p></div>
+                </template>
+
+                <template x-if="!loading && rows.length > 0">
+                  <div class="bera-table-wrap">
+                    <table class="bera-table">
+                      <thead>
+                        <tr>
+                          <th>Time</th><th>Type</th><th>Action</th><th>Actor (real)</th>
+                          <th>Effective subject</th><th>Account</th><th>Target</th><th>Outcome</th><th>Reason</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <template x-for="ev in rows" :key="ev.ID">
+                          <tr>
+                            <td class="bera-cell-mono" x-text="when(ev)"></td>
+                            <td><span class="bera-badge" x-text="ev.EventType"></span></td>
+                            <td class="bera-cell-mono" x-text="dash(ev.Action)"></td>
+                            <td class="bera-cell-mono" x-text="dash(ev.Actor)"></td>
+                            <td class="bera-cell-mono" x-text="effectiveText(ev)"></td>
+                            <td class="bera-cell-mono" x-text="dash(ev.Account)"></td>
+                            <td class="bera-cell-mono" x-text="dash(ev.Target)"></td>
+                            <td><span class="bera-badge" :class="outcomeClass(ev)" x-text="ev.Outcome"></span></td>
+                            <td x-text="dash(ev.Reason)"></td>
+                          </tr>
+                        </template>
+                      </tbody>
+                    </table>
+                  </div>
+                </template>
+              </div>
+            </template>
+          </div>
+
+          <!-- What-if simulator (E6-S4): a read-only decision against the LIVE
+               model plus its full Explain trace. Its own Alpine scope. -->
+          <div x-show="active === 'whatif'" x-data="whatif()">
+            <div class="bera-section-head">
+              <h1 class="bera-h3">What-if</h1>
+              <span class="bera-caption" x-show="account">
+                Account <span class="bera-mono" x-text="account"></span>
+              </span>
+            </div>
+
+            <template x-if="!principal">
+              <div class="bera-empty">
+                <p class="bera-body">Sign in to simulate a decision.</p>
+              </div>
+            </template>
+
+            <template x-if="principal">
+              <div>
+                <p class="bera-caption" style="margin: 0 0 12px">
+                  Ask whether a principal would be allowed an action on an object, against the live
+                  model. This runs Check and Explain — read-only, no mutation.
+                </p>
+
+                <div class="bera-toolbar" style="flex-wrap: wrap; gap: 8px; align-items: flex-end">
+                  <div class="bera-field" style="margin: 0">
+                    <label class="bera-label">Principal</label>
+                    <input class="bera-input bera-cell-mono" style="width: 160px" x-model="form.principal" placeholder="alice" @keydown.enter="run()" />
+                  </div>
+                  <div class="bera-field" style="margin: 0">
+                    <label class="bera-label">Action</label>
+                    <input class="bera-input bera-cell-mono" style="width: 160px" x-model="form.action" placeholder="read" @keydown.enter="run()" />
+                  </div>
+                  <div class="bera-field" style="margin: 0; flex: 1; min-width: 240px">
+                    <label class="bera-label">Object</label>
+                    <input class="bera-input bera-cell-mono" x-model="form.object" placeholder="account:demo/document:42" @keydown.enter="run()" />
+                  </div>
+                  <template x-if="accounts.length > 1">
+                    <div class="bera-field" style="margin: 0">
+                      <label class="bera-label">Account</label>
+                      <select class="bera-select" style="width: auto" x-model="account">
+                        <template x-for="a in accounts" :key="a.ID">
+                          <option :value="a.ID" x-text="a.Name || a.ID"></option>
+                        </template>
+                      </select>
+                    </div>
+                  </template>
+                  <button class="bera-btn bera-btn--primary" :disabled="running" @click="run()" x-text="running ? 'Running' : 'Simulate'"></button>
+                </div>
+
+                <template x-if="error">
+                  <div class="bera-alert bera-alert--danger">
+                    <span class="bera-alert__code" x-text="error.code"></span>
+                    <span x-text="error.msg"></span>
+                  </div>
+                </template>
+
+                <!-- verdict -->
+                <template x-if="ran && decision">
+                  <div class="bera-alert" :class="decision.allow ? 'bera-alert--success' : 'bera-alert--danger'" style="margin-top: 16px">
+                    <span class="bera-alert__code" x-text="decision.allow ? 'ALLOW' : 'DENY'"></span>
+                    <span x-text="decision.reason"></span>
+                  </div>
+                </template>
+
+                <template x-if="ran && decidingIds().length > 0">
+                  <p class="bera-caption" style="margin-top: 8px">
+                    Deciding grants:
+                    <template x-for="(id, i) in decidingIds()" :key="id">
+                      <span><span class="bera-mono" x-text="id"></span><span x-show="i < decidingIds().length - 1">, </span></span>
+                    </template>
+                  </p>
+                </template>
+
+                <!-- trace -->
+                <template x-if="ran && trace">
+                  <div style="margin-top: 20px">
+                    <div class="bera-section-head" style="margin-bottom: 8px">
+                      <h2 class="bera-h4">Explain trace</h2>
+                      <span class="bera-caption">Max specificity <span class="bera-mono" x-text="trace.MaxSpecificity"></span></span>
+                    </div>
+
+                    <p class="bera-caption" style="margin-bottom: 8px">
+                      Expanded subject set:
+                      <template x-for="(s, i) in subjects()" :key="i">
+                        <span><span class="bera-mono" x-text="subjectText(s)"></span><span x-show="i < subjects().length - 1">, </span></span>
+                      </template>
+                      <span x-show="subjects().length === 0" class="bera-muted">none</span>
+                    </p>
+
+                    <template x-if="considered().length === 0">
+                      <div class="bera-empty"><p class="bera-body">No grants were considered for this subject set.</p></div>
+                    </template>
+
+                    <template x-if="considered().length > 0">
+                      <div class="bera-table-wrap">
+                        <table class="bera-table">
+                          <thead>
+                            <tr>
+                              <th>Grant</th><th>Subject</th><th>Permission</th><th>Effect</th><th>Object pattern</th>
+                              <th>Action</th><th>Strategy</th><th>Action match</th><th>Covered</th><th>Specificity</th>
+                              <th>Deciding</th><th>Outcome</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <template x-for="(g, i) in considered()" :key="g.GrantID + '-' + i">
+                              <tr :class="g.Deciding ? 'bera-row--active' : ''">
+                                <td class="bera-cell-mono" x-text="dash(g.GrantID)"></td>
+                                <td class="bera-cell-mono" x-text="subjectText(g.Subject)"></td>
+                                <td class="bera-cell-mono" x-text="dash(g.PermissionID)"></td>
+                                <td><span class="bera-badge" :class="'bera-badge--' + g.Effect" x-text="g.Effect"></span></td>
+                                <td class="bera-cell-mono" x-text="dash(g.ObjectPattern)"></td>
+                                <td class="bera-cell-mono" x-text="dash(g.Action)"></td>
+                                <td class="bera-cell-mono" x-text="dash(g.Strategy)"></td>
+                                <td x-text="yesno(g.ActionMatched)"></td>
+                                <td x-text="yesno(g.Covered)"></td>
+                                <td class="bera-cell-mono" x-text="g.Specificity"></td>
+                                <td x-text="yesno(g.Deciding)"></td>
+                                <td x-text="dash(g.Outcome)"></td>
+                              </tr>
+                            </template>
+                          </tbody>
+                        </table>
+                      </div>
+                    </template>
+                  </div>
+                </template>
+              </div>
+            </template>
+          </div>
+
+          <!-- Import / export (E6-S4): download the declarative model file, or
+               upload one with a preview diff before applying. Own Alpine scope. -->
+          <div x-show="active === 'portability'" x-data="portability()">
+            <div class="bera-section-head">
+              <h1 class="bera-h3">Import / export</h1>
+              <span class="bera-caption" x-show="account">
+                Account <span class="bera-mono" x-text="account"></span>
+              </span>
+            </div>
+
+            <template x-if="!principal">
+              <div class="bera-empty">
+                <p class="bera-body">Sign in to export or import the model.</p>
+              </div>
+            </template>
+
+            <template x-if="principal">
+              <div>
+                <template x-if="tierChecked && !canManage">
+                  <div class="bera-alert bera-alert--info">
+                    <span>
+                      You are signed in as <span class="bera-mono" x-text="principal"></span>.
+                      Exporting and importing the declarative model requires system-admin authority.
+                      The server is the source of truth and will reject an unauthorised action.
+                    </span>
+                  </div>
+                </template>
+
+                <template x-if="error">
+                  <div class="bera-alert bera-alert--danger">
+                    <span class="bera-alert__code" x-text="error.code"></span>
+                    <span x-text="error.msg"></span>
+                  </div>
+                </template>
+
+                <!-- EXPORT -->
+                <div class="bera-card" style="margin-bottom: 20px">
+                  <h2 class="bera-h4">Export</h2>
+                  <p class="bera-caption" style="margin: 4px 0 12px">
+                    Download the whole model — every RBAC entity, grants, templates and rules — as one
+                    canonical JSON document. Live host object metadata is deliberately excluded.
+                  </p>
+                  <button class="bera-btn bera-btn--primary" :disabled="loading" @click="exportModel()" x-text="loading ? 'Working' : 'Export model'"></button>
+                  <template x-if="exportSummary.length > 0">
+                    <div class="bera-table-wrap" style="margin-top: 12px">
+                      <table class="bera-table">
+                        <thead><tr><th>Collection</th><th style="text-align: right">Count</th></tr></thead>
+                        <tbody>
+                          <template x-for="s in exportSummary" :key="s.label">
+                            <tr><td x-text="s.label"></td><td class="bera-cell-mono" style="text-align: right" x-text="s.count"></td></tr>
+                          </template>
+                        </tbody>
+                      </table>
+                    </div>
+                  </template>
+                </div>
+
+                <!-- IMPORT -->
+                <div class="bera-card">
+                  <h2 class="bera-h4">Import</h2>
+                  <p class="bera-caption" style="margin: 4px 0 12px">
+                    Upload a declarative model file. Import is an idempotent, transactional upsert — it
+                    adds or updates every entity in the file and never deletes. Review the preview diff
+                    below, then apply.
+                  </p>
+                  <input class="bera-input" type="file" accept="application/json,.json" @change="onFile($event)" />
+
+                  <template x-if="importError">
+                    <div class="bera-alert bera-alert--danger" style="margin-top: 12px">
+                      <span class="bera-alert__code" x-text="importError.code"></span>
+                      <span x-text="importError.msg"></span>
+                    </div>
+                  </template>
+
+                  <template x-if="importDone">
+                    <div class="bera-alert bera-alert--success" style="margin-top: 12px">
+                      <span class="bera-alert__code">APPLIED</span>
+                      <span>Import applied. The preview is now empty because the model matches the file.</span>
+                    </div>
+                  </template>
+
+                  <!-- preview diff -->
+                  <template x-if="diff">
+                    <div style="margin-top: 16px">
+                      <p class="bera-body">
+                        Preview for <span class="bera-mono" x-text="importFile"></span>:
+                        <span class="bera-badge bera-badge--allow" x-text="diff.totalAdded + ' to add'"></span>
+                        <span class="bera-badge" x-text="diff.totalChanged + ' to change'"></span>
+                      </p>
+                      <template x-if="diff.empty">
+                        <p class="bera-caption">No changes — the uploaded file matches the current model (import would be a no-op).</p>
+                      </template>
+
+                      <template x-for="grp in diff.groups" :key="grp.key">
+                        <div x-show="grp.added.length > 0 || grp.changed.length > 0" style="margin-top: 12px">
+                          <label class="bera-label" x-text="grp.label"></label>
+                          <div class="bera-table-wrap">
+                            <table class="bera-table">
+                              <thead><tr><th>Change</th><th>Key</th></tr></thead>
+                              <tbody>
+                                <template x-for="a in grp.added" :key="'a-' + a.key">
+                                  <tr><td><span class="bera-badge bera-badge--allow">add</span></td><td class="bera-cell-mono" x-text="a.key"></td></tr>
+                                </template>
+                                <template x-for="c in grp.changed" :key="'c-' + c.key">
+                                  <tr><td><span class="bera-badge bera-badge--deny">change</span></td><td class="bera-cell-mono" x-text="c.key"></td></tr>
+                                </template>
+                              </tbody>
+                            </table>
+                          </div>
+                          <p class="bera-caption" x-show="grp.retained > 0" style="margin-top: 4px">
+                            <span class="bera-mono" x-text="grp.retained"></span> existing entr(ies) not in the file are retained (import never deletes).
+                          </p>
+                        </div>
+                      </template>
+
+                      <div class="bera-modal__foot" style="margin-top: 16px">
+                        <button class="bera-btn bera-btn--secondary" @click="resetImport()">Clear</button>
+                        <button class="bera-btn bera-btn--primary" :disabled="importing || diff.empty" @click="applyImport()" x-text="importing ? 'Applying' : 'Apply import'"></button>
+                      </div>
+                    </div>
+                  </template>
+                </div>
+              </div>
+            </template>
+          </div>
+
+          <!-- Rules (E7-S2): the Blueprints-style node editor over the E2-S3
+               pulse-expression rule AST. The palette adds AST nodes; typed
+               sockets wire them; the canvas pans/zooms/reroutes. The graph is
+               serialized to and from the exact rules.Node JSON by the pure
+               serializer (js/rules-serializer.js) — there is no second format.
+               window.blueprintEditor exposes toAST/fromAST/validate for E7-S3. -->
+          <template x-if="active === 'rules'">
+            <div x-data="rules()">
+              <div class="bera-section-head">
+                <h1 class="bera-h3">Rules</h1>
+                <span class="bera-caption">Node editor · pulse-expression AST</span>
+              </div>
+              <p class="bera-caption" style="margin: 0 0 12px">
+                Build a rule as a graph of nodes over object metadata and the
+                principal, account and action context. The graph serializes to
+                the same rule AST the engine evaluates and the state file
+                persists — the editor is a view over that one format. Structural
+                checks run here as you edit; full type-checking runs on the
+                server when you save (<span class="bera-mono">E7-S3</span>).
+              </p>
+
+              <template x-if="error">
+                <div class="bera-alert bera-alert--danger">
+                  <span class="bera-alert__code">RULE</span>
+                  <span x-text="error"></span>
+                </div>
+              </template>
+
+              <!-- Load / save / validate toolbar. Editing is SYSTEM tier: the Save
+                   button is shown only to a system-admin (canEdit, probed via the
+                   open Check RPC); a non-admin still loads, validates and previews.
+                   Server validation and save surface their APERTURE_* code + msg. -->
+              <div class="bera-card" style="padding: 12px; margin-bottom: 12px">
+                <div style="display: grid; grid-template-columns: 1fr 1fr auto; gap: 12px; align-items: end">
+                  <div class="bera-field">
+                    <label class="bera-label" for="rule-name">Rule name</label>
+                    <input class="bera-input bera-mono" id="rule-name" type="text" autocomplete="off"
+                           placeholder="quarantine-rule" x-model="ruleName" />
+                  </div>
+                  <div class="bera-field">
+                    <label class="bera-label" for="rule-load">Load existing</label>
+                    <select class="bera-input" id="rule-load" @change="loadRule($event.target.value); $event.target.value=''">
+                      <option value="">Select a rule…</option>
+                      <template x-for="r in ruleList" :key="r.Name">
+                        <option :value="r.Name" x-text="r.Name"></option>
+                      </template>
+                    </select>
+                  </div>
+                  <div style="display: flex; gap: 8px">
+                    <button type="button" class="bera-btn bera-btn--secondary"
+                            @click="serverValidate()" :disabled="validating || booting"
+                            x-text="validating ? 'Validating…' : 'Validate'"></button>
+                    <button type="button" class="bera-btn bera-btn--primary"
+                            x-show="canEdit" @click="save()" :disabled="saving || booting"
+                            x-text="saving ? 'Saving…' : 'Save'"></button>
+                  </div>
+                </div>
+                <div class="bera-field" style="margin-top: 12px">
+                  <label class="bera-label" for="rule-desc">Description</label>
+                  <input class="bera-input" id="rule-desc" type="text" autocomplete="off"
+                         placeholder="Optional documentation" x-model="description" />
+                </div>
+                <p class="bera-caption" x-show="tierChecked && !canEdit" style="margin: 8px 0 0">
+                  You are signed in as a non-admin: you can load, validate and preview
+                  rules, but saving requires system-admin authority.
+                </p>
+                <template x-if="status">
+                  <div class="bera-alert" :class="status.kind === 'ok' ? 'bera-alert--success' : 'bera-alert--danger'"
+                       style="margin-top: 12px">
+                    <span class="bera-alert__code" x-text="status.code || (status.kind === 'ok' ? 'OK' : 'RULE')"></span>
+                    <span x-text="status.msg"></span>
+                  </div>
+                </template>
+              </div>
+
+              <div class="bera-rule-editor" style="display: grid; grid-template-columns: 200px 1fr; gap: 12px; align-items: start">
+                <!-- Palette -->
+                <div class="bera-card" style="padding: 12px">
+                  <p class="bera-label" style="margin-bottom: 8px">Palette</p>
+                  <template x-for="grp in palette" :key="grp.group">
+                    <div style="margin-bottom: 12px">
+                      <p class="bera-caption" style="margin: 0 0 6px" x-text="grp.group"></p>
+                      <div style="display: flex; flex-direction: column; gap: 6px">
+                        <template x-for="item in grp.items" :key="item.kind">
+                          <button
+                            type="button"
+                            class="bera-btn bera-btn--secondary"
+                            style="justify-content: flex-start"
+                            @click="add(item.kind)"
+                            x-text="item.label"
+                          ></button>
+                        </template>
+                      </div>
+                    </div>
+                  </template>
+                  <div style="display: flex; flex-direction: column; gap: 6px; margin-top: 8px; border-top: 1px solid var(--color-border); padding-top: 12px">
+                    <button type="button" class="bera-btn bera-btn--secondary" @click="zoomToFit()">Fit to view</button>
+                    <button type="button" class="bera-btn bera-btn--secondary" @click="clearCanvas()">Clear canvas</button>
+                  </div>
+                </div>
+
+                <!-- Canvas + validation -->
+                <div>
+                  <div class="bera-card" style="padding: 0; overflow: hidden">
+                    <div
+                      x-ref="canvas"
+                      class="rete-canvas"
+                      style="position: relative; width: 100%; height: 480px; background: var(--color-surface-2)"
+                    >
+                      <template x-if="booting">
+                        <p class="bera-caption" style="padding: 16px">Loading the canvas.</p>
+                      </template>
+                    </div>
+                  </div>
+
+                  <!-- Inline structural validation (client-side; AST shape + unknown
+                       variable roots). Full validation is the engine's, in E7-S3. -->
+                  <div style="margin-top: 12px">
+                    <template x-if="!booting && valid">
+                      <p class="bera-caption" style="margin: 0; color: var(--color-success, var(--neutral-700))">
+                        The rule is structurally valid. Server validation runs on save.
+                      </p>
+                    </template>
+                    <template x-if="!booting && !valid && problems.length">
+                      <div class="bera-card" style="padding: 12px">
+                        <p class="bera-label" style="margin-bottom: 8px">Validation</p>
+                        <ul style="margin: 0; padding-left: 16px; display: flex; flex-direction: column; gap: 4px">
+                          <template x-for="(p, i) in problems" :key="i">
+                            <li class="bera-caption">
+                              <span class="bera-mono" x-text="p.code"></span>
+                              <span x-text="' · ' + p.path + ' — ' + p.message"></span>
+                            </li>
+                          </template>
+                        </ul>
+                      </div>
+                    </template>
+                  </div>
+
+                  <!-- Live what-if preview (READ-ONLY). Renders the would-be
+                       decision + Explain trace for the rule CURRENTLY on the
+                       canvas against a sample principal/object, WITHOUT saving:
+                       the unsaved rule is layered over the live model as a
+                       Simulate overlay, shadowing any stored rule of the same
+                       name, so the preview reflects the edit against grants that
+                       reference this rule. Nothing is persisted. -->
+                  <div class="bera-card" style="padding: 12px; margin-top: 12px">
+                    <p class="bera-label" style="margin-bottom: 4px">Live what-if preview</p>
+                    <p class="bera-caption" style="margin: 0 0 12px">
+                      Read-only. Previews the decision the rule on the canvas would
+                      produce for a sample principal and object — without saving it.
+                    </p>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 8px; align-items: end">
+                      <div class="bera-field">
+                        <label class="bera-label" for="rule-wi-principal">Principal</label>
+                        <input class="bera-input bera-mono" id="rule-wi-principal" type="text" autocomplete="off"
+                               placeholder="user:alice" x-model="preview.principal" />
+                      </div>
+                      <div class="bera-field">
+                        <label class="bera-label" for="rule-wi-action">Action</label>
+                        <input class="bera-input" id="rule-wi-action" type="text" autocomplete="off"
+                               placeholder="read" x-model="preview.action" />
+                      </div>
+                      <div class="bera-field">
+                        <label class="bera-label" for="rule-wi-object">Object</label>
+                        <input class="bera-input bera-mono" id="rule-wi-object" type="text" autocomplete="off"
+                               placeholder="account:acme/document:1" x-model="preview.object" />
+                      </div>
+                      <button type="button" class="bera-btn bera-btn--secondary"
+                              @click="runPreview()" :disabled="previewing || booting"
+                              x-text="previewing ? 'Running…' : 'Preview'"></button>
+                    </div>
+
+                    <template x-if="previewError">
+                      <div class="bera-alert bera-alert--danger" style="margin-top: 12px">
+                        <span class="bera-alert__code" x-text="previewError.code"></span>
+                        <span x-text="previewError.msg"></span>
+                      </div>
+                    </template>
+
+                    <template x-if="previewDecision">
+                      <div style="margin-top: 12px">
+                        <p class="bera-caption" style="margin: 0 0 4px">
+                          Decision:
+                          <strong x-text="previewDecision.allow ? 'Allow' : 'Deny'"
+                                  :style="previewDecision.allow ? 'color: var(--color-success, var(--neutral-700))' : 'color: var(--color-danger, var(--neutral-700))'"></strong>
+                        </p>
+                        <p class="bera-caption bera-mono" style="margin: 0" x-text="previewDecision.reason"></p>
+                        <template x-if="previewTrace">
+                          <p class="bera-caption" style="margin: 8px 0 0">
+                            Grants considered:
+                            <span class="bera-mono" x-text="(previewTrace.Considered || []).length"></span>
+                          </p>
+                        </template>
+                      </div>
+                    </template>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </template>
+        </main>
+      </div>
+
+      <!-- Sign-in affordance: shown when no dev bearer is present. Auth is
+           external — this only names which principal the dev session presents. -->
+      <template x-if="!signedIn">
+        <div class="bera-scrim">
+          <form class="bera-signin" @submit.prevent="signIn()">
+            <h2 class="bera-signin__title">Sign in</h2>
+            <p class="bera-signin__hint">
+              Aperture consumes external credentials; it never issues them. For
+              local and demo use the dev authenticator, where the bearer is the
+              principal id. Enter a principal id to continue.
+            </p>
+            <label class="bera-label" for="signin-id">Principal id</label>
+            <input
+              class="bera-input"
+              id="signin-id"
+              type="text"
+              autocomplete="off"
+              placeholder="alice"
+              x-model="signInId"
+            />
+            <div class="bera-signin__row">
+              <button class="bera-btn bera-btn--primary" type="submit">Continue</button>
+            </div>
+          </form>
+        </div>
+      </template>
+    </div>
+  </body>
+</html>

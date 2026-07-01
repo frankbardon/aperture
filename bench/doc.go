@@ -1,0 +1,24 @@
+// Package bench holds Aperture's performance benchmark suite and the gated NFR
+// assertion that proves the Check Success Metric (FR-31): p99 cached Check
+// < 1ms AND >= 10k checks/sec/instance, measured on a sizable seeded model with
+// decision audit both ON and OFF.
+//
+// Two layers, deliberately separated so the default unit-test path stays fast
+// and never flakes on a loaded CI machine:
+//
+//   - The Benchmark* functions are INFORMATIONAL. `make bench` runs them with
+//     -benchmem and prints ns/op + allocs/op; the throughput / latency
+//     benchmarks additionally report a computed checks/sec and p99 via
+//     b.ReportMetric, so a human (or a perf dashboard) reads the real numbers.
+//
+//   - TestCheckNFR is the HARD assertion: it measures p99 over many cached
+//     Checks and asserts the targets with comfortable headroom. It is GATED —
+//     it self-skips unless APERTURE_BENCH_ASSERT=1 is set, and also skips under
+//     `go test -short` — so a wall-clock assertion never gates the default
+//     `make test`. See docs/benchmarks.md for the methodology.
+//
+// The fixture (buildModel) is intentionally non-trivial: many accounts,
+// principals, roles, groups, and grants, with overlapping wildcard scopes and
+// deny-overrides carve-outs, so grant resolution exercises a real candidate set
+// rather than a three-grant toy.
+package bench

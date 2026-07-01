@@ -1,0 +1,415 @@
+/*
+ * bera.css — Aperture admin shell styling, authored to the BERA Design System
+ * AI Handoff Specification (bera-design-system.md §3–§8). Named tokens only —
+ * never raw hex in component rules. This file is hand-written (not generated)
+ * so the shell renders standalone without a node build; the vendored
+ * Tailwind/DaisyUI blobs under /vendor are available to later domain screens.
+ *
+ * Hard rules encoded here: sentence case (content, not CSS), NO emoji, AI-pink
+ * (--ai-pink) reserved for AI affordances only, IBM Plex Mono for identity
+ * strings / IDs. Fonts fall back to the system stack per spec §12 (BwGradual
+ * and IBM Plex are not hotlinked — the binary stays self-contained).
+ */
+
+:root {
+  /* 3.1 BERA Blue (primary brand ramp) */
+  --bera-25: #f5fcff;  --bera-50: #ebf9ff;  --bera-75: #ccefff;
+  --bera-100: #a3e2ff; --bera-200: #7ad5ff; --bera-300: #52c8ff;
+  --bera-400: #29bbff; --bera-500: #00aeff; --bera-600: #0092d6;
+  --bera-700: #0076ad; --bera-800: #005b85; --bera-900: #003f5c;
+
+  /* 3.2 AI Pink — RESERVED for AI surfaces only */
+  --ai-pink: #ff3399;
+
+  /* 3.3 Data-viz "fruit basket" (series identity persists across charts) */
+  --grass-25:#f3fdf8; --grass-50:#e6fbf1; --grass-75:#d0f6e2; --grass-100:#b2f0d0;
+  --grass-200:#8be5b6; --grass-300:#66dba0; --grass-400:#45d189; --grass-500:#29d67d;
+  --grass-600:#22b469; --grass-700:#1c9255; --grass-800:#156f41; --grass-900:#0d4628;
+  --strawberry-25:#fff5f5; --strawberry-50:#ffeaeb; --strawberry-75:#ffd0d2; --strawberry-100:#ffa3a6;
+  --strawberry-200:#ff7a7d; --strawberry-300:#ff5257; --strawberry-400:#ff292f; --strawberry-500:#ff0008;
+  --strawberry-600:#d60007; --strawberry-700:#ad0006; --strawberry-800:#850004; --strawberry-900:#5c0003;
+  --blueberry-25:#f4f4ff; --blueberry-50:#ebebfd; --blueberry-75:#d4d4fb; --blueberry-100:#aaaaf8;
+  --blueberry-200:#8585f4; --blueberry-300:#5d5df1; --blueberry-400:#3b3bee; --blueberry-500:#1313ec;
+  --blueberry-600:#1010c6; --blueberry-700:#0d0da0; --blueberry-800:#0a0a7a; --blueberry-900:#060654;
+  --plum-25:#faf4ff; --plum-50:#f5ebff; --plum-75:#ebd6ff; --plum-100:#d7a3ff;
+  --plum-200:#c47aff; --plum-300:#b052ff; --plum-400:#a029ff; --plum-500:#9000ff;
+  --plum-600:#7900d6; --plum-700:#6200ad; --plum-800:#4b0085; --plum-900:#34005c;
+  --rose-25:#fff4fa; --rose-50:#ffebf5; --rose-75:#ffd6ec; --rose-100:#f9a9d9;
+  --rose-200:#f580c5; --rose-300:#f157b1; --rose-400:#ee329e; --rose-500:#ee1196;
+  --rose-600:#c80f7f; --rose-700:#a20b66; --rose-800:#7c084e; --rose-900:#560636;
+  --orange-25:#fff5ee; --orange-50:#ffebde; --orange-75:#ffd6bd; --orange-100:#fdc5a5;
+  --orange-200:#fda57c; --orange-300:#fb782d; --orange-400:#fa6f1a; --orange-500:#fa5f05;
+  --orange-600:#d25004; --orange-700:#aa4103; --orange-800:#823202; --orange-900:#5a2201;
+  --apricot-25:#fffbeb; --apricot-50:#fff5d6; --apricot-75:#ffeeba; --apricot-100:#ffe7a3;
+  --apricot-200:#ffd980; --apricot-300:#ffd152; --apricot-400:#ffc629; --apricot-500:#ffbb00;
+  --apricot-600:#d69d00; --apricot-700:#ad7f00; --apricot-800:#856100; --apricot-900:#5c4400;
+
+  /* 3.4 Neutrals */
+  --neutral-100:#ffffff; --neutral-200:#f8fafc; --neutral-300:#f0f0f0; --neutral-400:#dbdbdb;
+  --neutral-500:#999999; --neutral-600:#737373; --neutral-700:#4d4d4d; --neutral-800:#333333;
+  --neutral-900:#000000; /* RESERVED — wordmark only */
+
+  /* 3.5 Slate (borders, axes, secondary text) */
+  --slate-50:#f8fafc; --slate-100:#f1f5f9; --slate-200:#e2e8f0; --slate-300:#cbd5e1;
+  --slate-400:#94a3b8; --slate-500:#64748b; --slate-600:#475569; --slate-700:#334155;
+  --slate-800:#1e293b; --slate-900:#0f172a; --slate-950:#020617;
+
+  /* 3.6 Semantic roles */
+  --color-primary: var(--bera-600);
+  --color-primary-hover: var(--bera-700);
+  --color-primary-press: var(--bera-800);
+  --color-primary-fg: var(--neutral-100);
+  --color-success: var(--grass-700);
+  --color-warning: var(--apricot-700);
+  --color-danger: var(--strawberry-700);
+  --color-info: var(--bera-700);
+  --color-bg: var(--neutral-200);
+  --color-surface: var(--neutral-100);
+  --color-surface-2: var(--neutral-200);
+  --color-fg: var(--neutral-800);
+  --color-fg-muted: var(--slate-500);
+  --color-fg-strong: #1a1a1a;
+  --color-fg-on-primary: var(--neutral-100);
+  --color-link: var(--bera-700);
+  --color-link-hover: var(--bera-800);
+  --color-border: var(--slate-200);
+  --color-border-strong: var(--slate-300);
+  --color-divider: var(--neutral-300);
+  --color-focus-ring: var(--bera-500);
+
+  /* 4.1 Type families — system fallback for BwGradual/IBM Plex (not hotlinked) */
+  --font-display: "BwGradual", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-body: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+
+  /* 4.2 Type scale */
+  --text-2xs:0.6875rem; --text-xs:0.75rem; --text-sm:0.8125rem; --text-base:0.875rem;
+  --text-md:1rem; --text-lg:1.125rem; --text-xl:1.375rem; --text-2xl:1.5rem;
+  --text-3xl:1.75rem; --text-4xl:2.25rem; --text-5xl:3rem; --text-6xl:3.75rem;
+
+  /* 4.3 Weights, leading, tracking */
+  --weight-light:300; --weight-regular:400; --weight-medium:500;
+  --weight-semibold:600; --weight-bold:700; --weight-black:900;
+  --leading-tight:1.12; --leading-snug:1.25; --leading-normal:1.45; --leading-relaxed:1.6;
+  --tracking-tight:-0.02em; --tracking-normal:0; --tracking-label:0.06em;
+
+  /* 5.2 Spacing (4px base) */
+  --space-0:0; --space-1:4px; --space-2:8px; --space-3:12px; --space-4:16px;
+  --space-5:20px; --space-6:24px; --space-8:32px; --space-10:40px; --space-12:48px;
+  --space-16:64px; --space-20:80px; --space-24:96px; --space-32:128px;
+
+  /* 5.3 Radius */
+  --radius-sm:4px; --radius-md:8px; --radius-lg:12px; --radius-xl:20px;
+  --radius-2xl:24px; --radius-full:9999px;
+
+  /* 5.4 Shadows */
+  --shadow-card: 0 1px 0 rgba(15,23,42,0.04), 0 1px 3px rgba(15,23,42,0.08);
+  --shadow-raised: 0 2px 6px rgba(15,23,42,0.10);
+  --shadow-floating: 0 4px 14px rgba(15,23,42,0.16);
+  --shadow-focus: 0 0 0 2px var(--neutral-100), 0 0 0 4px var(--bera-500);
+  --text-shadow-primary-btn: 0 1px 1px hsl(199 100% 10% / 0.85);
+
+  /* 5.6 Motion */
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-out-expo: cubic-bezier(0.22, 1, 0.36, 1);
+  --duration-fast:150ms; --duration-base:250ms; --duration-slow:400ms; --duration-chart:600ms;
+
+  /* Shell metrics (§8 layout) */
+  --shell-sidebar-w: 232px;
+  --shell-topbar-h: 52px;
+}
+
+/* Resets (§11 boilerplate) */
+* { box-sizing: border-box; }
+html {
+  font-family: var(--font-body);
+  color: var(--color-fg);
+  background: var(--color-bg);
+}
+body {
+  margin: 0;
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+[x-cloak] { display: none !important; }
+
+/* 4.4 Semantic type classes */
+.bera-h1 { font: 700 var(--text-4xl)/var(--leading-tight) var(--font-display); letter-spacing: var(--tracking-tight); margin:0; }
+.bera-h2 { font: 600 var(--text-3xl)/var(--leading-snug) var(--font-display); letter-spacing: var(--tracking-tight); margin:0; }
+.bera-h3 { font: 600 var(--text-xl)/var(--leading-snug) var(--font-display); margin:0; }
+.bera-h4 { font: 600 var(--text-lg)/var(--leading-snug) var(--font-display); margin:0; }
+.bera-eyebrow { font: 600 var(--text-xs)/1.25 var(--font-body); text-transform: uppercase; letter-spacing: var(--tracking-label); color: var(--color-fg-muted); }
+.bera-lead { font: 400 var(--text-lg)/var(--leading-relaxed) var(--font-body); }
+.bera-body { font: 400 var(--text-base)/var(--leading-normal) var(--font-body); }
+.bera-body-sm { font: 400 var(--text-sm)/var(--leading-normal) var(--font-body); }
+.bera-caption { font: 400 var(--text-xs)/var(--leading-snug) var(--font-body); color: var(--color-fg-muted); }
+.bera-label { font: 500 var(--text-xs)/1.25 var(--font-body); text-transform: uppercase; letter-spacing: var(--tracking-label); color: var(--neutral-600); display: block; margin-bottom: 8px; }
+.bera-mono { font-family: var(--font-mono); font-size: 0.9em; }
+.bera-numeric { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+/* ---------- App shell (§8 dashboard layout) ---------- */
+.shell {
+  display: grid;
+  grid-template-columns: var(--shell-sidebar-w) 1fr;
+  grid-template-rows: var(--shell-topbar-h) 1fr;
+  grid-template-areas:
+    "sidebar topbar"
+    "sidebar content";
+  min-height: 100vh;
+}
+
+/* Fixed left sidebar (~232px) */
+.shell__sidebar {
+  grid-area: sidebar;
+  background: var(--color-surface);
+  border-right: 1px solid var(--color-border);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.shell__brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: var(--shell-topbar-h);
+  padding: 0 var(--space-4);
+  border-bottom: 1px solid var(--color-divider);
+}
+.shell__brand-mark {
+  width: 22px; height: 22px;
+  border-radius: var(--radius-sm);
+  background: var(--bera-500);
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--neutral-100);
+}
+.shell__wordmark {
+  font: 700 var(--text-md)/1 var(--font-display);
+  letter-spacing: var(--tracking-tight);
+  color: var(--neutral-900); /* wordmark is the one place pure black is allowed */
+}
+.shell__nav { padding: var(--space-3) var(--space-2); overflow-y: auto; }
+.shell__nav-group + .shell__nav-group { margin-top: var(--space-4); }
+.shell__nav-heading {
+  font: 600 var(--text-2xs)/1 var(--font-body);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-label);
+  color: var(--neutral-500);
+  padding: 0 var(--space-2) var(--space-2);
+}
+
+/* Top utility bar (~52px) */
+.shell__topbar {
+  grid-area: topbar;
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 0 var(--space-5);
+}
+.shell__topbar-title { font: 600 var(--text-md)/1 var(--font-display); }
+.shell__topbar-spacer { flex: 1; }
+.shell__identity {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font: 500 var(--text-sm)/1 var(--font-body);
+  color: var(--color-fg-muted);
+}
+.shell__identity-id { font-family: var(--font-mono); color: var(--color-fg); }
+
+/* Flex content area */
+.shell__content {
+  grid-area: content;
+  padding: var(--space-6);
+  overflow-y: auto;
+}
+
+/* ---------- Sidebar nav item (§6.6) ---------- */
+.bera-nav-item {
+  display: flex; align-items: center; gap: 9px;
+  padding: 7px 10px; border-radius: 7px;
+  font: 500 13px/1 var(--font-body); color: var(--neutral-700);
+  cursor: pointer; position: relative; text-decoration: none;
+  transition: background var(--duration-fast) var(--ease-standard);
+}
+.bera-nav-item + .bera-nav-item { margin-top: 2px; }
+.bera-nav-item:hover { background: var(--neutral-200); color: var(--color-fg); }
+.bera-nav-item--active { background: var(--bera-75); color: var(--bera-700); font-weight: 600; }
+.bera-nav-item--active::before {
+  content: ""; position: absolute; left: 0; top: 7px; bottom: 7px;
+  width: 2px; background: var(--bera-500); border-radius: 2px;
+}
+.bera-nav-item svg { width: 16px; height: 16px; flex: none; }
+
+/* ---------- Buttons (§6.1 / §6.2) ---------- */
+.bera-btn {
+  display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px;
+  border-radius: var(--radius-md); font: 700 12px/1 var(--font-body);
+  border: 1px solid transparent; cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-standard);
+}
+.bera-btn--primary { background: var(--color-primary); color: var(--color-primary-fg); text-shadow: var(--text-shadow-primary-btn); }
+.bera-btn--primary:hover { background: var(--color-primary-hover); }
+.bera-btn--primary:active { background: var(--color-primary-press); transform: scale(0.98); }
+.bera-btn--secondary { background: var(--neutral-100); color: var(--color-fg); border-color: var(--color-border); }
+.bera-btn--secondary:hover { background: var(--neutral-200); }
+.bera-btn--secondary:active { background: var(--neutral-300); transform: scale(0.98); }
+.bera-btn:disabled { opacity: .4; pointer-events: none; }
+
+/* ---------- Input (§6.3) ---------- */
+.bera-input {
+  width: 100%; height: 32px; padding: 0 12px;
+  border: 1px solid var(--color-border); border-radius: var(--radius-md);
+  background: var(--neutral-200); font: 400 12px/1 var(--font-body); color: var(--color-fg);
+}
+.bera-input::placeholder { color: var(--neutral-500); }
+.bera-input:focus { outline: none; background: var(--neutral-100); border-color: var(--bera-500); box-shadow: 0 0 0 2px var(--neutral-100), 0 0 0 4px rgba(0,174,255,0.25); }
+
+/* ---------- Card (§6.4) ---------- */
+.bera-card {
+  background: var(--color-surface); border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg); box-shadow: var(--shadow-card); padding: var(--space-5);
+}
+.bera-card__title { font: 600 var(--text-xl)/var(--leading-snug) var(--font-display); margin: 0 0 var(--space-2); }
+
+/* Empty-state panel (factual copy, no emoji) */
+.bera-empty {
+  border: 1px dashed var(--color-border-strong); border-radius: var(--radius-lg);
+  background: var(--color-surface); padding: var(--space-8);
+  color: var(--color-fg-muted); text-align: center;
+}
+
+/* ---------- AI pill (§6.8) — the only control that may use AI-pink ---------- */
+.bera-ai-pill {
+  display: inline-flex; align-items: center; gap: 6px; height: 30px;
+  padding: 0 12px 0 4px; border-radius: var(--radius-full);
+  background: var(--neutral-100); border: 1px solid #ffc9e2; color: var(--color-fg);
+  font: 600 12px/1 var(--font-body); cursor: pointer;
+}
+.bera-ai-pill:hover { box-shadow: 0 2px 6px rgba(255,51,153,0.20); }
+.bera-ai-pill__dot { width: 22px; height: 22px; border-radius: 50%; background: radial-gradient(circle at 30% 30%, #ff7ac0, var(--ai-pink)); }
+
+/* ---------- Sign-in scrim (§8 modal scrim) ---------- */
+.bera-scrim {
+  position: fixed; inset: 0; background: rgba(15,23,42,0.45);
+  display: flex; align-items: center; justify-content: center; z-index: 50;
+}
+.bera-signin {
+  width: 100%; max-width: 420px; background: var(--color-surface);
+  border-radius: var(--radius-lg); box-shadow: var(--shadow-floating); padding: var(--space-6);
+}
+.bera-signin__title { font: 600 var(--text-xl)/var(--leading-snug) var(--font-display); margin: 0 0 var(--space-2); }
+.bera-signin__hint { color: var(--color-fg-muted); font-size: var(--text-sm); margin: 0 0 var(--space-4); }
+.bera-signin__row { display: flex; gap: var(--space-2); margin-top: var(--space-4); }
+
+/* ---------- CRUD screen (E6-S2): section head + toolbar ---------- */
+.bera-section-head { display: flex; align-items: baseline; gap: var(--space-3); margin-bottom: var(--space-4); }
+.bera-muted { color: var(--color-fg-muted); }
+.bera-cell-mono { font-family: var(--font-mono); }
+
+.bera-toolbar { display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-4); flex-wrap: wrap; }
+.bera-toolbar__spacer { flex: 1; }
+
+/* Segmented control for switching entity types (§6 controls) */
+.bera-tabs { display: inline-flex; gap: 2px; padding: 3px; background: var(--neutral-300); border-radius: var(--radius-md); }
+.bera-tab {
+  border: none; background: transparent; padding: 6px 12px; border-radius: 6px;
+  font: 600 var(--text-sm)/1 var(--font-body); color: var(--color-fg-muted); cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-standard);
+}
+.bera-tab:hover { color: var(--color-fg); }
+.bera-tab--active { background: var(--color-surface); color: var(--color-fg); box-shadow: var(--shadow-card); }
+
+/* ---------- Table (§6.9) ---------- */
+.bera-table-wrap {
+  background: var(--color-surface); border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg); overflow: hidden; box-shadow: var(--shadow-card);
+}
+.bera-table { width: 100%; border-collapse: collapse; font: 400 var(--text-sm)/var(--leading-normal) var(--font-body); }
+.bera-table thead th {
+  text-align: left; font: 600 var(--text-2xs)/1 var(--font-body);
+  text-transform: uppercase; letter-spacing: var(--tracking-label); color: var(--neutral-600);
+  padding: 9px 12px; border-bottom: 1px solid var(--color-border); white-space: nowrap;
+}
+.bera-table tbody td { padding: 10px 12px; border-bottom: 1px solid var(--color-divider); color: var(--color-fg); vertical-align: top; }
+.bera-table tbody tr:last-child td { border-bottom: none; }
+.bera-table tbody tr:hover { background: var(--neutral-200); }
+.bera-table td.bera-cell-mono { font-family: var(--font-mono); }
+
+/* Per-row text actions */
+.bera-row-actions { display: inline-flex; gap: var(--space-2); }
+.bera-linkbtn {
+  border: none; background: none; padding: 2px 2px; cursor: pointer;
+  font: 600 var(--text-sm)/1 var(--font-body); color: var(--color-link);
+}
+.bera-linkbtn:hover { color: var(--color-link-hover); text-decoration: underline; }
+.bera-linkbtn--danger { color: var(--color-danger); }
+
+/* ---------- Status pill / badge (§6.7) ---------- */
+.bera-badge {
+  display: inline-flex; align-items: center; height: 20px; padding: 0 8px;
+  border-radius: var(--radius-full); font: 600 var(--text-2xs)/1 var(--font-body);
+  border: 1px solid var(--color-border); background: var(--neutral-200); color: var(--color-fg-muted);
+}
+.bera-badge--user { background: var(--bera-50); color: var(--bera-700); border-color: var(--bera-75); }
+.bera-badge--machine { background: var(--neutral-300); color: var(--neutral-700); border-color: var(--neutral-400); }
+.bera-badge--allow { background: var(--grass-50); color: var(--color-success); border-color: var(--grass-100); }
+.bera-badge--deny { background: var(--strawberry-50); color: var(--color-danger); border-color: var(--strawberry-100); }
+/* Audit outcomes reuse the allow/deny families: success reads green, failure red. */
+.bera-badge--success { background: var(--grass-50); color: var(--color-success); border-color: var(--grass-100); }
+.bera-badge--failure { background: var(--strawberry-50); color: var(--color-danger); border-color: var(--strawberry-100); }
+
+/* ---------- Inline alert / banner ---------- */
+.bera-alert {
+  display: flex; gap: var(--space-2); padding: 10px 12px; margin-bottom: var(--space-4);
+  border-radius: var(--radius-md); border: 1px solid var(--color-border);
+  background: var(--neutral-200); color: var(--color-fg); font: 400 var(--text-sm)/1.4 var(--font-body);
+}
+.bera-alert__code { font-family: var(--font-mono); font-weight: 600; flex: none; }
+.bera-alert--danger { background: var(--strawberry-50); border-color: var(--strawberry-100); color: var(--color-danger); }
+.bera-alert--info { background: var(--bera-50); border-color: var(--bera-75); color: var(--bera-800); }
+.bera-alert--success { background: var(--grass-50); border-color: var(--grass-100); color: var(--color-success); }
+
+/* A trace row highlighted as a deciding grant in the what-if simulator. */
+.bera-table tbody tr.bera-row--active { background: var(--bera-50); }
+.bera-table tbody tr.bera-row--active:hover { background: var(--bera-75); }
+
+/* ---------- Modal (reuses .bera-scrim backdrop, §8 modals cap 640px) ---------- */
+.bera-modal__panel {
+  width: 100%; max-width: 640px; max-height: calc(100vh - 64px); overflow-y: auto;
+  background: var(--color-surface); border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-floating); padding: var(--space-6);
+}
+.bera-modal__title { font: 600 var(--text-xl)/var(--leading-snug) var(--font-display); margin: 0 0 var(--space-1); }
+.bera-modal__foot { display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-5); }
+
+/* ---------- Form field widgets ---------- */
+.bera-field { margin-bottom: var(--space-4); }
+.bera-field__hint { font: 400 var(--text-xs)/1.4 var(--font-body); color: var(--color-fg-muted); margin-top: 4px; }
+.bera-select {
+  width: 100%; height: 32px; padding: 0 10px; border: 1px solid var(--color-border);
+  border-radius: var(--radius-md); background: var(--neutral-200);
+  font: 400 12px/1 var(--font-body); color: var(--color-fg);
+}
+.bera-select:focus { outline: none; background: var(--neutral-100); border-color: var(--bera-500); box-shadow: 0 0 0 2px var(--neutral-100), 0 0 0 4px rgba(0,174,255,0.25); }
+.bera-textarea {
+  width: 100%; min-height: 64px; padding: 8px 12px; border: 1px solid var(--color-border);
+  border-radius: var(--radius-md); background: var(--neutral-200); resize: vertical;
+  font: 400 12px/var(--leading-normal) var(--font-body); color: var(--color-fg);
+}
+.bera-textarea:focus { outline: none; background: var(--neutral-100); border-color: var(--bera-500); box-shadow: 0 0 0 2px var(--neutral-100), 0 0 0 4px rgba(0,174,255,0.25); }
+.bera-input:disabled { opacity: .55; cursor: not-allowed; }
+
+/* Checkbox chips for multi-select reference fields */
+.bera-checks { display: flex; flex-wrap: wrap; gap: 6px; }
+.bera-check {
+  display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px;
+  border: 1px solid var(--color-border); border-radius: var(--radius-md);
+  background: var(--neutral-100); font: 400 var(--text-sm)/1 var(--font-body);
+  color: var(--color-fg); cursor: pointer;
+}
+.bera-check input { accent-color: var(--bera-600); margin: 0; }
+.bera-check--on { border-color: var(--bera-500); background: var(--bera-50); color: var(--bera-800); }

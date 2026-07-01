@@ -1,0 +1,152 @@
+package cli
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/frankbardon/aperture/audit"
+	"github.com/frankbardon/aperture/auth"
+	"github.com/frankbardon/aperture/authz"
+	"github.com/frankbardon/aperture/delegation"
+	"github.com/frankbardon/aperture/engine"
+	aerr "github.com/frankbardon/aperture/errors"
+	"github.com/frankbardon/aperture/impersonation"
+	"github.com/frankbardon/aperture/internal/server"
+	"github.com/frankbardon/aperture/rules"
+	"github.com/frankbardon/aperture/service"
+
+	ucli "github.com/urfave/cli/v3"
+)
+
+// shutdownTimeout bounds how long serve waits for in-flight requests to drain on
+// SIGINT/SIGTERM before forcing the listener closed.
+const shutdownTimeout = 10 * time.Second
+
+// serveCommand is `aperture serve`: it hand-wires the dependency graph
+// (storage -> engine -> service -> HTTP server), boots a net/http server, and
+// shuts it down gracefully on SIGINT/SIGTERM. This is the manual constructor-DI
+// pattern Aperture mirrors from orbit's serve command — no DI framework.
+func serveCommand() *ucli.Command {
+	return &ucli.Command{
+		Name:  "serve",
+		Usage: "Run the Aperture HTTP server",
+		Flags: []ucli.Flag{
+			&ucli.StringFlag{
+				Name:  "addr",
+				Usage: "TCP address to listen on",
+				Value: ":8080",
+			},
+			&ucli.StringFlag{
+				Name:  "seed",
+				Usage: "path to a JSON/YAML seed model (defaults to the embedded example)",
+			},
+			&ucli.StringFlag{
+				Name:  "store",
+				Usage: "sqlite DSN for the backing store (defaults to in-memory)",
+			},
+			&ucli.StringFlag{
+				Name:    "auth",
+				Usage:   "authenticator adapter: dev|oidc|parsec (overrides APERTURE_AUTH_MODE; defaults to dev — bearer is the principal id, no external IdP)",
+				Sources: ucli.EnvVars(auth.EnvMode),
+			},
+		},
+		Action: runServe,
+	}
+}
+
+func runServe(ctx context.Context, cmd *ucli.Command) error {
+	// Construct the dependency graph by hand: storage -> engine -> service ->
+	// HTTP handler. Each layer is a plain constructor; there is no container.
+	store, err := buildStore(ctx, cmd.String("store"), cmd.String("seed"))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = store.Close() }()
+
+	// Construct the authenticator from configuration (env + the --auth flag), then
+	// apply it as request middleware so HTTP requests resolve to an Aperture
+	// principal. The default adapter is dev/static (bearer == principal id), so
+	// Aperture runs with NO external IdP; oidc and parsec are opt-in via config.
+	authCfg := auth.ConfigFromEnv()
+	if mode := cmd.String("auth"); mode != "" {
+		authCfg.Mode = auth.Mode(mode)
+	}
+	authn, err := authCfg.Build(ctx)
+	if err != nil {
+		return aerr.Wrap(aerr.APERTURE_BOOT, "cli: building the authenticator failed", err)
+	}
+
+	// Build the fully-wired facade so HTTP, Twirp, and CLI drive ONE mutation
+	// path: the engine for decisions + authority, the admin gate for tier checks,
+	// and the delegation / impersonation services for their own gated mutations.
+	//
+	// Wire the rules engine (E2-S3) over a storage-backed rule source so
+	// rule-backed scope strategies (E2-S1) resolve the SAME rules the node editor
+	// (E7) saves through PutRule — a saved rule takes effect on the next decision
+	// with no second rule store. Scope resolution falls back to literal pattern
+	// matching for grants with no strategy, so E1 behaviour is preserved. The
+	// storage source is also handed to the facade (WithRuleSource) so the editor's
+	// live what-if can preview an UNSAVED rule read-only.
+	ruleSource := service.NewStorageRuleSource(store)
+	ruleEngine := rules.NewEngine(ruleSource, nil)
+	eng := engine.New(store, engine.WithScopeResolution(nil, engine.ScopeDeps{Rules: ruleEngine}))
+
+	// Wire the append-only audit trail (E4-S2) through the same store so the
+	// mutation/impersonation/delegation record is durable and the E6-S4 audit
+	// viewer has data to query. Mutations are always recorded; decisions are
+	// sampled — sample every decision here so the demo trail is legible. The
+	// recorder owns a background writer that Close flushes on shutdown.
+	rec := audit.New(store, audit.WithSampleRate(1))
+	defer func() { _ = rec.Close() }()
+
+	svc := service.New(eng,
+		service.WithStorage(store),
+		service.WithGate(authz.NewGate(eng)),
+		service.WithDelegation(delegation.New(store, eng)),
+		service.WithImpersonation(impersonation.New(store, eng)),
+		service.WithAudit(rec),
+		service.WithRuleSource(ruleSource, nil),
+	)
+
+	handler := server.Authenticate(authn, server.New(svc))
+
+	addr := cmd.String("addr")
+	httpServer := &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	// Trip ctx on the first SIGINT/SIGTERM so the select below can begin a
+	// graceful shutdown.
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	serveErr := make(chan error, 1)
+	go func() {
+		fmt.Fprintf(cmd.Writer, "aperture serving on %s\n", addr)
+		serveErr <- httpServer.ListenAndServe()
+	}()
+
+	select {
+	case err := <-serveErr:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			return aerr.Wrap(aerr.APERTURE_BOOT, "cli: http server failed", err)
+		}
+		return nil
+	case <-ctx.Done():
+		fmt.Fprintln(cmd.Writer, "shutting down...")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+			return aerr.Wrap(aerr.APERTURE_BOOT, "cli: graceful shutdown failed", err)
+		}
+		return nil
+	}
+}
