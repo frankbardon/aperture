@@ -32,6 +32,9 @@ func NewApp(version string) *ucli.Command {
 			// Provisioning: parameterized templates + transactional bulk apply.
 			templateCommand(),
 			bulkCommand(),
+			// Declarative state: whole-model export/import (system-admin tier).
+			exportCommand(),
+			importCommand(),
 			// Server.
 			serveCommand(),
 			// Read-only MCP surface (stdio).

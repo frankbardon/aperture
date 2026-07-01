@@ -274,6 +274,12 @@ func (o *overlayStore) GetTemplate(ctx context.Context, name string, version int
 func (o *overlayStore) ListTemplates(ctx context.Context) ([]model.Template, error) {
 	return o.base.ListTemplates(ctx)
 }
+func (o *overlayStore) GetRule(ctx context.Context, name string) (model.Rule, error) {
+	return o.base.GetRule(ctx, name)
+}
+func (o *overlayStore) ListRules(ctx context.Context) ([]model.Rule, error) {
+	return o.base.ListRules(ctx)
+}
 
 // --- Inert writes -----------------------------------------------------------
 //
@@ -312,6 +318,8 @@ func (o *overlayStore) PruneAudit(context.Context, model.RetentionPolicy) (int, 
 }
 func (o *overlayStore) PutTemplate(context.Context, model.Template) error { return errReadOnly() }
 func (o *overlayStore) DeleteTemplate(context.Context, string, int) error { return errReadOnly() }
+func (o *overlayStore) PutRule(context.Context, model.Rule) error         { return errReadOnly() }
+func (o *overlayStore) DeleteRule(context.Context, string) error          { return errReadOnly() }
 func (o *overlayStore) Atomic(context.Context, func(tx model.Storage) error) error {
 	return errReadOnly()
 }

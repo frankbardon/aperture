@@ -9,6 +9,7 @@ import (
 	aerr "github.com/frankbardon/aperture/errors"
 	"github.com/frankbardon/aperture/internal/wire/rpc"
 	"github.com/frankbardon/aperture/model"
+	"github.com/frankbardon/aperture/seed"
 	"github.com/frankbardon/aperture/service"
 
 	"github.com/twitchtv/twirp"
@@ -610,6 +611,36 @@ func (h *twirpHandler) BulkDeleteGrants(ctx context.Context, req *rpc.BulkDelete
 		return nil, mapErr(err)
 	}
 	return empty(h.svc.BulkDeleteGrants(ctx, actor, req.GrantIds))
+}
+
+// ---- Declarative state: export / import (system-admin tier) ----
+
+func (h *twirpHandler) Export(ctx context.Context, req *rpc.ExportRequest) (*rpc.ExportResponse, error) {
+	actor, err := h.actor(ctx, actorAccount(req.Actor))
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	doc, err := h.svc.Export(ctx, actor)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	js, err := json.Marshal(doc)
+	if err != nil {
+		return nil, mapErr(aerr.Wrap(aerr.APERTURE_STORAGE, "twirp: marshalling state document", err))
+	}
+	return &rpc.ExportResponse{DocumentJson: string(js)}, nil
+}
+
+func (h *twirpHandler) Import(ctx context.Context, req *rpc.ImportRequest) (*rpc.Empty, error) {
+	actor, err := h.actor(ctx, actorAccount(req.Actor))
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	doc, err := seed.Parse([]byte(req.DocumentJson), seed.FormatJSON)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return empty(h.svc.Import(ctx, actor, doc))
 }
 
 // ---- Delegation (actor = the authenticated delegator) ----

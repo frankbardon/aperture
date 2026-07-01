@@ -21,6 +21,7 @@ import (
 
 	aerr "github.com/frankbardon/aperture/errors"
 	"github.com/frankbardon/aperture/model"
+	"github.com/frankbardon/aperture/rules"
 	"gopkg.in/yaml.v3"
 )
 
@@ -48,6 +49,15 @@ const (
 
 // Document is the declarative model: a flat list of each entity kind. Field tags
 // cover both YAML and JSON so either format decodes into the same shape.
+//
+// This is also the EXPORT/IMPORT state file (E5-S2): the same Document the
+// minimal seed loader started as, generalized to the complete model. An export
+// file is a strict superset of a seed file — a seed that omits templates/rules
+// loads unchanged, and an export reloads through the very same Apply path. The
+// field set is additive-only so old seeds keep loading. Slices are emitted in a
+// stable order (sorted by id/name) so a round-trip is byte-stable and
+// human-diffable. Live host domain-object metadata is deliberately NOT part of
+// this shape — that is the provider cache, never source of truth.
 type Document struct {
 	Accounts    []Account    `yaml:"accounts" json:"accounts"`
 	Memberships []Membership `yaml:"memberships" json:"memberships"`
@@ -57,6 +67,8 @@ type Document struct {
 	Roles       []Role       `yaml:"roles" json:"roles"`
 	Groups      []Group      `yaml:"groups" json:"groups"`
 	Grants      []Grant      `yaml:"grants" json:"grants"`
+	Templates   []Template   `yaml:"templates" json:"templates"`
+	Rules       []Rule       `yaml:"rules" json:"rules"`
 }
 
 // Account mirrors model.Account in declarative form.
@@ -86,6 +98,7 @@ type Permission struct {
 	ObjectType    string `yaml:"object_type" json:"object_type"`
 	Action        string `yaml:"action" json:"action"`
 	ScopeStrategy string `yaml:"scope_strategy" json:"scope_strategy"`
+	Delegatable   bool   `yaml:"delegatable,omitempty" json:"delegatable,omitempty"`
 	Description   string `yaml:"description" json:"description"`
 }
 
@@ -130,7 +143,48 @@ type Grant struct {
 	Effect     string  `yaml:"effect" json:"effect"`
 }
 
+// Template mirrors model.Template in declarative form: a named, versioned bundle
+// of parameterized grants. The (name, version) pair is its identity.
+type Template struct {
+	Name        string          `yaml:"name" json:"name"`
+	Version     int             `yaml:"version" json:"version"`
+	Description string          `yaml:"description" json:"description"`
+	Params      []TemplateParam `yaml:"params" json:"params"`
+	Grants      []TemplateGrant `yaml:"grants" json:"grants"`
+}
+
+// TemplateParam mirrors model.TemplateParam in declarative form.
+type TemplateParam struct {
+	Name        string `yaml:"name" json:"name"`
+	Type        string `yaml:"type" json:"type"`
+	Description string `yaml:"description" json:"description"`
+}
+
+// TemplateGrant mirrors model.TemplateGrant in declarative form. Subject.ID and
+// Object may carry ${name} parameter tokens.
+type TemplateGrant struct {
+	Subject    Subject `yaml:"subject" json:"subject"`
+	Permission string  `yaml:"permission" json:"permission"`
+	Object     string  `yaml:"object" json:"object"`
+	Effect     string  `yaml:"effect" json:"effect"`
+}
+
+// Rule mirrors model.Rule in declarative form: a named rule plus its AST. The
+// AST is carried as raw JSON so it is EXACTLY the rules package's canonical
+// serialization (a rules.Node) — the same shape the node editor reads and
+// writes; this file never invents a second rule format.
+type Rule struct {
+	Name        string          `yaml:"name" json:"name"`
+	Description string          `yaml:"description" json:"description"`
+	AST         json.RawMessage `yaml:"ast" json:"ast"`
+}
+
 // Parse decodes a seed document from raw bytes in the given format.
+//
+// The YAML path routes through JSON (yaml -> generic -> json -> Document) so the
+// rule AST, carried as raw JSON, decodes by exactly the same rules the JSON path
+// uses. The struct's json and yaml tags are identical, so a YAML seed authored
+// against the documented field names lands in the same shape either way.
 func Parse(data []byte, format Format) (*Document, error) {
 	var doc Document
 	switch format {
@@ -139,7 +193,15 @@ func Parse(data []byte, format Format) (*Document, error) {
 			return nil, aerr.Wrap(aerr.APERTURE_INVALID_INPUT, "seed: decode JSON document", err)
 		}
 	case FormatYAML:
-		if err := yaml.Unmarshal(data, &doc); err != nil {
+		var generic any
+		if err := yaml.Unmarshal(data, &generic); err != nil {
+			return nil, aerr.Wrap(aerr.APERTURE_INVALID_INPUT, "seed: decode YAML document", err)
+		}
+		jb, err := json.Marshal(generic)
+		if err != nil {
+			return nil, aerr.Wrap(aerr.APERTURE_INVALID_INPUT, "seed: normalize YAML document", err)
+		}
+		if err := json.Unmarshal(jb, &doc); err != nil {
 			return nil, aerr.Wrap(aerr.APERTURE_INVALID_INPUT, "seed: decode YAML document", err)
 		}
 	default:
@@ -178,6 +240,7 @@ func (d *Document) Apply(ctx context.Context, store model.Storage) error {
 			ObjectType:    p.ObjectType,
 			Action:        p.Action,
 			ScopeStrategy: p.ScopeStrategy,
+			Delegatable:   p.Delegatable,
 			Description:   p.Description,
 		}); err != nil {
 			return aerr.Wrapf(aerr.APERTURE_INVALID_INPUT, err, "seed: permission %q", p.ID)
@@ -237,7 +300,69 @@ func (d *Document) Apply(ctx context.Context, store model.Storage) error {
 			return aerr.Wrapf(aerr.APERTURE_INVALID_INPUT, err, "seed: grant %q", g.ID)
 		}
 	}
+	for _, t := range d.Templates {
+		if err := store.PutTemplate(ctx, t.toModel()); err != nil {
+			return aerr.Wrapf(aerr.APERTURE_INVALID_INPUT, err, "seed: template %q v%d", t.Name, t.Version)
+		}
+	}
+	for _, r := range d.Rules {
+		// Validate the AST against the rules engine's own contract before storing,
+		// so an import rejects a structurally broken rule (APERTURE_RULE_*) rather
+		// than persisting a rule the engine could never compile.
+		if err := validateRuleAST(r); err != nil {
+			return aerr.Wrapf(aerr.APERTURE_RULE_INVALID, err, "seed: rule %q", r.Name)
+		}
+		if err := store.PutRule(ctx, model.Rule{
+			Name:        r.Name,
+			Description: r.Description,
+			AST:         r.AST,
+		}); err != nil {
+			return aerr.Wrapf(aerr.APERTURE_INVALID_INPUT, err, "seed: rule %q", r.Name)
+		}
+	}
 	return nil
+}
+
+// toModel converts a declarative Template to its model form.
+func (t Template) toModel() model.Template {
+	params := make([]model.TemplateParam, len(t.Params))
+	for i, p := range t.Params {
+		params[i] = model.TemplateParam{
+			Name:        p.Name,
+			Type:        model.ParamType(p.Type),
+			Description: p.Description,
+		}
+	}
+	grants := make([]model.TemplateGrant, len(t.Grants))
+	for i, g := range t.Grants {
+		grants[i] = model.TemplateGrant{
+			Subject:      model.Subject{Kind: model.SubjectKind(g.Subject.Kind), ID: g.Subject.ID},
+			PermissionID: g.Permission,
+			Object:       g.Object,
+			Effect:       model.Effect(g.Effect),
+		}
+	}
+	return model.Template{
+		Name:        t.Name,
+		Version:     t.Version,
+		Description: t.Description,
+		Params:      params,
+		Grants:      grants,
+	}
+}
+
+// validateRuleAST parses a declarative rule's AST as a rules.Node and runs the
+// engine's structural validation, so an import surfaces the engine's own coded
+// error for a malformed rule rather than storing an uncompilable one.
+func validateRuleAST(r Rule) error {
+	if len(r.AST) == 0 {
+		return aerr.Newf(aerr.APERTURE_RULE_INVALID, "rule %q has no AST", r.Name)
+	}
+	var node rules.Node
+	if err := json.Unmarshal(r.AST, &node); err != nil {
+		return aerr.Wrapf(aerr.APERTURE_RULE_INVALID, err, "rule %q AST is not a valid node", r.Name)
+	}
+	return node.Validate()
 }
 
 // Load parses data in the given format and applies it to store.
@@ -272,7 +397,7 @@ func formatFor(path string) Format {
 // CLI/serve startup log so an operator can confirm what was loaded.
 func (d *Document) Describe() string {
 	return fmt.Sprintf(
-		"%d accounts, %d memberships, %d object-types, %d permissions, %d principals, %d roles, %d groups, %d grants",
+		"%d accounts, %d memberships, %d object-types, %d permissions, %d principals, %d roles, %d groups, %d grants, %d templates, %d rules",
 		len(d.Accounts), len(d.Memberships), len(d.ObjectTypes), len(d.Permissions),
-		len(d.Principals), len(d.Roles), len(d.Groups), len(d.Grants))
+		len(d.Principals), len(d.Roles), len(d.Groups), len(d.Grants), len(d.Templates), len(d.Rules))
 }

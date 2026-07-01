@@ -30,6 +30,8 @@ type Store struct {
 	grants      map[string]model.Grant
 	// templates holds every template version, keyed by (name, version) (E5-S1).
 	templates map[templateKey]model.Template
+	// rules holds every named rule, keyed by name (E5-S2).
+	rules map[string]model.Rule
 	// audit is the append-only audit trail (FR-25). It is an ordered slice rather
 	// than a map because the trail is append-only and queried newest-first.
 	audit []model.AuditEvent
@@ -59,6 +61,7 @@ func New() *Store {
 		groups:      make(map[string]model.Group),
 		grants:      make(map[string]model.Grant),
 		templates:   make(map[templateKey]model.Template),
+		rules:       make(map[string]model.Rule),
 	}
 }
 
@@ -567,6 +570,49 @@ func (s *Store) DeleteTemplate(_ context.Context, name string, version int) erro
 	return nil
 }
 
+// ---- Rule (named) ----
+
+func (s *Store) PutRule(_ context.Context, r model.Rule) error {
+	if err := model.ValidateRule(r); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rules[r.Name] = cloneRule(r)
+	return nil
+}
+
+func (s *Store) GetRule(_ context.Context, name string) (model.Rule, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	r, ok := s.rules[name]
+	if !ok {
+		return model.Rule{}, notFound("rule", name)
+	}
+	return cloneRule(r), nil
+}
+
+func (s *Store) ListRules(_ context.Context) ([]model.Rule, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]model.Rule, 0, len(s.rules))
+	for _, r := range s.rules {
+		out = append(out, cloneRule(r))
+	}
+	model.SortRules(out)
+	return out, nil
+}
+
+func (s *Store) DeleteRule(_ context.Context, name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.rules[name]; !ok {
+		return notFound("rule", name)
+	}
+	delete(s.rules, name)
+	return nil
+}
+
 // ---- Transactional apply ----
 
 // Atomic stages the whole batch on a snapshot and commits it only when fn
@@ -622,6 +668,9 @@ func (s *Store) snapshotLocked() *Store {
 	for k, v := range s.templates {
 		c.templates[k] = cloneTemplate(v)
 	}
+	for k, v := range s.rules {
+		c.rules[k] = cloneRule(v)
+	}
 	c.audit = make([]model.AuditEvent, len(s.audit))
 	copy(c.audit, s.audit)
 	return c
@@ -640,6 +689,7 @@ func (s *Store) commitFromLocked(c *Store) {
 	s.groups = c.groups
 	s.grants = c.grants
 	s.templates = c.templates
+	s.rules = c.rules
 	s.audit = c.audit
 }
 
@@ -661,6 +711,19 @@ func cloneTemplate(t model.Template) model.Template {
 		t.Grants = nil
 	}
 	return t
+}
+
+// cloneRule deep-copies a rule's AST bytes so a stored rule cannot be mutated by
+// the caller (and vice versa).
+func cloneRule(r model.Rule) model.Rule {
+	if len(r.AST) > 0 {
+		ast := make([]byte, len(r.AST))
+		copy(ast, r.AST)
+		r.AST = ast
+	} else {
+		r.AST = nil
+	}
+	return r
 }
 
 // itoa is a tiny strconv.Itoa alias kept local to avoid importing strconv for a

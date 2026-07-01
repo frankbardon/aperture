@@ -1065,6 +1065,82 @@ func scanTemplate(sc scanner) (model.Template, error) {
 // itoa is strconv.Itoa, kept local for the not-found message helpers.
 func itoa(n int) string { return strconv.Itoa(n) }
 
+// ---- Rule (named) ----
+
+const ruleSelect = `SELECT name, description, ast, created_at, updated_at FROM rules`
+
+func (s *Store) PutRule(ctx context.Context, r model.Rule) error {
+	if err := model.ValidateRule(r); err != nil {
+		return err
+	}
+	_, err := s.exec.ExecContext(ctx, `
+		INSERT OR REPLACE INTO rules (name, description, ast, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?)`,
+		r.Name, r.Description, string(r.AST), encodeTime(r.CreatedAt), encodeTime(r.UpdatedAt))
+	if err != nil {
+		return wrapStorage("put rule", err)
+	}
+	return nil
+}
+
+func (s *Store) GetRule(ctx context.Context, name string) (model.Rule, error) {
+	row := s.exec.QueryRowContext(ctx, ruleSelect+` WHERE name = ?`, name)
+	r, err := scanRule2(row)
+	if isNoRows(err) {
+		return model.Rule{}, notFound("rule", name)
+	}
+	return r, err
+}
+
+func (s *Store) ListRules(ctx context.Context) ([]model.Rule, error) {
+	rows, err := s.exec.QueryContext(ctx, ruleSelect+` ORDER BY name`)
+	if err != nil {
+		return nil, wrapStorage("list rules", err)
+	}
+	defer rows.Close()
+	out := make([]model.Rule, 0)
+	for rows.Next() {
+		r, err := scanRule2(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, wrapStorage("scan rules", err)
+	}
+	return out, nil
+}
+
+func (s *Store) DeleteRule(ctx context.Context, name string) error {
+	return s.deleteByID(ctx, "rule", "rules", "name", name)
+}
+
+// scanRule2 scans a rules row. It is named scanRule2 to avoid colliding with the
+// RBAC role scanner (scanRole); rules and roles are distinct entities.
+func scanRule2(sc scanner) (model.Rule, error) {
+	var (
+		r                model.Rule
+		ast              string
+		created, updated string
+	)
+	if err := sc.Scan(&r.Name, &r.Description, &ast, &created, &updated); err != nil {
+		if isNoRows(err) {
+			return model.Rule{}, err
+		}
+		return model.Rule{}, wrapStorage("scan rule", err)
+	}
+	r.AST = json.RawMessage(ast)
+	var err error
+	if r.CreatedAt, err = decodeTime(created); err != nil {
+		return model.Rule{}, err
+	}
+	if r.UpdatedAt, err = decodeTime(updated); err != nil {
+		return model.Rule{}, err
+	}
+	return r, nil
+}
+
 // ---- Audit trail (append-only) ----
 
 const auditColumns = `id, ts_nanos, event_type, action, actor, effective_subject, impersonation_mode, account, target, outcome, reason, details`

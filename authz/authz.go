@@ -138,6 +138,11 @@ const (
 	// MutationPutAccount / MutationDeleteAccount manage tenancy (accounts).
 	MutationPutAccount    Mutation = "put_account"
 	MutationDeleteAccount Mutation = "delete_account"
+	// MutationImport applies a whole declarative state file (E5-S2): it can create
+	// or replace any global-schema entity, so it is the most privileged mutation
+	// there is and sits at the system tier alongside the schema mutations. (Export
+	// is a system-tier READ, gated directly via RequireSystemAdmin, not a mutation.)
+	MutationImport Mutation = "import"
 
 	// ---- Account tier: managing grants + delegation WITHIN one account. ----
 
@@ -176,6 +181,7 @@ var mutationTier = map[Mutation]Tier{
 	MutationDeleteRule:       TierSystem,
 	MutationPutAccount:       TierSystem,
 	MutationDeleteAccount:    TierSystem,
+	MutationImport:           TierSystem,
 
 	MutationPutGrant:         TierAccount,
 	MutationDeleteGrant:      TierAccount,

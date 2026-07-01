@@ -79,6 +79,13 @@ service ApertureService {
   rpc BulkPutGrants(BulkGrantsRequest) returns (Empty);
   rpc BulkDeleteGrants(BulkDeleteGrantsRequest) returns (Empty);
 
+  // ---- Declarative state (E5-S2) ----
+  // Export serializes the whole model to one declarative state file as canonical
+  // JSON (system-admin tier read). Import applies such a file as an idempotent,
+  // transactional upsert (system-admin tier mutation).
+  rpc Export(ExportRequest) returns (ExportResponse);
+  rpc Import(ImportRequest) returns (Empty);
+
   // ---- Delegation (gated by the delegation subset rule, actor = delegator) ----
   rpc Bestow(BestowRequest) returns (Empty);
   rpc Revoke(RevokeRequest) returns (Empty);
@@ -246,6 +253,28 @@ message BulkGrantsRequest {
 message BulkDeleteGrantsRequest {
   Actor actor = 1;
   repeated string grant_ids = 2;
+}
+
+// ---- Declarative state messages (E5-S2) ----
+
+// ExportRequest carries only the actor; the whole model is read out. On the
+// Twirp surface the principal is the authenticated identity; actor.account is
+// where the system-admin authority is resolved.
+message ExportRequest {
+  Actor actor = 1;
+}
+
+// ExportResponse returns the whole model as one declarative state file, encoded
+// as canonical JSON (the seed.Document shape).
+message ExportResponse {
+  string document_json = 1;
+}
+
+// ImportRequest applies a declarative state file (document_json, the
+// seed.Document shape as JSON) as an idempotent transactional upsert.
+message ImportRequest {
+  Actor actor = 1;
+  string document_json = 2;
 }
 
 // ---- Delegation messages ----

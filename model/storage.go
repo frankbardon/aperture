@@ -137,6 +137,20 @@ type Storage interface {
 	// APERTURE_NOT_FOUND when nothing matched.
 	DeleteTemplate(ctx context.Context, name string, version int) error
 
+	// ---- Rule (named; E5-S2) ----
+
+	// PutRule upserts a rule keyed on Name: it creates the rule when absent and
+	// replaces it when present. It validates the rule (ValidateRule) before
+	// persisting — the AST is stored verbatim as its canonical JSON.
+	PutRule(ctx context.Context, r Rule) error
+	// GetRule returns the rule named name, or APERTURE_NOT_FOUND when it is unknown.
+	GetRule(ctx context.Context, name string) (Rule, error)
+	// ListRules returns every stored rule, ordered by name.
+	ListRules(ctx context.Context) ([]Rule, error)
+	// DeleteRule removes the rule named name, returning APERTURE_NOT_FOUND when it
+	// is unknown.
+	DeleteRule(ctx context.Context, name string) error
+
 	// ---- Transactional apply (E5-S1) ----
 
 	// Atomic runs fn inside a transaction against a tx-scoped Storage, committing

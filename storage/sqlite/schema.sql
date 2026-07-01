@@ -133,6 +133,19 @@ CREATE TABLE IF NOT EXISTS templates (
     PRIMARY KEY (name, version)
 );
 
+-- Named rules (E5-S2): the persisted home for the rule AST a scope strategy
+-- resolves. The AST rides as a JSON text column carrying the rules package's
+-- canonical serialization verbatim (a rules.Node), so a round-trip is
+-- byte-stable and the editor's format is preserved exactly. Identity is the
+-- rule name; PutRule upserts on it.
+CREATE TABLE IF NOT EXISTS rules (
+    name        TEXT PRIMARY KEY,
+    description TEXT NOT NULL DEFAULT '',
+    ast         TEXT NOT NULL,                -- rules.Node canonical JSON
+    created_at  TEXT NOT NULL DEFAULT '',
+    updated_at  TEXT NOT NULL DEFAULT ''
+);
+
 -- Append-only audit trail (E4-S2, FR-25). Writes are inserts only; deletes
 -- happen exclusively through bulk retention pruning. The timestamp is stored as
 -- integer Unix nanoseconds so range filters and newest-first ordering compare

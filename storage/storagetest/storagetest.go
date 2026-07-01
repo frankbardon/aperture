@@ -9,7 +9,9 @@
 package storagetest
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"reflect"
 	"testing"
 	"time"
@@ -48,6 +50,8 @@ func Run(t *testing.T, newStore Factory) {
 	t.Run("AuditRetentionPrune", func(t *testing.T) { testAuditRetentionPrune(t, newStore(t)) })
 	t.Run("TemplateCRUDAndVersions", func(t *testing.T) { testTemplateCRUDAndVersions(t, newStore(t)) })
 	t.Run("TemplateValidation", func(t *testing.T) { testTemplateValidation(t, newStore(t)) })
+	t.Run("RuleCRUD", func(t *testing.T) { testRuleCRUD(t, newStore(t)) })
+	t.Run("RuleValidation", func(t *testing.T) { testRuleValidation(t, newStore(t)) })
 	t.Run("AtomicCommit", func(t *testing.T) { testAtomicCommit(t, newStore(t)) })
 	t.Run("AtomicRollback", func(t *testing.T) { testAtomicRollback(t, newStore(t)) })
 }
@@ -924,6 +928,96 @@ func testTemplateValidation(t *testing.T, s model.Storage) {
 
 	// Version below 1 → TEMPLATE_INVALID.
 	mustCode(t, s.PutTemplate(ctx(), sampleTemplate("zero", 0)), aerr.APERTURE_TEMPLATE_INVALID)
+}
+
+// ---- Rule (named) ----
+
+func sampleRule(name string) model.Rule {
+	return model.Rule{
+		Name:        name,
+		Description: "select classified documents",
+		AST: json.RawMessage(
+			`{"type":"compare","op":"eq","left":{"type":"var","name":"object.classification"},` +
+				`"right":{"type":"literal","value":"public"}}`),
+	}
+}
+
+func testRuleCRUD(t *testing.T, s model.Storage) {
+	r := sampleRule("public-only")
+	if err := s.PutRule(ctx(), r); err != nil {
+		t.Fatalf("put rule: %v", err)
+	}
+	got, err := s.GetRule(ctx(), "public-only")
+	if err != nil {
+		t.Fatalf("get rule: %v", err)
+	}
+	if got.Name != r.Name || got.Description != r.Description {
+		t.Fatalf("rule round trip mismatch: got %+v want %+v", got, r)
+	}
+	if !bytes.Equal(normalizeJSON(t, got.AST), normalizeJSON(t, r.AST)) {
+		t.Fatalf("rule AST round trip mismatch:\n got %s\nwant %s", got.AST, r.AST)
+	}
+
+	// Upsert replaces in place.
+	r2 := sampleRule("public-only")
+	r2.Description = "edited"
+	if err := s.PutRule(ctx(), r2); err != nil {
+		t.Fatalf("upsert rule: %v", err)
+	}
+	got, _ = s.GetRule(ctx(), "public-only")
+	if got.Description != "edited" {
+		t.Fatalf("upsert did not replace description: %q", got.Description)
+	}
+
+	// A second rule coexists; List is ordered by name.
+	if err := s.PutRule(ctx(), sampleRule("alpha")); err != nil {
+		t.Fatalf("put second rule: %v", err)
+	}
+	list, err := s.ListRules(ctx())
+	if err != nil {
+		t.Fatalf("list rules: %v", err)
+	}
+	if len(list) != 2 || list[0].Name != "alpha" || list[1].Name != "public-only" {
+		t.Fatalf("list = %+v, want [alpha, public-only]", list)
+	}
+
+	// Delete removes the rule; a second delete is NOT_FOUND.
+	if err := s.DeleteRule(ctx(), "public-only"); err != nil {
+		t.Fatalf("delete rule: %v", err)
+	}
+	mustCode(t, func() error { _, e := s.GetRule(ctx(), "public-only"); return e }(), aerr.APERTURE_NOT_FOUND)
+	mustCode(t, s.DeleteRule(ctx(), "public-only"), aerr.APERTURE_NOT_FOUND)
+	mustCode(t, func() error { _, e := s.GetRule(ctx(), "ghost"); return e }(), aerr.APERTURE_NOT_FOUND)
+}
+
+func testRuleValidation(t *testing.T, s model.Storage) {
+	// Empty name → RULE_INVALID, nothing persisted.
+	mustCode(t, s.PutRule(ctx(), model.Rule{AST: json.RawMessage(`{"type":"var","name":"object.x"}`)}),
+		aerr.APERTURE_RULE_INVALID)
+	// Missing AST → RULE_INVALID.
+	mustCode(t, s.PutRule(ctx(), model.Rule{Name: "no-ast"}), aerr.APERTURE_RULE_INVALID)
+	mustCode(t, func() error { _, e := s.GetRule(ctx(), "no-ast"); return e }(), aerr.APERTURE_NOT_FOUND)
+	// Non-object AST (array) → RULE_INVALID.
+	mustCode(t, s.PutRule(ctx(), model.Rule{Name: "arr", AST: json.RawMessage(`[1,2,3]`)}),
+		aerr.APERTURE_RULE_INVALID)
+	// Malformed JSON → RULE_INVALID.
+	mustCode(t, s.PutRule(ctx(), model.Rule{Name: "bad", AST: json.RawMessage(`{not json`)}),
+		aerr.APERTURE_RULE_INVALID)
+}
+
+// normalizeJSON re-encodes raw JSON to a canonical byte form so AST comparisons
+// ignore insignificant whitespace differences a backend may introduce.
+func normalizeJSON(t *testing.T, raw []byte) []byte {
+	t.Helper()
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		t.Fatalf("normalize json: %v (%s)", err, raw)
+	}
+	out, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("normalize marshal: %v", err)
+	}
+	return out
 }
 
 // ---- Transactional apply ----
