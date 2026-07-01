@@ -20,6 +20,11 @@ import { createRoot } from "react-dom/client";
 
 // Re-export the toolkit E7-S2 builds the real editor on. One import URL, one
 // pinned version set — the domain code never touches node_modules.
+//
+// createRoot is re-exported because rete-react-plugin v2 REQUIRES it: the
+// ReactPlugin constructor must be handed react-dom/client's createRoot to mount
+// node components. The E7-S2 editor (rules.js) reads it off this module as
+// `mod.createRoot`; without the export it is undefined and no node ever renders.
 export {
   NodeEditor,
   ClassicPreset,
@@ -29,6 +34,7 @@ export {
   ConnectionPresets,
   ReactPlugin,
   ReactPresets,
+  createRoot,
 };
 
 // createHelloCanvas mounts a minimal Rete editor into `container` (a DOM

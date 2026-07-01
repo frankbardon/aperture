@@ -148,6 +148,53 @@ func TestRuleEditorWiring(t *testing.T) {
 	}
 }
 
+// TestReteBundleExportsEditorContract guards the runtime contract between the
+// vendored Rete bundle and the E7-S2 editor: rules.js destructures a fixed set
+// of symbols off the bundle namespace AND reads mod.createRoot to construct the
+// React renderer. rete-react-plugin v2 REQUIRES createRoot — if the bundle stops
+// exporting it (the E7-S1 regression: entry.mjs imported createRoot but omitted
+// it from the export list), ReactPlugin is handed `undefined`, no node ever
+// renders, and the canvas is silently blank while palette adds appear to do
+// nothing. A load-smoke that only checks the file serves cannot catch that; this
+// asserts every symbol the editor consumes is actually exported.
+func TestReteBundleExportsEditorContract(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	get := func(path string) string {
+		res, err := http.Get(srv.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		defer res.Body.Close()
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s: status = %d, want 200", path, res.StatusCode)
+		}
+		return readAll(t, res)
+	}
+
+	bundle := get("/vendor/rete/rete.min.js")
+	editor := get("/js/rules.js")
+
+	// Every symbol rules.js pulls off the bundle namespace must be exported by
+	// the bundle. Minified ESM exports read `<local> as <Name>`.
+	required := []string{
+		"NodeEditor", "ClassicPreset", "AreaPlugin", "AreaExtensions",
+		"ConnectionPlugin", "ConnectionPresets", "ReactPlugin", "ReactPresets",
+		"createRoot",
+	}
+	for _, sym := range required {
+		if !strings.Contains(bundle, "as "+sym) {
+			t.Errorf("vendored rete bundle does not export %q — the editor cannot render without it", sym)
+		}
+	}
+
+	// The editor must actually hand createRoot to ReactPlugin (the load-bearing
+	// use that the missing export broke).
+	if !strings.Contains(editor, "mod.createRoot") {
+		t.Errorf("rules.js must construct ReactPlugin with mod.createRoot (rete-react-plugin v2 requires it)")
+	}
+}
+
 // TestStaticDoesNotShadowAPI asserts that mounting the static file server at "/"
 // LAST does not shadow the API routes: an API route still resolves to its
 // handler (not the file server's 404), and an unknown path falls through to the
