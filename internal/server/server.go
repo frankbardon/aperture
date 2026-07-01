@@ -13,6 +13,8 @@
 //   - The minimal plain-HTTP POST /check decision route, kept (FR per E1-S5) so
 //     the simple decision path survives the Twirp fold-in. It calls the same
 //     facade, so its fail-closed semantics are identical.
+//   - The embedded admin shell (static.go) served from the site root, mounted
+//     LAST so the more specific API patterns above win by longest-match.
 //
 // The whole mux is wrapped by the Authenticate middleware in the serve command,
 // which attaches an authenticated principal to the context when a credential is
@@ -77,6 +79,12 @@ func New(svc *service.Service, logger ...*slog.Logger) http.Handler {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
+
+	// The embedded admin shell at the site root, mounted LAST. net/http's
+	// ServeMux resolves by longest matching pattern, so the API routes above
+	// (the Twirp path prefix, POST /check, GET /healthz) win over the root "/"
+	// this handler owns — the static server never shadows the API.
+	mux.Handle("/", staticHandler())
 
 	return mux
 }

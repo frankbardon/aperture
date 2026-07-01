@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Aperture · access control</title>
+    <!--
+      Vendored, committed pre-built blobs (no node build). See vendor/README.md
+      for versions + regeneration. bera.css is the authoritative BERA styling;
+      Tailwind/DaisyUI are available to later domain screens.
+    -->
+    <link rel="stylesheet" href="/css/bera.css" />
+    <script defer src="/vendor/alpine.min.js"></script>
+    <script defer src="/js/app.js"></script>
+  </head>
+  <body>
+    <!--
+      Lucide icon sprite (stroke-only, 1.5px per BERA §7). Inlined so the binary
+      stays self-contained — no icon CDN, no icon JS. Add symbols here as the nav
+      grows; reference with <use href="#icon-…">.
+    -->
+    <svg width="0" height="0" style="position: absolute" aria-hidden="true">
+      <defs>
+        <g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <symbol id="icon-aperture" viewBox="0 0 24 24">
+            <circle cx="12" cy="12" r="10" />
+            <line x1="14.31" x2="20.05" y1="8" y2="17.94" />
+            <line x1="9.69" x2="21.17" y1="8" y2="8" />
+            <line x1="7.38" x2="13.12" y1="12" y2="2.06" />
+            <line x1="9.69" x2="3.95" y1="16" y2="6.06" />
+            <line x1="14.31" x2="2.83" y1="16" y2="16" />
+            <line x1="16.62" x2="10.88" y1="12" y2="21.94" />
+          </symbol>
+          <symbol id="icon-crud" viewBox="0 0 24 24">
+            <path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z" />
+            <path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65" />
+            <path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65" />
+          </symbol>
+          <symbol id="icon-grants" viewBox="0 0 24 24">
+            <path d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 0 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z" />
+            <circle cx="16.5" cy="7.5" r=".5" fill="currentColor" />
+          </symbol>
+          <symbol id="icon-audit" viewBox="0 0 24 24">
+            <path d="M15 12h-5" />
+            <path d="M15 8h-5" />
+            <path d="M19 17V5a2 2 0 0 0-2-2H4" />
+            <path d="M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3" />
+          </symbol>
+          <symbol id="icon-rules" viewBox="0 0 24 24">
+            <rect width="8" height="8" x="3" y="3" rx="2" />
+            <path d="M7 11v4a2 2 0 0 0 2 2h4" />
+            <rect width="8" height="8" x="13" y="13" rx="2" />
+          </symbol>
+        </g>
+      </defs>
+    </svg>
+
+    <div x-data="shell()" x-cloak>
+      <div class="shell">
+        <!-- Fixed left sidebar (~232px) -->
+        <aside class="shell__sidebar">
+          <div class="shell__brand">
+            <span class="shell__brand-mark">
+              <svg width="14" height="14"><use href="#icon-aperture" /></svg>
+            </span>
+            <span class="shell__wordmark">Aperture</span>
+          </div>
+          <nav class="shell__nav">
+            <div class="shell__nav-group">
+              <div class="shell__nav-heading">Access control</div>
+              <template x-for="section in sections" :key="section.id">
+                <a
+                  class="bera-nav-item"
+                  :class="{ 'bera-nav-item--active': active === section.id }"
+                  :href="section.route"
+                >
+                  <svg><use :href="'#icon-' + section.id" /></svg>
+                  <span x-text="section.label"></span>
+                </a>
+              </template>
+            </div>
+          </nav>
+        </aside>
+
+        <!-- Top utility bar (~52px) -->
+        <header class="shell__topbar">
+          <span class="shell__topbar-title" x-text="activeSection.label"></span>
+          <div class="shell__topbar-spacer"></div>
+          <template x-if="signedIn">
+            <div class="shell__identity">
+              <span>Signed in as</span>
+              <span class="shell__identity-id" x-text="principal"></span>
+              <button class="bera-btn bera-btn--secondary" @click="signOut()">Sign out</button>
+            </div>
+          </template>
+        </header>
+
+        <!-- Flex content area — section placeholders (E6-S2/S3/S4, E7 fill these) -->
+        <main class="shell__content">
+          <div class="bera-empty">
+            <h1 class="bera-h3" x-text="activeSection.label"></h1>
+            <p class="bera-body" style="margin-top: 8px" x-text="activeSection.note"></p>
+            <p class="bera-caption" style="margin-top: 12px">
+              This section is part of the shell. Its screen lands in
+              <span class="bera-mono" x-text="activeSection.story"></span>.
+            </p>
+          </div>
+        </main>
+      </div>
+
+      <!-- Sign-in affordance: shown when no dev bearer is present. Auth is
+           external — this only names which principal the dev session presents. -->
+      <template x-if="!signedIn">
+        <div class="bera-scrim">
+          <form class="bera-signin" @submit.prevent="signIn()">
+            <h2 class="bera-signin__title">Sign in</h2>
+            <p class="bera-signin__hint">
+              Aperture consumes external credentials; it never issues them. For
+              local and demo use the dev authenticator, where the bearer is the
+              principal id. Enter a principal id to continue.
+            </p>
+            <label class="bera-label" for="signin-id">Principal id</label>
+            <input
+              class="bera-input"
+              id="signin-id"
+              type="text"
+              autocomplete="off"
+              placeholder="alice"
+              x-model="signInId"
+            />
+            <div class="bera-signin__row">
+              <button class="bera-btn bera-btn--primary" type="submit">Continue</button>
+            </div>
+          </form>
+        </div>
+      </template>
+    </div>
+  </body>
+</html>
