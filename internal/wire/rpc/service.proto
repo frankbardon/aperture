@@ -86,6 +86,13 @@ service ApertureService {
   rpc Export(ExportRequest) returns (ExportResponse);
   rpc Import(ImportRequest) returns (Empty);
 
+  // ---- Audit query (E6-S4) ----
+  // QueryAudit returns the append-only audit events matching a filter, newest
+  // first. It is a gated READ (it records nothing): a system-admin may query the
+  // whole trail; an account-admin may query events scoped to their own account
+  // (the request's account filter). It backs the audit viewer (E6-S4).
+  rpc QueryAudit(QueryAuditRequest) returns (QueryAuditResponse);
+
   // ---- Delegation (gated by the delegation subset rule, actor = delegator) ----
   rpc Bestow(BestowRequest) returns (Empty);
   rpc Revoke(RevokeRequest) returns (Empty);
@@ -275,6 +282,39 @@ message ExportResponse {
 message ImportRequest {
   Actor actor = 1;
   string document_json = 2;
+}
+
+// ---- Audit query messages (E6-S4) ----
+
+// QueryAuditRequest carries the authenticated actor plus the AuditFilter fields
+// — every filter field is an optional narrowing predicate, ANDed together, and
+// an all-empty filter matches everything. On the Twirp surface the actor's
+// principal is the authenticated identity; actor.account is where the reader's
+// admin authority is resolved.
+message QueryAuditRequest {
+  Actor actor = 1;
+  // filter_actor narrows to events whose REAL actor equals this principal id.
+  string filter_actor = 2;
+  // account narrows to events scoped to this account. An account-admin (not a
+  // system-admin) MUST set it to their own account, which also gates the read.
+  string account = 3;
+  // event_type narrows to one category: "mutation" | "decision" |
+  // "impersonation" | "delegation".
+  string event_type = 4;
+  // outcome narrows to one result: "allow" | "deny" | "success" | "failure".
+  string outcome = 5;
+  // since / until are RFC3339 time bounds (since inclusive lower, until
+  // exclusive upper); empty means unbounded.
+  string since = 6;
+  string until = 7;
+  // limit caps the number of returned events; <= 0 means no cap.
+  int32 limit = 8;
+}
+
+// QueryAuditResponse returns the matching audit events newest-first, each a
+// model.AuditEvent as canonical JSON (the shape the audit viewer renders).
+message QueryAuditResponse {
+  repeated string events_json = 1;
 }
 
 // ---- Delegation messages ----

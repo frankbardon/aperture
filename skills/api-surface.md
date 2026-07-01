@@ -36,6 +36,12 @@ Full surface:
 - **Decisions** (read): `Check`, `Enumerate`, `Explain` + `CheckBatch`,
   `EnumerateBatch`, `ExplainBatch`. Fail-closed (an operational error folds to a
   deny; only input-validation is returned).
+- **Audit query** (read): `QueryAudit(AuditFilter)` returns the append-only audit
+  events matching the filter (actor, account, event type, outcome, since/until,
+  limit), newest-first, each as canonical JSON. It is a GATED read — a
+  system-admin reads the whole trail; an account-admin reads only events scoped to
+  their own account (the filter must name it). It records nothing (not itself an
+  audited mutation) and backs the E6-S4 audit viewer.
 - **Entity CRUD**: `Put/Get/List/Delete` for `ObjectType`, `Permission`,
   `Principal`, `Role`, `Group`, `Account`; `Put/Delete` for `Membership`;
   `Put/Get/List/Delete` for `Grant`.

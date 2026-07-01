@@ -23,6 +23,10 @@ const SECTIONS = [
     note: "Bestowed grants, delegation and impersonation." },
   { id: "audit", label: "Audit", route: "#/audit", story: "E6-S4",
     note: "The append-only decision and mutation log." },
+  { id: "whatif", label: "What-if", route: "#/whatif", story: "E6-S4",
+    note: "Simulate a decision against the live model and read its explain trace." },
+  { id: "portability", label: "Import / export", route: "#/portability", story: "E6-S4",
+    note: "Download the declarative model file, or import one with a preview diff." },
   { id: "rules", label: "Rules", route: "#/rules", story: "E7",
     note: "The Rete canvas that edits the pulse-expression rule AST." },
 ];

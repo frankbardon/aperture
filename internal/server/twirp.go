@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/frankbardon/aperture/auth"
 	"github.com/frankbardon/aperture/engine"
@@ -641,6 +642,53 @@ func (h *twirpHandler) Import(ctx context.Context, req *rpc.ImportRequest) (*rpc
 		return nil, mapErr(err)
 	}
 	return empty(h.svc.Import(ctx, actor, doc))
+}
+
+// ---- Audit query (system- or account-admin gated read) ----
+
+func (h *twirpHandler) QueryAudit(ctx context.Context, req *rpc.QueryAuditRequest) (*rpc.QueryAuditResponse, error) {
+	actor, err := h.actor(ctx, actorAccount(req.Actor))
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	filter := model.AuditFilter{
+		Actor:     req.FilterActor,
+		Account:   req.Account,
+		EventType: model.AuditEventType(req.EventType),
+		Outcome:   model.AuditOutcome(req.Outcome),
+		Limit:     int(req.Limit),
+	}
+	if req.Since != "" {
+		ts, perr := time.Parse(timeFormat, req.Since)
+		if perr != nil {
+			return nil, mapErr(aerr.Wrap(aerr.APERTURE_INVALID_INPUT, "twirp: since is not an RFC3339 timestamp", perr))
+		}
+		filter.Since = ts
+	}
+	if req.Until != "" {
+		ts, perr := time.Parse(timeFormat, req.Until)
+		if perr != nil {
+			return nil, mapErr(aerr.Wrap(aerr.APERTURE_INVALID_INPUT, "twirp: until is not an RFC3339 timestamp", perr))
+		}
+		filter.Until = ts
+	}
+	events, err := h.svc.QueryAudit(ctx, actor, filter)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return &rpc.QueryAuditResponse{EventsJson: mustMarshalEach(events)}, nil
+}
+
+// mustMarshalEach marshals each event to canonical JSON. AuditEvent is a plain
+// value shape with no marshal-failure modes, so an error here is impossible; the
+// helper keeps the RPC body terse.
+func mustMarshalEach(events []model.AuditEvent) []string {
+	out := make([]string, len(events))
+	for i := range events {
+		js, _ := json.Marshal(events[i])
+		out[i] = string(js)
+	}
+	return out
 }
 
 // ---- Delegation (actor = the authenticated delegator) ----

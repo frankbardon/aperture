@@ -5,6 +5,7 @@ import (
 
 	"github.com/frankbardon/aperture/audit"
 	"github.com/frankbardon/aperture/engine"
+	aerr "github.com/frankbardon/aperture/errors"
 	"github.com/frankbardon/aperture/model"
 )
 
@@ -30,6 +31,46 @@ import (
 // to).
 func WithAudit(rec *audit.Recorder) Option {
 	return func(s *Service) { s.audit = rec }
+}
+
+// QueryAudit returns the append-only audit events matching filter, newest-first
+// (the shape the E6-S4 audit viewer renders). It is a GATED READ, not a mutation
+// — it records nothing and is not itself audited. Authorization: a system-admin
+// may read the WHOLE trail; an account-admin may read only events scoped to
+// their OWN account, so the query MUST name that account. Any other actor — or an
+// account-admin querying with no account or a different account — is denied.
+//
+// The read comes from storage directly (not the async recorder), so it reflects
+// every durably-persisted event regardless of whether decision audit is wired.
+func (s *Service) QueryAudit(ctx context.Context, actor Actor, filter model.AuditFilter) ([]model.AuditEvent, error) {
+	if err := s.requireMutator(); err != nil {
+		return nil, err
+	}
+	if actor.Principal == "" {
+		return nil, aerr.New(aerr.APERTURE_UNAUTHENTICATED,
+			"service: an audit query requires an authenticated principal")
+	}
+	if err := s.authorizeAuditRead(ctx, actor, filter.Account); err != nil {
+		return nil, err
+	}
+	return s.store.QueryAudit(ctx, filter)
+}
+
+// authorizeAuditRead gates a QueryAudit: a system-admin reads everything; failing
+// that, an account-admin may read events scoped to their own account (the filter
+// must name it). The system-admin denial is returned when neither holds, so the
+// caller sees why the broad read was refused.
+func (s *Service) authorizeAuditRead(ctx context.Context, actor Actor, account string) error {
+	sysErr := s.gate.RequireSystemAdmin(ctx, actor.gateActor())
+	if sysErr == nil {
+		return nil
+	}
+	if account != "" {
+		if acctErr := s.gate.RequireAccountAdmin(ctx, actor.gateActor(), account); acctErr == nil {
+			return nil
+		}
+	}
+	return sysErr
 }
 
 // enrichImpersonation stamps the real actor, effective subject, and mode onto ev

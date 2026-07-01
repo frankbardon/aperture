@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/frankbardon/aperture/audit"
 	"github.com/frankbardon/aperture/auth"
 	"github.com/frankbardon/aperture/authz"
 	"github.com/frankbardon/aperture/delegation"
@@ -84,11 +85,21 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 	// path: the engine for decisions + authority, the admin gate for tier checks,
 	// and the delegation / impersonation services for their own gated mutations.
 	eng := engine.New(store)
+
+	// Wire the append-only audit trail (E4-S2) through the same store so the
+	// mutation/impersonation/delegation record is durable and the E6-S4 audit
+	// viewer has data to query. Mutations are always recorded; decisions are
+	// sampled — sample every decision here so the demo trail is legible. The
+	// recorder owns a background writer that Close flushes on shutdown.
+	rec := audit.New(store, audit.WithSampleRate(1))
+	defer func() { _ = rec.Close() }()
+
 	svc := service.New(eng,
 		service.WithStorage(store),
 		service.WithGate(authz.NewGate(eng)),
 		service.WithDelegation(delegation.New(store, eng)),
 		service.WithImpersonation(impersonation.New(store, eng)),
+		service.WithAudit(rec),
 	)
 
 	handler := server.Authenticate(authn, server.New(svc))

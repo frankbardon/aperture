@@ -358,6 +358,9 @@ body {
 .bera-badge--machine { background: var(--neutral-300); color: var(--neutral-700); border-color: var(--neutral-400); }
 .bera-badge--allow { background: var(--grass-50); color: var(--color-success); border-color: var(--grass-100); }
 .bera-badge--deny { background: var(--strawberry-50); color: var(--color-danger); border-color: var(--strawberry-100); }
+/* Audit outcomes reuse the allow/deny families: success reads green, failure red. */
+.bera-badge--success { background: var(--grass-50); color: var(--color-success); border-color: var(--grass-100); }
+.bera-badge--failure { background: var(--strawberry-50); color: var(--color-danger); border-color: var(--strawberry-100); }
 
 /* ---------- Inline alert / banner ---------- */
 .bera-alert {
@@ -368,6 +371,11 @@ body {
 .bera-alert__code { font-family: var(--font-mono); font-weight: 600; flex: none; }
 .bera-alert--danger { background: var(--strawberry-50); border-color: var(--strawberry-100); color: var(--color-danger); }
 .bera-alert--info { background: var(--bera-50); border-color: var(--bera-75); color: var(--bera-800); }
+.bera-alert--success { background: var(--grass-50); border-color: var(--grass-100); color: var(--color-success); }
+
+/* A trace row highlighted as a deciding grant in the what-if simulator. */
+.bera-table tbody tr.bera-row--active { background: var(--bera-50); }
+.bera-table tbody tr.bera-row--active:hover { background: var(--bera-75); }
 
 /* ---------- Modal (reuses .bera-scrim backdrop, §8 modals cap 640px) ---------- */
 .bera-modal__panel {

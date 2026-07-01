@@ -7,10 +7,11 @@ applies_to: [frontend, http]
 # UI shell
 
 Aperture ships a single-page admin shell embedded in the binary. It is the
-**chrome** — a sidebar + top bar + content frame with a nav skeleton — that the
-model (CRUD), grants, audit, and rules screens fill in later stories; E7 mounts
-the Rete rule canvas in the rules section. There is no node build: the whole
-frontend is pre-built, committed blobs behind `//go:embed`.
+**chrome** — a sidebar + top bar + content frame — plus the domain screens that
+fill it. The nav is Model (CRUD), Grants, Audit, What-if, Import / export, and
+Rules; E7 mounts the Rete rule canvas in the Rules section (the only remaining
+placeholder). There is no node build: the whole frontend is pre-built, committed
+blobs behind `//go:embed`.
 
 ## Where it lives
 
@@ -22,8 +23,20 @@ frontend is pre-built, committed blobs behind `//go:embed`.
   fills the Grants section, E6-S3, with a three-tab provisioning component — raw
   grant management, template apply with a client-side preview + bulk provisioning,
   and delegation bestow/revoke — over the grant / template / delegation RPCs);
-  `vendor/` holds the pre-built blobs (see `vendor/README.md` for pinned versions
-  + regeneration).
+  `js/audit.js` fills the Audit section (E6-S4), a READ-ONLY queryable table over
+  the append-only trail via the `QueryAudit` RPC (filter by actor, account, event
+  type, outcome, and time window), showing both the real actor and the effective
+  subject for impersonation/delegation events; `js/whatif.js` fills the What-if
+  section (E6-S4), a READ-ONLY decision simulator that runs the open `Check` +
+  `Explain` RPCs against the LIVE model and renders the verdict plus the full
+  trace (expanded subject set, every grant considered with its action-match /
+  coverage / specificity, and the deciding grants); `js/portability.js` fills the
+  Import / export section (E6-S4), driving `Export` (download the declarative
+  model file) and `Import` (upload → client-side preview DIFF of would-be
+  adds/changes against a fresh export → confirm → transactional upsert), all three
+  gated by the tier probe (audit read is system- OR account-admin; what-if is
+  open; export/import is system-admin); `vendor/` holds the pre-built blobs (see
+  `vendor/README.md` for pinned versions + regeneration).
 - Served by `staticHandler()`, mounted **LAST** on the mux in `server.New`
   (`mux.Handle("/", …)`). net/http resolves by longest matching pattern, so the
   Twirp prefix, `POST /check`, and `GET /healthz` win over root `/` — the file

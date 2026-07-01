@@ -1571,6 +1571,166 @@ func (x *ImportRequest) GetDocumentJson() string {
 	return ""
 }
 
+// QueryAuditRequest carries the authenticated actor plus the AuditFilter fields
+// — every filter field is an optional narrowing predicate, ANDed together, and
+// an all-empty filter matches everything. On the Twirp surface the actor's
+// principal is the authenticated identity; actor.account is where the reader's
+// admin authority is resolved.
+type QueryAuditRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Actor *Actor                 `protobuf:"bytes,1,opt,name=actor,proto3" json:"actor,omitempty"`
+	// filter_actor narrows to events whose REAL actor equals this principal id.
+	FilterActor string `protobuf:"bytes,2,opt,name=filter_actor,json=filterActor,proto3" json:"filter_actor,omitempty"`
+	// account narrows to events scoped to this account. An account-admin (not a
+	// system-admin) MUST set it to their own account, which also gates the read.
+	Account string `protobuf:"bytes,3,opt,name=account,proto3" json:"account,omitempty"`
+	// event_type narrows to one category: "mutation" | "decision" |
+	// "impersonation" | "delegation".
+	EventType string `protobuf:"bytes,4,opt,name=event_type,json=eventType,proto3" json:"event_type,omitempty"`
+	// outcome narrows to one result: "allow" | "deny" | "success" | "failure".
+	Outcome string `protobuf:"bytes,5,opt,name=outcome,proto3" json:"outcome,omitempty"`
+	// since / until are RFC3339 time bounds (since inclusive lower, until
+	// exclusive upper); empty means unbounded.
+	Since string `protobuf:"bytes,6,opt,name=since,proto3" json:"since,omitempty"`
+	Until string `protobuf:"bytes,7,opt,name=until,proto3" json:"until,omitempty"`
+	// limit caps the number of returned events; <= 0 means no cap.
+	Limit         int32 `protobuf:"varint,8,opt,name=limit,proto3" json:"limit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *QueryAuditRequest) Reset() {
+	*x = QueryAuditRequest{}
+	mi := &file_service_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *QueryAuditRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*QueryAuditRequest) ProtoMessage() {}
+
+func (x *QueryAuditRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_service_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use QueryAuditRequest.ProtoReflect.Descriptor instead.
+func (*QueryAuditRequest) Descriptor() ([]byte, []int) {
+	return file_service_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *QueryAuditRequest) GetActor() *Actor {
+	if x != nil {
+		return x.Actor
+	}
+	return nil
+}
+
+func (x *QueryAuditRequest) GetFilterActor() string {
+	if x != nil {
+		return x.FilterActor
+	}
+	return ""
+}
+
+func (x *QueryAuditRequest) GetAccount() string {
+	if x != nil {
+		return x.Account
+	}
+	return ""
+}
+
+func (x *QueryAuditRequest) GetEventType() string {
+	if x != nil {
+		return x.EventType
+	}
+	return ""
+}
+
+func (x *QueryAuditRequest) GetOutcome() string {
+	if x != nil {
+		return x.Outcome
+	}
+	return ""
+}
+
+func (x *QueryAuditRequest) GetSince() string {
+	if x != nil {
+		return x.Since
+	}
+	return ""
+}
+
+func (x *QueryAuditRequest) GetUntil() string {
+	if x != nil {
+		return x.Until
+	}
+	return ""
+}
+
+func (x *QueryAuditRequest) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+// QueryAuditResponse returns the matching audit events newest-first, each a
+// model.AuditEvent as canonical JSON (the shape the audit viewer renders).
+type QueryAuditResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	EventsJson    []string               `protobuf:"bytes,1,rep,name=events_json,json=eventsJson,proto3" json:"events_json,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *QueryAuditResponse) Reset() {
+	*x = QueryAuditResponse{}
+	mi := &file_service_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *QueryAuditResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*QueryAuditResponse) ProtoMessage() {}
+
+func (x *QueryAuditResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_service_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use QueryAuditResponse.ProtoReflect.Descriptor instead.
+func (*QueryAuditResponse) Descriptor() ([]byte, []int) {
+	return file_service_proto_rawDescGZIP(), []int{30}
+}
+
+func (x *QueryAuditResponse) GetEventsJson() []string {
+	if x != nil {
+		return x.EventsJson
+	}
+	return nil
+}
+
 type BestowRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// delegator is the principal bestowing; on the Twirp surface it is overridden
@@ -1583,7 +1743,7 @@ type BestowRequest struct {
 
 func (x *BestowRequest) Reset() {
 	*x = BestowRequest{}
-	mi := &file_service_proto_msgTypes[29]
+	mi := &file_service_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1595,7 +1755,7 @@ func (x *BestowRequest) String() string {
 func (*BestowRequest) ProtoMessage() {}
 
 func (x *BestowRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[29]
+	mi := &file_service_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1608,7 +1768,7 @@ func (x *BestowRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BestowRequest.ProtoReflect.Descriptor instead.
 func (*BestowRequest) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{29}
+	return file_service_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *BestowRequest) GetDelegator() string {
@@ -1635,7 +1795,7 @@ type RevokeRequest struct {
 
 func (x *RevokeRequest) Reset() {
 	*x = RevokeRequest{}
-	mi := &file_service_proto_msgTypes[30]
+	mi := &file_service_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1647,7 +1807,7 @@ func (x *RevokeRequest) String() string {
 func (*RevokeRequest) ProtoMessage() {}
 
 func (x *RevokeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[30]
+	mi := &file_service_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1660,7 +1820,7 @@ func (x *RevokeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RevokeRequest.ProtoReflect.Descriptor instead.
 func (*RevokeRequest) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{30}
+	return file_service_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *RevokeRequest) GetDelegator() string {
@@ -1689,7 +1849,7 @@ type ImpersonationStartRequest struct {
 
 func (x *ImpersonationStartRequest) Reset() {
 	*x = ImpersonationStartRequest{}
-	mi := &file_service_proto_msgTypes[31]
+	mi := &file_service_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1701,7 +1861,7 @@ func (x *ImpersonationStartRequest) String() string {
 func (*ImpersonationStartRequest) ProtoMessage() {}
 
 func (x *ImpersonationStartRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[31]
+	mi := &file_service_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1714,7 +1874,7 @@ func (x *ImpersonationStartRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ImpersonationStartRequest.ProtoReflect.Descriptor instead.
 func (*ImpersonationStartRequest) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{31}
+	return file_service_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *ImpersonationStartRequest) GetOperator() string {
@@ -1759,7 +1919,7 @@ type ImpersonationSession struct {
 
 func (x *ImpersonationSession) Reset() {
 	*x = ImpersonationSession{}
-	mi := &file_service_proto_msgTypes[32]
+	mi := &file_service_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1771,7 +1931,7 @@ func (x *ImpersonationSession) String() string {
 func (*ImpersonationSession) ProtoMessage() {}
 
 func (x *ImpersonationSession) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[32]
+	mi := &file_service_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1784,7 +1944,7 @@ func (x *ImpersonationSession) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ImpersonationSession.ProtoReflect.Descriptor instead.
 func (*ImpersonationSession) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{32}
+	return file_service_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *ImpersonationSession) GetRealActor() string {
@@ -1841,7 +2001,7 @@ type ImpersonationStopRequest struct {
 
 func (x *ImpersonationStopRequest) Reset() {
 	*x = ImpersonationStopRequest{}
-	mi := &file_service_proto_msgTypes[33]
+	mi := &file_service_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1853,7 +2013,7 @@ func (x *ImpersonationStopRequest) String() string {
 func (*ImpersonationStopRequest) ProtoMessage() {}
 
 func (x *ImpersonationStopRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[33]
+	mi := &file_service_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1866,7 +2026,7 @@ func (x *ImpersonationStopRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ImpersonationStopRequest.ProtoReflect.Descriptor instead.
 func (*ImpersonationStopRequest) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{33}
+	return file_service_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *ImpersonationStopRequest) GetOperator() string {
@@ -1993,7 +2153,20 @@ const file_service_proto_rawDesc = "" +
 	"\rdocument_json\x18\x01 \x01(\tR\fdocumentJson\"[\n" +
 	"\rImportRequest\x12%\n" +
 	"\x05actor\x18\x01 \x01(\v2\x0f.aperture.ActorR\x05actor\x12#\n" +
-	"\rdocument_json\x18\x02 \x01(\tR\fdocumentJson\"L\n" +
+	"\rdocument_json\x18\x02 \x01(\tR\fdocumentJson\"\xf2\x01\n" +
+	"\x11QueryAuditRequest\x12%\n" +
+	"\x05actor\x18\x01 \x01(\v2\x0f.aperture.ActorR\x05actor\x12!\n" +
+	"\ffilter_actor\x18\x02 \x01(\tR\vfilterActor\x12\x18\n" +
+	"\aaccount\x18\x03 \x01(\tR\aaccount\x12\x1d\n" +
+	"\n" +
+	"event_type\x18\x04 \x01(\tR\teventType\x12\x18\n" +
+	"\aoutcome\x18\x05 \x01(\tR\aoutcome\x12\x14\n" +
+	"\x05since\x18\x06 \x01(\tR\x05since\x12\x14\n" +
+	"\x05until\x18\a \x01(\tR\x05until\x12\x14\n" +
+	"\x05limit\x18\b \x01(\x05R\x05limit\"5\n" +
+	"\x12QueryAuditResponse\x12\x1f\n" +
+	"\vevents_json\x18\x01 \x03(\tR\n" +
+	"eventsJson\"L\n" +
 	"\rBestowRequest\x12\x1c\n" +
 	"\tdelegator\x18\x01 \x01(\tR\tdelegator\x12\x1d\n" +
 	"\n" +
@@ -2018,7 +2191,7 @@ const file_service_proto_rawDesc = "" +
 	"expires_at\x18\x06 \x01(\tR\texpiresAt\"p\n" +
 	"\x18ImpersonationStopRequest\x12\x1a\n" +
 	"\boperator\x18\x01 \x01(\tR\boperator\x128\n" +
-	"\asession\x18\x02 \x01(\v2\x1e.aperture.ImpersonationSessionR\asession2\xaa\x18\n" +
+	"\asession\x18\x02 \x01(\v2\x1e.aperture.ImpersonationSessionR\asession2\xf3\x18\n" +
 	"\x0fApertureService\x123\n" +
 	"\x05Check\x12\x16.aperture.CheckRequest\x1a\x12.aperture.Decision\x12G\n" +
 	"\n" +
@@ -2070,7 +2243,9 @@ const file_service_proto_rawDesc = "" +
 	"\rBulkPutGrants\x12\x1b.aperture.BulkGrantsRequest\x1a\x0f.aperture.Empty\x12F\n" +
 	"\x10BulkDeleteGrants\x12!.aperture.BulkDeleteGrantsRequest\x1a\x0f.aperture.Empty\x12;\n" +
 	"\x06Export\x12\x17.aperture.ExportRequest\x1a\x18.aperture.ExportResponse\x122\n" +
-	"\x06Import\x12\x17.aperture.ImportRequest\x1a\x0f.aperture.Empty\x122\n" +
+	"\x06Import\x12\x17.aperture.ImportRequest\x1a\x0f.aperture.Empty\x12G\n" +
+	"\n" +
+	"QueryAudit\x12\x1b.aperture.QueryAuditRequest\x1a\x1c.aperture.QueryAuditResponse\x122\n" +
 	"\x06Bestow\x12\x17.aperture.BestowRequest\x1a\x0f.aperture.Empty\x122\n" +
 	"\x06Revoke\x12\x17.aperture.RevokeRequest\x1a\x0f.aperture.Empty\x12Y\n" +
 	"\x12ImpersonationStart\x12#.aperture.ImpersonationStartRequest\x1a\x1e.aperture.ImpersonationSession\x12H\n" +
@@ -2088,7 +2263,7 @@ func file_service_proto_rawDescGZIP() []byte {
 	return file_service_proto_rawDescData
 }
 
-var file_service_proto_msgTypes = make([]protoimpl.MessageInfo, 35)
+var file_service_proto_msgTypes = make([]protoimpl.MessageInfo, 37)
 var file_service_proto_goTypes = []any{
 	(*Empty)(nil),                     // 0: aperture.Empty
 	(*Actor)(nil),                     // 1: aperture.Actor
@@ -2119,12 +2294,14 @@ var file_service_proto_goTypes = []any{
 	(*ExportRequest)(nil),             // 26: aperture.ExportRequest
 	(*ExportResponse)(nil),            // 27: aperture.ExportResponse
 	(*ImportRequest)(nil),             // 28: aperture.ImportRequest
-	(*BestowRequest)(nil),             // 29: aperture.BestowRequest
-	(*RevokeRequest)(nil),             // 30: aperture.RevokeRequest
-	(*ImpersonationStartRequest)(nil), // 31: aperture.ImpersonationStartRequest
-	(*ImpersonationSession)(nil),      // 32: aperture.ImpersonationSession
-	(*ImpersonationStopRequest)(nil),  // 33: aperture.ImpersonationStopRequest
-	nil,                               // 34: aperture.ApplyTemplateRequest.ParamsEntry
+	(*QueryAuditRequest)(nil),         // 29: aperture.QueryAuditRequest
+	(*QueryAuditResponse)(nil),        // 30: aperture.QueryAuditResponse
+	(*BestowRequest)(nil),             // 31: aperture.BestowRequest
+	(*RevokeRequest)(nil),             // 32: aperture.RevokeRequest
+	(*ImpersonationStartRequest)(nil), // 33: aperture.ImpersonationStartRequest
+	(*ImpersonationSession)(nil),      // 34: aperture.ImpersonationSession
+	(*ImpersonationStopRequest)(nil),  // 35: aperture.ImpersonationStopRequest
+	nil,                               // 36: aperture.ApplyTemplateRequest.ParamsEntry
 }
 var file_service_proto_depIdxs = []int32{
 	2,  // 0: aperture.CheckBatchRequest.queries:type_name -> aperture.CheckRequest
@@ -2140,115 +2317,118 @@ var file_service_proto_depIdxs = []int32{
 	1,  // 10: aperture.ListGrantsRequest.actor:type_name -> aperture.Actor
 	1,  // 11: aperture.TemplateKeyRequest.actor:type_name -> aperture.Actor
 	1,  // 12: aperture.ApplyTemplateRequest.actor:type_name -> aperture.Actor
-	34, // 13: aperture.ApplyTemplateRequest.params:type_name -> aperture.ApplyTemplateRequest.ParamsEntry
+	36, // 13: aperture.ApplyTemplateRequest.params:type_name -> aperture.ApplyTemplateRequest.ParamsEntry
 	1,  // 14: aperture.BulkGrantsRequest.actor:type_name -> aperture.Actor
 	1,  // 15: aperture.BulkDeleteGrantsRequest.actor:type_name -> aperture.Actor
 	1,  // 16: aperture.ExportRequest.actor:type_name -> aperture.Actor
 	1,  // 17: aperture.ImportRequest.actor:type_name -> aperture.Actor
-	32, // 18: aperture.ImpersonationStopRequest.session:type_name -> aperture.ImpersonationSession
-	2,  // 19: aperture.ApertureService.Check:input_type -> aperture.CheckRequest
-	4,  // 20: aperture.ApertureService.CheckBatch:input_type -> aperture.CheckBatchRequest
-	7,  // 21: aperture.ApertureService.Enumerate:input_type -> aperture.EnumerateRequest
-	9,  // 22: aperture.ApertureService.EnumerateBatch:input_type -> aperture.EnumerateBatchRequest
-	2,  // 23: aperture.ApertureService.Explain:input_type -> aperture.CheckRequest
-	4,  // 24: aperture.ApertureService.ExplainBatch:input_type -> aperture.CheckBatchRequest
-	15, // 25: aperture.ApertureService.PutObjectType:input_type -> aperture.EntityRequest
-	16, // 26: aperture.ApertureService.GetObjectType:input_type -> aperture.GetRequest
-	0,  // 27: aperture.ApertureService.ListObjectTypes:input_type -> aperture.Empty
-	17, // 28: aperture.ApertureService.DeleteObjectType:input_type -> aperture.DeleteRequest
-	15, // 29: aperture.ApertureService.PutPermission:input_type -> aperture.EntityRequest
-	16, // 30: aperture.ApertureService.GetPermission:input_type -> aperture.GetRequest
-	0,  // 31: aperture.ApertureService.ListPermissions:input_type -> aperture.Empty
-	17, // 32: aperture.ApertureService.DeletePermission:input_type -> aperture.DeleteRequest
-	15, // 33: aperture.ApertureService.PutPrincipal:input_type -> aperture.EntityRequest
-	16, // 34: aperture.ApertureService.GetPrincipal:input_type -> aperture.GetRequest
-	0,  // 35: aperture.ApertureService.ListPrincipals:input_type -> aperture.Empty
-	17, // 36: aperture.ApertureService.DeletePrincipal:input_type -> aperture.DeleteRequest
-	15, // 37: aperture.ApertureService.PutRole:input_type -> aperture.EntityRequest
-	16, // 38: aperture.ApertureService.GetRole:input_type -> aperture.GetRequest
-	0,  // 39: aperture.ApertureService.ListRoles:input_type -> aperture.Empty
-	17, // 40: aperture.ApertureService.DeleteRole:input_type -> aperture.DeleteRequest
-	15, // 41: aperture.ApertureService.PutGroup:input_type -> aperture.EntityRequest
-	16, // 42: aperture.ApertureService.GetGroup:input_type -> aperture.GetRequest
-	0,  // 43: aperture.ApertureService.ListGroups:input_type -> aperture.Empty
-	17, // 44: aperture.ApertureService.DeleteGroup:input_type -> aperture.DeleteRequest
-	15, // 45: aperture.ApertureService.PutAccount:input_type -> aperture.EntityRequest
-	16, // 46: aperture.ApertureService.GetAccount:input_type -> aperture.GetRequest
-	0,  // 47: aperture.ApertureService.ListAccounts:input_type -> aperture.Empty
-	17, // 48: aperture.ApertureService.DeleteAccount:input_type -> aperture.DeleteRequest
-	15, // 49: aperture.ApertureService.PutMembership:input_type -> aperture.EntityRequest
-	20, // 50: aperture.ApertureService.DeleteMembership:input_type -> aperture.MembershipKeyRequest
-	15, // 51: aperture.ApertureService.PutGrant:input_type -> aperture.EntityRequest
-	16, // 52: aperture.ApertureService.GetGrant:input_type -> aperture.GetRequest
-	21, // 53: aperture.ApertureService.ListGrants:input_type -> aperture.ListGrantsRequest
-	17, // 54: aperture.ApertureService.DeleteGrant:input_type -> aperture.DeleteRequest
-	15, // 55: aperture.ApertureService.PutTemplate:input_type -> aperture.EntityRequest
-	22, // 56: aperture.ApertureService.GetTemplate:input_type -> aperture.TemplateKeyRequest
-	0,  // 57: aperture.ApertureService.ListTemplates:input_type -> aperture.Empty
-	22, // 58: aperture.ApertureService.DeleteTemplate:input_type -> aperture.TemplateKeyRequest
-	23, // 59: aperture.ApertureService.ApplyTemplate:input_type -> aperture.ApplyTemplateRequest
-	24, // 60: aperture.ApertureService.BulkPutGrants:input_type -> aperture.BulkGrantsRequest
-	25, // 61: aperture.ApertureService.BulkDeleteGrants:input_type -> aperture.BulkDeleteGrantsRequest
-	26, // 62: aperture.ApertureService.Export:input_type -> aperture.ExportRequest
-	28, // 63: aperture.ApertureService.Import:input_type -> aperture.ImportRequest
-	29, // 64: aperture.ApertureService.Bestow:input_type -> aperture.BestowRequest
-	30, // 65: aperture.ApertureService.Revoke:input_type -> aperture.RevokeRequest
-	31, // 66: aperture.ApertureService.ImpersonationStart:input_type -> aperture.ImpersonationStartRequest
-	33, // 67: aperture.ApertureService.ImpersonationStop:input_type -> aperture.ImpersonationStopRequest
-	3,  // 68: aperture.ApertureService.Check:output_type -> aperture.Decision
-	6,  // 69: aperture.ApertureService.CheckBatch:output_type -> aperture.CheckBatchResponse
-	8,  // 70: aperture.ApertureService.Enumerate:output_type -> aperture.EnumerateResponse
-	11, // 71: aperture.ApertureService.EnumerateBatch:output_type -> aperture.EnumerateBatchResponse
-	12, // 72: aperture.ApertureService.Explain:output_type -> aperture.ExplainResponse
-	14, // 73: aperture.ApertureService.ExplainBatch:output_type -> aperture.ExplainBatchResponse
-	0,  // 74: aperture.ApertureService.PutObjectType:output_type -> aperture.Empty
-	18, // 75: aperture.ApertureService.GetObjectType:output_type -> aperture.EntityResponse
-	19, // 76: aperture.ApertureService.ListObjectTypes:output_type -> aperture.EntityListResponse
-	0,  // 77: aperture.ApertureService.DeleteObjectType:output_type -> aperture.Empty
-	0,  // 78: aperture.ApertureService.PutPermission:output_type -> aperture.Empty
-	18, // 79: aperture.ApertureService.GetPermission:output_type -> aperture.EntityResponse
-	19, // 80: aperture.ApertureService.ListPermissions:output_type -> aperture.EntityListResponse
-	0,  // 81: aperture.ApertureService.DeletePermission:output_type -> aperture.Empty
-	0,  // 82: aperture.ApertureService.PutPrincipal:output_type -> aperture.Empty
-	18, // 83: aperture.ApertureService.GetPrincipal:output_type -> aperture.EntityResponse
-	19, // 84: aperture.ApertureService.ListPrincipals:output_type -> aperture.EntityListResponse
-	0,  // 85: aperture.ApertureService.DeletePrincipal:output_type -> aperture.Empty
-	0,  // 86: aperture.ApertureService.PutRole:output_type -> aperture.Empty
-	18, // 87: aperture.ApertureService.GetRole:output_type -> aperture.EntityResponse
-	19, // 88: aperture.ApertureService.ListRoles:output_type -> aperture.EntityListResponse
-	0,  // 89: aperture.ApertureService.DeleteRole:output_type -> aperture.Empty
-	0,  // 90: aperture.ApertureService.PutGroup:output_type -> aperture.Empty
-	18, // 91: aperture.ApertureService.GetGroup:output_type -> aperture.EntityResponse
-	19, // 92: aperture.ApertureService.ListGroups:output_type -> aperture.EntityListResponse
-	0,  // 93: aperture.ApertureService.DeleteGroup:output_type -> aperture.Empty
-	0,  // 94: aperture.ApertureService.PutAccount:output_type -> aperture.Empty
-	18, // 95: aperture.ApertureService.GetAccount:output_type -> aperture.EntityResponse
-	19, // 96: aperture.ApertureService.ListAccounts:output_type -> aperture.EntityListResponse
-	0,  // 97: aperture.ApertureService.DeleteAccount:output_type -> aperture.Empty
-	0,  // 98: aperture.ApertureService.PutMembership:output_type -> aperture.Empty
-	0,  // 99: aperture.ApertureService.DeleteMembership:output_type -> aperture.Empty
-	0,  // 100: aperture.ApertureService.PutGrant:output_type -> aperture.Empty
-	18, // 101: aperture.ApertureService.GetGrant:output_type -> aperture.EntityResponse
-	19, // 102: aperture.ApertureService.ListGrants:output_type -> aperture.EntityListResponse
-	0,  // 103: aperture.ApertureService.DeleteGrant:output_type -> aperture.Empty
-	0,  // 104: aperture.ApertureService.PutTemplate:output_type -> aperture.Empty
-	18, // 105: aperture.ApertureService.GetTemplate:output_type -> aperture.EntityResponse
-	19, // 106: aperture.ApertureService.ListTemplates:output_type -> aperture.EntityListResponse
-	0,  // 107: aperture.ApertureService.DeleteTemplate:output_type -> aperture.Empty
-	19, // 108: aperture.ApertureService.ApplyTemplate:output_type -> aperture.EntityListResponse
-	0,  // 109: aperture.ApertureService.BulkPutGrants:output_type -> aperture.Empty
-	0,  // 110: aperture.ApertureService.BulkDeleteGrants:output_type -> aperture.Empty
-	27, // 111: aperture.ApertureService.Export:output_type -> aperture.ExportResponse
-	0,  // 112: aperture.ApertureService.Import:output_type -> aperture.Empty
-	0,  // 113: aperture.ApertureService.Bestow:output_type -> aperture.Empty
-	0,  // 114: aperture.ApertureService.Revoke:output_type -> aperture.Empty
-	32, // 115: aperture.ApertureService.ImpersonationStart:output_type -> aperture.ImpersonationSession
-	0,  // 116: aperture.ApertureService.ImpersonationStop:output_type -> aperture.Empty
-	68, // [68:117] is the sub-list for method output_type
-	19, // [19:68] is the sub-list for method input_type
-	19, // [19:19] is the sub-list for extension type_name
-	19, // [19:19] is the sub-list for extension extendee
-	0,  // [0:19] is the sub-list for field type_name
+	1,  // 18: aperture.QueryAuditRequest.actor:type_name -> aperture.Actor
+	34, // 19: aperture.ImpersonationStopRequest.session:type_name -> aperture.ImpersonationSession
+	2,  // 20: aperture.ApertureService.Check:input_type -> aperture.CheckRequest
+	4,  // 21: aperture.ApertureService.CheckBatch:input_type -> aperture.CheckBatchRequest
+	7,  // 22: aperture.ApertureService.Enumerate:input_type -> aperture.EnumerateRequest
+	9,  // 23: aperture.ApertureService.EnumerateBatch:input_type -> aperture.EnumerateBatchRequest
+	2,  // 24: aperture.ApertureService.Explain:input_type -> aperture.CheckRequest
+	4,  // 25: aperture.ApertureService.ExplainBatch:input_type -> aperture.CheckBatchRequest
+	15, // 26: aperture.ApertureService.PutObjectType:input_type -> aperture.EntityRequest
+	16, // 27: aperture.ApertureService.GetObjectType:input_type -> aperture.GetRequest
+	0,  // 28: aperture.ApertureService.ListObjectTypes:input_type -> aperture.Empty
+	17, // 29: aperture.ApertureService.DeleteObjectType:input_type -> aperture.DeleteRequest
+	15, // 30: aperture.ApertureService.PutPermission:input_type -> aperture.EntityRequest
+	16, // 31: aperture.ApertureService.GetPermission:input_type -> aperture.GetRequest
+	0,  // 32: aperture.ApertureService.ListPermissions:input_type -> aperture.Empty
+	17, // 33: aperture.ApertureService.DeletePermission:input_type -> aperture.DeleteRequest
+	15, // 34: aperture.ApertureService.PutPrincipal:input_type -> aperture.EntityRequest
+	16, // 35: aperture.ApertureService.GetPrincipal:input_type -> aperture.GetRequest
+	0,  // 36: aperture.ApertureService.ListPrincipals:input_type -> aperture.Empty
+	17, // 37: aperture.ApertureService.DeletePrincipal:input_type -> aperture.DeleteRequest
+	15, // 38: aperture.ApertureService.PutRole:input_type -> aperture.EntityRequest
+	16, // 39: aperture.ApertureService.GetRole:input_type -> aperture.GetRequest
+	0,  // 40: aperture.ApertureService.ListRoles:input_type -> aperture.Empty
+	17, // 41: aperture.ApertureService.DeleteRole:input_type -> aperture.DeleteRequest
+	15, // 42: aperture.ApertureService.PutGroup:input_type -> aperture.EntityRequest
+	16, // 43: aperture.ApertureService.GetGroup:input_type -> aperture.GetRequest
+	0,  // 44: aperture.ApertureService.ListGroups:input_type -> aperture.Empty
+	17, // 45: aperture.ApertureService.DeleteGroup:input_type -> aperture.DeleteRequest
+	15, // 46: aperture.ApertureService.PutAccount:input_type -> aperture.EntityRequest
+	16, // 47: aperture.ApertureService.GetAccount:input_type -> aperture.GetRequest
+	0,  // 48: aperture.ApertureService.ListAccounts:input_type -> aperture.Empty
+	17, // 49: aperture.ApertureService.DeleteAccount:input_type -> aperture.DeleteRequest
+	15, // 50: aperture.ApertureService.PutMembership:input_type -> aperture.EntityRequest
+	20, // 51: aperture.ApertureService.DeleteMembership:input_type -> aperture.MembershipKeyRequest
+	15, // 52: aperture.ApertureService.PutGrant:input_type -> aperture.EntityRequest
+	16, // 53: aperture.ApertureService.GetGrant:input_type -> aperture.GetRequest
+	21, // 54: aperture.ApertureService.ListGrants:input_type -> aperture.ListGrantsRequest
+	17, // 55: aperture.ApertureService.DeleteGrant:input_type -> aperture.DeleteRequest
+	15, // 56: aperture.ApertureService.PutTemplate:input_type -> aperture.EntityRequest
+	22, // 57: aperture.ApertureService.GetTemplate:input_type -> aperture.TemplateKeyRequest
+	0,  // 58: aperture.ApertureService.ListTemplates:input_type -> aperture.Empty
+	22, // 59: aperture.ApertureService.DeleteTemplate:input_type -> aperture.TemplateKeyRequest
+	23, // 60: aperture.ApertureService.ApplyTemplate:input_type -> aperture.ApplyTemplateRequest
+	24, // 61: aperture.ApertureService.BulkPutGrants:input_type -> aperture.BulkGrantsRequest
+	25, // 62: aperture.ApertureService.BulkDeleteGrants:input_type -> aperture.BulkDeleteGrantsRequest
+	26, // 63: aperture.ApertureService.Export:input_type -> aperture.ExportRequest
+	28, // 64: aperture.ApertureService.Import:input_type -> aperture.ImportRequest
+	29, // 65: aperture.ApertureService.QueryAudit:input_type -> aperture.QueryAuditRequest
+	31, // 66: aperture.ApertureService.Bestow:input_type -> aperture.BestowRequest
+	32, // 67: aperture.ApertureService.Revoke:input_type -> aperture.RevokeRequest
+	33, // 68: aperture.ApertureService.ImpersonationStart:input_type -> aperture.ImpersonationStartRequest
+	35, // 69: aperture.ApertureService.ImpersonationStop:input_type -> aperture.ImpersonationStopRequest
+	3,  // 70: aperture.ApertureService.Check:output_type -> aperture.Decision
+	6,  // 71: aperture.ApertureService.CheckBatch:output_type -> aperture.CheckBatchResponse
+	8,  // 72: aperture.ApertureService.Enumerate:output_type -> aperture.EnumerateResponse
+	11, // 73: aperture.ApertureService.EnumerateBatch:output_type -> aperture.EnumerateBatchResponse
+	12, // 74: aperture.ApertureService.Explain:output_type -> aperture.ExplainResponse
+	14, // 75: aperture.ApertureService.ExplainBatch:output_type -> aperture.ExplainBatchResponse
+	0,  // 76: aperture.ApertureService.PutObjectType:output_type -> aperture.Empty
+	18, // 77: aperture.ApertureService.GetObjectType:output_type -> aperture.EntityResponse
+	19, // 78: aperture.ApertureService.ListObjectTypes:output_type -> aperture.EntityListResponse
+	0,  // 79: aperture.ApertureService.DeleteObjectType:output_type -> aperture.Empty
+	0,  // 80: aperture.ApertureService.PutPermission:output_type -> aperture.Empty
+	18, // 81: aperture.ApertureService.GetPermission:output_type -> aperture.EntityResponse
+	19, // 82: aperture.ApertureService.ListPermissions:output_type -> aperture.EntityListResponse
+	0,  // 83: aperture.ApertureService.DeletePermission:output_type -> aperture.Empty
+	0,  // 84: aperture.ApertureService.PutPrincipal:output_type -> aperture.Empty
+	18, // 85: aperture.ApertureService.GetPrincipal:output_type -> aperture.EntityResponse
+	19, // 86: aperture.ApertureService.ListPrincipals:output_type -> aperture.EntityListResponse
+	0,  // 87: aperture.ApertureService.DeletePrincipal:output_type -> aperture.Empty
+	0,  // 88: aperture.ApertureService.PutRole:output_type -> aperture.Empty
+	18, // 89: aperture.ApertureService.GetRole:output_type -> aperture.EntityResponse
+	19, // 90: aperture.ApertureService.ListRoles:output_type -> aperture.EntityListResponse
+	0,  // 91: aperture.ApertureService.DeleteRole:output_type -> aperture.Empty
+	0,  // 92: aperture.ApertureService.PutGroup:output_type -> aperture.Empty
+	18, // 93: aperture.ApertureService.GetGroup:output_type -> aperture.EntityResponse
+	19, // 94: aperture.ApertureService.ListGroups:output_type -> aperture.EntityListResponse
+	0,  // 95: aperture.ApertureService.DeleteGroup:output_type -> aperture.Empty
+	0,  // 96: aperture.ApertureService.PutAccount:output_type -> aperture.Empty
+	18, // 97: aperture.ApertureService.GetAccount:output_type -> aperture.EntityResponse
+	19, // 98: aperture.ApertureService.ListAccounts:output_type -> aperture.EntityListResponse
+	0,  // 99: aperture.ApertureService.DeleteAccount:output_type -> aperture.Empty
+	0,  // 100: aperture.ApertureService.PutMembership:output_type -> aperture.Empty
+	0,  // 101: aperture.ApertureService.DeleteMembership:output_type -> aperture.Empty
+	0,  // 102: aperture.ApertureService.PutGrant:output_type -> aperture.Empty
+	18, // 103: aperture.ApertureService.GetGrant:output_type -> aperture.EntityResponse
+	19, // 104: aperture.ApertureService.ListGrants:output_type -> aperture.EntityListResponse
+	0,  // 105: aperture.ApertureService.DeleteGrant:output_type -> aperture.Empty
+	0,  // 106: aperture.ApertureService.PutTemplate:output_type -> aperture.Empty
+	18, // 107: aperture.ApertureService.GetTemplate:output_type -> aperture.EntityResponse
+	19, // 108: aperture.ApertureService.ListTemplates:output_type -> aperture.EntityListResponse
+	0,  // 109: aperture.ApertureService.DeleteTemplate:output_type -> aperture.Empty
+	19, // 110: aperture.ApertureService.ApplyTemplate:output_type -> aperture.EntityListResponse
+	0,  // 111: aperture.ApertureService.BulkPutGrants:output_type -> aperture.Empty
+	0,  // 112: aperture.ApertureService.BulkDeleteGrants:output_type -> aperture.Empty
+	27, // 113: aperture.ApertureService.Export:output_type -> aperture.ExportResponse
+	0,  // 114: aperture.ApertureService.Import:output_type -> aperture.Empty
+	30, // 115: aperture.ApertureService.QueryAudit:output_type -> aperture.QueryAuditResponse
+	0,  // 116: aperture.ApertureService.Bestow:output_type -> aperture.Empty
+	0,  // 117: aperture.ApertureService.Revoke:output_type -> aperture.Empty
+	34, // 118: aperture.ApertureService.ImpersonationStart:output_type -> aperture.ImpersonationSession
+	0,  // 119: aperture.ApertureService.ImpersonationStop:output_type -> aperture.Empty
+	70, // [70:120] is the sub-list for method output_type
+	20, // [20:70] is the sub-list for method input_type
+	20, // [20:20] is the sub-list for extension type_name
+	20, // [20:20] is the sub-list for extension extendee
+	0,  // [0:20] is the sub-list for field type_name
 }
 
 func init() { file_service_proto_init() }
@@ -2262,7 +2442,7 @@ func file_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_service_proto_rawDesc), len(file_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   35,
+			NumMessages:   37,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
