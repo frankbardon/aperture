@@ -9,9 +9,9 @@ applies_to: [frontend, http]
 Aperture ships a single-page admin shell embedded in the binary. It is the
 **chrome** — a sidebar + top bar + content frame — plus the domain screens that
 fill it. The nav is Model (CRUD), Grants, Audit, What-if, Import / export, and
-Rules; E7 mounts the Rete rule canvas in the Rules section (the only remaining
-placeholder). There is no node build: the whole frontend is pre-built, committed
-blobs behind `//go:embed`.
+Rules; E7 mounts the Rete rule canvas in the Rules section and (E7-S3) wires it
+into the live system — load / save / server-validate / live what-if. There is no
+node build: the whole frontend is pre-built, committed blobs behind `//go:embed`.
 
 ## Where it lives
 
@@ -35,8 +35,16 @@ blobs behind `//go:embed`.
   model file) and `Import` (upload → client-side preview DIFF of would-be
   adds/changes against a fresh export → confirm → transactional upsert), all three
   gated by the tier probe (audit read is system- OR account-admin; what-if is
-  open; export/import is system-admin); `vendor/` holds the pre-built blobs (see
-  `vendor/README.md` for pinned versions + regeneration).
+  open; export/import is system-admin); `js/rules.js` fills the Rules section
+  (E7-S2 node editor + E7-S3 integration): the Rete canvas over the
+  `rules.Node` AST, plus a load picker (`ListRules`/`GetRule` → `fromAST`), a
+  Save that persists the serialized AST via `PutRule` (SYSTEM tier, gated by the
+  tier probe — non-admins load/validate/preview but cannot save), a server
+  Validate (`ValidateRule`, non-persisting, surfacing `APERTURE_RULE_*` on the
+  canvas), and a READ-ONLY live what-if that previews the UNSAVED rule on the
+  canvas via `Simulate` / `SimulateExplain` with the edited rule as an overlay
+  (persists nothing); `vendor/` holds the pre-built blobs (see `vendor/README.md`
+  for pinned versions + regeneration).
 - Served by `staticHandler()`, mounted **LAST** on the mux in `server.New`
   (`mux.Handle("/", …)`). net/http resolves by longest matching pattern, so the
   Twirp prefix, `POST /check`, and `GET /healthz` win over root `/` — the file

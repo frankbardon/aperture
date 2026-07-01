@@ -51,6 +51,7 @@ import (
 	aerr "github.com/frankbardon/aperture/errors"
 	"github.com/frankbardon/aperture/impersonation"
 	"github.com/frankbardon/aperture/model"
+	"github.com/frankbardon/aperture/rules"
 )
 
 // Query is a single authorization question in surface-neutral form. It mirrors
@@ -102,6 +103,13 @@ type Service struct {
 	// now is the facade clock for stamping entity timestamps on writes. It is
 	// time.Now by default; WithClock overrides it for deterministic tests.
 	now func() time.Time
+	// ruleSource / ruleFetcher back the READ-ONLY what-if preview of an UNSAVED
+	// rule (E7-S3): Simulate overlays an Overlay.Rules edit over ruleSource and
+	// evaluates through a transient rules engine built with ruleFetcher. Nil (the
+	// default) leaves Overlay.Rules inert — the sim engine uses the live engine's
+	// own rule evaluator. Wired with WithRuleSource.
+	ruleSource  rules.RuleSource
+	ruleFetcher rules.MetadataFetcher
 }
 
 // Option configures a Service at construction. Options compose; the mutation
@@ -130,6 +138,20 @@ func WithDelegation(d *delegation.Service) Option {
 // ImpersonationStart.
 func WithImpersonation(i *impersonation.Service) Option {
 	return func(s *Service) { s.imperso = i }
+}
+
+// WithRuleSource gives the facade the base rule source and object-metadata
+// fetcher its Simulate path overlays an UNSAVED rule onto, so a what-if can
+// preview the rule being edited (E7-S3) without persisting it. The base source is
+// the same storage-backed source the live decision engine resolves against, so a
+// preview shadows exactly the stored rule the edit will replace. A nil fetcher
+// means object metadata is empty (fine for rules over the principal/action
+// context). Without this option Simulate's Overlay.Rules field is inert.
+func WithRuleSource(base rules.RuleSource, fetcher rules.MetadataFetcher) Option {
+	return func(s *Service) {
+		s.ruleSource = base
+		s.ruleFetcher = fetcher
+	}
 }
 
 // WithClock overrides the facade clock used to stamp entity timestamps on

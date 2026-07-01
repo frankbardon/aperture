@@ -356,6 +356,43 @@ async function createBlueprintEditor(container, mod, S) {
   return hook;
 }
 
+// ruleRpc POSTs a Twirp JSON call through the shell's bearer wrapper (window
+// .apiFetch) and returns the decoded response. A non-2xx carries a Twirp error
+// body ({code, msg, meta:{code}}) which is normalised into an Error with .code
+// (the canonical APERTURE_* code), .message, and .status. Named ruleRpc to avoid
+// colliding with the other screens' classic-script globals.
+async function ruleRpc(method, body) {
+  const res = await window.apiFetch(
+    "/twirp/aperture.ApertureService/" + method,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body || {}),
+    }
+  );
+  const text = await res.text();
+  let data = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch (_) {
+      data = null;
+    }
+  }
+  if (!res.ok) {
+    const code =
+      (data && data.meta && data.meta.code) ||
+      (data && data.code) ||
+      "APERTURE_ERROR";
+    const msg = (data && (data.msg || data.message)) || res.statusText || "Request failed";
+    const err = new Error(msg);
+    err.code = code;
+    err.status = res.status;
+    throw err;
+  }
+  return data || {};
+}
+
 // A small starter rule so the canvas is not blank on first open; also exercises
 // fromAST end to end. object.classification == "public".
 const STARTER_AST = {
@@ -370,6 +407,31 @@ function rules() {
     booting: true,
     error: "",
     problems: [],
+    // ---- E7-S3 load/save/validate/what-if integration state ----
+    // The dev principal + active account the RPCs resolve against, plus the admin
+    // tier probe (rule editing is SYSTEM tier — only system-admins may save).
+    principal: "",
+    accounts: [],
+    account: "",
+    canEdit: false,
+    tierChecked: false,
+    // The rule being edited: its name (identity, upsert key), description, and the
+    // list of stored rules to load from.
+    ruleName: "",
+    description: "",
+    ruleList: [],
+    // Save / validate status and the server-side (engine) validation problems,
+    // distinct from the client-side structural `problems` above.
+    saving: false,
+    validating: false,
+    status: null, // { kind: "ok" | "err", code, msg }
+    // Live what-if preview (READ-ONLY): a hypothetical decision + Explain trace for
+    // the rule CURRENTLY on the canvas, previewed WITHOUT saving it.
+    preview: { principal: "", action: "", object: "" },
+    previewing: false,
+    previewError: null,
+    previewDecision: null,
+    previewTrace: null,
     // The node palette, grouped by category. Covers the whole AST: logical
     // combinators, comparisons over variables/literals, and the Pulse building
     // blocks (list/call) from E2-S3.
@@ -394,6 +456,20 @@ function rules() {
     _editor: null,
 
     init() {
+      this.principal = localStorage.getItem("aperture.devToken") || "";
+      this.preview.principal = this.principal;
+      document.addEventListener("aperture:authenticated", (e) => {
+        this.principal = (e.detail && e.detail.principal) || localStorage.getItem("aperture.devToken") || "";
+        if (!this.preview.principal) this.preview.principal = this.principal;
+        this.bootstrap();
+      });
+      const clear = () => {
+        this.principal = "";
+        this.canEdit = false;
+        this.tierChecked = false;
+      };
+      document.addEventListener("aperture:unauthenticated", clear);
+      document.addEventListener("aperture:signout", clear);
       this.mount();
     },
 
@@ -412,12 +488,183 @@ function rules() {
         this._editor = await createBlueprintEditor(el, mod, window.RuleSerializer);
         // Expose the E7-S3 save/load hooks and wire validation refresh.
         window.blueprintEditor = this._editor;
-        this._editor.onChange = () => this.refreshValidation();
+        this._editor.onChange = () => {
+          this.refreshValidation();
+          // A graph edit invalidates the last server verdict and preview.
+          this.status = null;
+        };
         await this._editor.fromAST(STARTER_AST);
         this.booting = false;
+        if (this.principal) this.bootstrap();
       } catch (e) {
         this.error = e && e.message ? e.message : String(e);
         this.booting = false;
+      }
+    },
+
+    // bootstrap resolves the active account, probes system-admin authority (rule
+    // editing is SYSTEM tier), and lists the stored rules to load from.
+    async bootstrap() {
+      await this.loadAccounts();
+      await this.probeTier();
+      await this.loadRules();
+    },
+
+    async loadAccounts() {
+      try {
+        const resp = await ruleRpc("ListAccounts", {});
+        this.accounts = (resp.entities_json || []).map((s) => JSON.parse(s));
+        if (!this.account && this.accounts.length > 0) this.account = this.accounts[0].ID;
+      } catch (e) {
+        if (e.status !== 401) this.status = { kind: "err", code: e.code, msg: e.message };
+      }
+    },
+
+    // probeTier asks the OPEN Check RPC whether the signed-in principal holds
+    // system-admin authority, gating the Save affordance (E6-S2 pattern). It
+    // carries the bearer but needs no auth, so a read-only viewer still gets an
+    // answer and a 403 on save is never a surprise.
+    async probeTier() {
+      this.tierChecked = false;
+      try {
+        const dec = await ruleRpc("Check", {
+          account: this.account,
+          principal: this.principal,
+          action: "aperture.admin",
+          object: "system:schema",
+        });
+        this.canEdit = !!dec.allow;
+      } catch (_) {
+        this.canEdit = false;
+      }
+      this.tierChecked = true;
+    },
+
+    // loadRules lists the stored rules for the load picker.
+    async loadRules() {
+      try {
+        const resp = await ruleRpc("ListRules", {});
+        this.ruleList = (resp.rules_json || []).map((s) => JSON.parse(s));
+      } catch (e) {
+        if (e.status !== 401) this.status = { kind: "err", code: e.code, msg: e.message };
+      }
+    },
+
+    // loadRule fetches one rule by name and renders its AST into the canvas via the
+    // fromAST hook — the same rules.Node JSON the engine evaluates and the state
+    // file persists.
+    async loadRule(name) {
+      if (!name) return;
+      this.status = null;
+      try {
+        const resp = await ruleRpc("GetRule", { id: name });
+        const rule = JSON.parse(resp.rule_json);
+        this.ruleName = rule.Name || name;
+        this.description = rule.Description || "";
+        if (rule.AST && window.blueprintEditor) {
+          await window.blueprintEditor.fromAST(rule.AST);
+        }
+        this.refreshValidation();
+      } catch (e) {
+        if (e.status !== 401) this.status = { kind: "err", code: e.code, msg: e.message };
+      }
+    },
+
+    // currentRule folds the canvas to a model.Rule body ({Name, Description, AST}).
+    // toAST throws a structured {code,message} when the graph is not a single tree;
+    // the caller surfaces it as a status error.
+    currentRule() {
+      if (!window.blueprintEditor) throw new Error("editor not ready");
+      const ast = window.blueprintEditor.toAST();
+      if (ast === null) {
+        const err = new Error("the canvas is empty — build a rule before saving");
+        err.code = "APERTURE_RULE_INVALID";
+        throw err;
+      }
+      return { Name: this.ruleName.trim(), Description: this.description, AST: ast };
+    },
+
+    // serverValidate compiles/validates the current AST on the server WITHOUT
+    // persisting it, surfacing the engine's APERTURE_RULE_* verdict on the canvas.
+    async serverValidate() {
+      this.status = null;
+      this.validating = true;
+      try {
+        const rule = this.currentRule();
+        await ruleRpc("ValidateRule", { rule_json: JSON.stringify(rule) });
+        this.status = { kind: "ok", msg: "The rule compiled cleanly on the server." };
+      } catch (e) {
+        this.status = { kind: "err", code: e.code || "APERTURE_RULE_INVALID", msg: e.message };
+      } finally {
+        this.validating = false;
+      }
+    },
+
+    // save persists the current rule via the mutation API (system-admin tier). The
+    // server re-validates the AST and rejects an invalid rule with its
+    // APERTURE_RULE_* code, shown on the canvas; on success the rule takes effect
+    // immediately in any scope strategy that references it.
+    async save() {
+      this.status = null;
+      if (!this.ruleName.trim()) {
+        this.status = { kind: "err", code: "APERTURE_RULE_INVALID", msg: "A rule name is required." };
+        return;
+      }
+      this.saving = true;
+      try {
+        const rule = this.currentRule();
+        await ruleRpc("PutRule", {
+          actor: { account: this.account },
+          rule_json: JSON.stringify(rule),
+        });
+        this.status = { kind: "ok", msg: 'Saved rule "' + rule.Name + '".' };
+        await this.loadRules();
+      } catch (e) {
+        this.status = { kind: "err", code: e.code || "APERTURE_ERROR", msg: e.message };
+      } finally {
+        this.saving = false;
+      }
+    },
+
+    // runPreview renders the READ-ONLY what-if for the rule CURRENTLY on the canvas:
+    // the decision + Explain trace a rule-backed grant would produce, WITHOUT
+    // saving. The unsaved rule is layered over the live model as a Simulate overlay
+    // (rules_json), shadowing any stored rule of the same name — so it previews the
+    // edit against grants that reference this rule name. Nothing is persisted.
+    async runPreview() {
+      this.previewError = null;
+      this.previewDecision = null;
+      this.previewTrace = null;
+      if (!this.ruleName.trim()) {
+        this.previewError = { code: "APERTURE_RULE_INVALID", msg: "Name the rule so the preview can overlay it." };
+        return;
+      }
+      if (!this.preview.principal || !this.preview.action || !this.preview.object) {
+        this.previewError = { code: "APERTURE_INVALID_INPUT", msg: "Principal, action and object are required." };
+        return;
+      }
+      this.previewing = true;
+      try {
+        const rule = this.currentRule();
+        const req = {
+          query: {
+            account: this.account,
+            principal: this.preview.principal,
+            action: this.preview.action,
+            object: this.preview.object,
+          },
+          rules_json: [JSON.stringify(rule)],
+        };
+        const [dec, exp] = await Promise.all([
+          ruleRpc("Simulate", req),
+          ruleRpc("SimulateExplain", req),
+        ]);
+        this.previewDecision = dec;
+        this.previewTrace = exp.trace_json ? JSON.parse(exp.trace_json) : null;
+      } catch (e) {
+        this.previewError = { code: e.code || "APERTURE_ERROR", msg: e.message };
+      } finally {
+        this.previewing = false;
       }
     },
 

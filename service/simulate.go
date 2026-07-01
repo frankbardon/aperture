@@ -6,6 +6,7 @@ import (
 	"github.com/frankbardon/aperture/engine"
 	aerr "github.com/frankbardon/aperture/errors"
 	"github.com/frankbardon/aperture/model"
+	"github.com/frankbardon/aperture/rules"
 )
 
 // This file adds the READ-ONLY what-if surface to the decision facade. Simulate
@@ -44,6 +45,12 @@ type Overlay struct {
 	// Memberships are hypothetical account memberships, consulted only when the
 	// engine enforces membership.
 	Memberships []model.Membership
+	// Rules are hypothetical (or shadowing) rule definitions — the UNSAVED rule
+	// being edited in the node editor (E7-S3). A rule here with the same Name as a
+	// stored one shadows it for the simulation, so a what-if previews the edit
+	// against a rule-backed grant WITHOUT persisting it. It takes effect only when
+	// the facade was built WithRuleSource (otherwise it is inert).
+	Rules []model.Rule
 }
 
 // Simulate renders the decision for q as it WOULD be under the hypothetical
@@ -79,7 +86,16 @@ func (s *Service) simEngine(ov Overlay) (*engine.Engine, error) {
 	if err := s.requireStore(); err != nil {
 		return nil, err
 	}
-	return s.eng.WithStore(newOverlayStore(s.store, ov)), nil
+	eng := s.eng.WithStore(newOverlayStore(s.store, ov))
+	// Preview an UNSAVED rule: redirect the engine's rule-backed scope strategies
+	// at a transient rule source that shadows the stored rule with the edited one.
+	// This is read-only — the overlay source resolves in memory and persists
+	// nothing. It requires WithRuleSource; without it the overlay rules are inert.
+	if len(ov.Rules) > 0 && s.ruleSource != nil {
+		re := rules.NewEngine(newOverlayRuleSource(s.ruleSource, ov.Rules), s.ruleFetcher)
+		eng = eng.WithRuleEvaluator(re)
+	}
+	return eng, nil
 }
 
 // overlayStore is a read-only model.Storage that wraps a base store and layers an

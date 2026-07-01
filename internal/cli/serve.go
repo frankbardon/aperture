@@ -18,6 +18,7 @@ import (
 	aerr "github.com/frankbardon/aperture/errors"
 	"github.com/frankbardon/aperture/impersonation"
 	"github.com/frankbardon/aperture/internal/server"
+	"github.com/frankbardon/aperture/rules"
 	"github.com/frankbardon/aperture/service"
 
 	ucli "github.com/urfave/cli/v3"
@@ -84,7 +85,17 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 	// Build the fully-wired facade so HTTP, Twirp, and CLI drive ONE mutation
 	// path: the engine for decisions + authority, the admin gate for tier checks,
 	// and the delegation / impersonation services for their own gated mutations.
-	eng := engine.New(store)
+	//
+	// Wire the rules engine (E2-S3) over a storage-backed rule source so
+	// rule-backed scope strategies (E2-S1) resolve the SAME rules the node editor
+	// (E7) saves through PutRule — a saved rule takes effect on the next decision
+	// with no second rule store. Scope resolution falls back to literal pattern
+	// matching for grants with no strategy, so E1 behaviour is preserved. The
+	// storage source is also handed to the facade (WithRuleSource) so the editor's
+	// live what-if can preview an UNSAVED rule read-only.
+	ruleSource := service.NewStorageRuleSource(store)
+	ruleEngine := rules.NewEngine(ruleSource, nil)
+	eng := engine.New(store, engine.WithScopeResolution(nil, engine.ScopeDeps{Rules: ruleEngine}))
 
 	// Wire the append-only audit trail (E4-S2) through the same store so the
 	// mutation/impersonation/delegation record is durable and the E6-S4 audit
@@ -100,6 +111,7 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 		service.WithDelegation(delegation.New(store, eng)),
 		service.WithImpersonation(impersonation.New(store, eng)),
 		service.WithAudit(rec),
+		service.WithRuleSource(ruleSource, nil),
 	)
 
 	handler := server.Authenticate(authn, server.New(svc))

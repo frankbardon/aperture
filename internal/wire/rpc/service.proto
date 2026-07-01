@@ -57,6 +57,32 @@ service ApertureService {
   rpc ListAccounts(Empty) returns (EntityListResponse);
   rpc DeleteAccount(DeleteRequest) returns (Empty);
 
+  // ---- Rules (definition writes require system-admin; reads require auth) ----
+  // Rules are GLOBAL schema (like object types and templates): the named,
+  // persisted rule-AST definitions the node editor (E7) authors and the
+  // rule-backed scope strategies (E2-S1) resolve. The AST rides as a model.Rule
+  // JSON in rule_json — the exact rules.Node serialization the editor and the
+  // state file share.
+  rpc PutRule(RuleRequest) returns (Empty);
+  rpc GetRule(GetRequest) returns (RuleResponse);
+  rpc ListRules(Empty) returns (RuleListResponse);
+  rpc DeleteRule(DeleteRequest) returns (Empty);
+  // ValidateRule compiles/validates a rule AST WITHOUT persisting it, so the node
+  // editor can check a rule before it saves. It returns Empty on success and an
+  // APERTURE_RULE_* coded error (surfaced on the canvas) on failure. It touches
+  // no storage and writes nothing; it requires an authenticated principal.
+  rpc ValidateRule(RuleRequest) returns (Empty);
+
+  // ---- Read-only what-if over a hypothetical overlay (E7-S3 live preview) ----
+  // Simulate / SimulateExplain render the decision (and full Explain trace) for a
+  // query as it WOULD be under a hypothetical overlay, WITHOUT persisting any of
+  // it. They back the rule editor's live preview: the overlay carries the UNSAVED
+  // rule being edited (rules_json) plus any synthetic grants/permissions/
+  // principals needed to exercise it, so an operator sees the would-be verdict for
+  // the edit before saving. Nothing is written and nothing is audited.
+  rpc Simulate(SimulateRequest) returns (Decision);
+  rpc SimulateExplain(SimulateRequest) returns (ExplainResponse);
+
   // ---- Account-scoped entities (writes require account-admin) ----
   rpc PutMembership(EntityRequest) returns (Empty);
   rpc DeleteMembership(MembershipKeyRequest) returns (Empty);
@@ -215,6 +241,41 @@ message EntityResponse {
 // EntityListResponse returns a list of entity bodies, each as canonical JSON.
 message EntityListResponse {
   repeated string entities_json = 1;
+}
+
+// ---- Rule messages ----
+
+// RuleRequest carries a mutation's actor plus the rule body as canonical JSON
+// (the model.Rule shape: Name / Description / AST, the AST being the exact
+// rules.Node serialization). It backs PutRule and the non-persisting ValidateRule.
+message RuleRequest {
+  Actor actor = 1;
+  string rule_json = 2;
+}
+
+// RuleResponse returns one rule body as canonical JSON.
+message RuleResponse {
+  string rule_json = 1;
+}
+
+// RuleListResponse returns every stored rule, each as canonical JSON.
+message RuleListResponse {
+  repeated string rules_json = 1;
+}
+
+// SimulateRequest carries the actor, the decision query, and the hypothetical
+// overlay layered over the live model for a READ-ONLY what-if. rules_json are
+// overlay model.Rule definitions (the UNSAVED rule being edited shadows a stored
+// one of the same name); grants_json / permissions_json / principals_json are
+// synthetic entities that let the preview exercise the rule without persisting.
+// Nothing here is ever written.
+message SimulateRequest {
+  Actor actor = 1;
+  CheckRequest query = 2;
+  repeated string rules_json = 3;
+  repeated string grants_json = 4;
+  repeated string permissions_json = 5;
+  repeated string principals_json = 6;
 }
 
 message MembershipKeyRequest {

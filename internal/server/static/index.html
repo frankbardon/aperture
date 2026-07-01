@@ -1360,6 +1360,53 @@
                 </div>
               </template>
 
+              <!-- Load / save / validate toolbar. Editing is SYSTEM tier: the Save
+                   button is shown only to a system-admin (canEdit, probed via the
+                   open Check RPC); a non-admin still loads, validates and previews.
+                   Server validation and save surface their APERTURE_* code + msg. -->
+              <div class="bera-card" style="padding: 12px; margin-bottom: 12px">
+                <div style="display: grid; grid-template-columns: 1fr 1fr auto; gap: 12px; align-items: end">
+                  <div class="bera-field">
+                    <label class="bera-label" for="rule-name">Rule name</label>
+                    <input class="bera-input bera-mono" id="rule-name" type="text" autocomplete="off"
+                           placeholder="quarantine-rule" x-model="ruleName" />
+                  </div>
+                  <div class="bera-field">
+                    <label class="bera-label" for="rule-load">Load existing</label>
+                    <select class="bera-input" id="rule-load" @change="loadRule($event.target.value); $event.target.value=''">
+                      <option value="">Select a rule…</option>
+                      <template x-for="r in ruleList" :key="r.Name">
+                        <option :value="r.Name" x-text="r.Name"></option>
+                      </template>
+                    </select>
+                  </div>
+                  <div style="display: flex; gap: 8px">
+                    <button type="button" class="bera-btn bera-btn--secondary"
+                            @click="serverValidate()" :disabled="validating || booting"
+                            x-text="validating ? 'Validating…' : 'Validate'"></button>
+                    <button type="button" class="bera-btn bera-btn--primary"
+                            x-show="canEdit" @click="save()" :disabled="saving || booting"
+                            x-text="saving ? 'Saving…' : 'Save'"></button>
+                  </div>
+                </div>
+                <div class="bera-field" style="margin-top: 12px">
+                  <label class="bera-label" for="rule-desc">Description</label>
+                  <input class="bera-input" id="rule-desc" type="text" autocomplete="off"
+                         placeholder="Optional documentation" x-model="description" />
+                </div>
+                <p class="bera-caption" x-show="tierChecked && !canEdit" style="margin: 8px 0 0">
+                  You are signed in as a non-admin: you can load, validate and preview
+                  rules, but saving requires system-admin authority.
+                </p>
+                <template x-if="status">
+                  <div class="bera-alert" :class="status.kind === 'ok' ? 'bera-alert--success' : 'bera-alert--danger'"
+                       style="margin-top: 12px">
+                    <span class="bera-alert__code" x-text="status.code || (status.kind === 'ok' ? 'OK' : 'RULE')"></span>
+                    <span x-text="status.msg"></span>
+                  </div>
+                </template>
+              </div>
+
               <div class="bera-rule-editor" style="display: grid; grid-template-columns: 200px 1fr; gap: 12px; align-items: start">
                 <!-- Palette -->
                 <div class="bera-card" style="padding: 12px">
@@ -1419,6 +1466,65 @@
                             </li>
                           </template>
                         </ul>
+                      </div>
+                    </template>
+                  </div>
+
+                  <!-- Live what-if preview (READ-ONLY). Renders the would-be
+                       decision + Explain trace for the rule CURRENTLY on the
+                       canvas against a sample principal/object, WITHOUT saving:
+                       the unsaved rule is layered over the live model as a
+                       Simulate overlay, shadowing any stored rule of the same
+                       name, so the preview reflects the edit against grants that
+                       reference this rule. Nothing is persisted. -->
+                  <div class="bera-card" style="padding: 12px; margin-top: 12px">
+                    <p class="bera-label" style="margin-bottom: 4px">Live what-if preview</p>
+                    <p class="bera-caption" style="margin: 0 0 12px">
+                      Read-only. Previews the decision the rule on the canvas would
+                      produce for a sample principal and object — without saving it.
+                    </p>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 8px; align-items: end">
+                      <div class="bera-field">
+                        <label class="bera-label" for="rule-wi-principal">Principal</label>
+                        <input class="bera-input bera-mono" id="rule-wi-principal" type="text" autocomplete="off"
+                               placeholder="user:alice" x-model="preview.principal" />
+                      </div>
+                      <div class="bera-field">
+                        <label class="bera-label" for="rule-wi-action">Action</label>
+                        <input class="bera-input" id="rule-wi-action" type="text" autocomplete="off"
+                               placeholder="read" x-model="preview.action" />
+                      </div>
+                      <div class="bera-field">
+                        <label class="bera-label" for="rule-wi-object">Object</label>
+                        <input class="bera-input bera-mono" id="rule-wi-object" type="text" autocomplete="off"
+                               placeholder="account:acme/document:1" x-model="preview.object" />
+                      </div>
+                      <button type="button" class="bera-btn bera-btn--secondary"
+                              @click="runPreview()" :disabled="previewing || booting"
+                              x-text="previewing ? 'Running…' : 'Preview'"></button>
+                    </div>
+
+                    <template x-if="previewError">
+                      <div class="bera-alert bera-alert--danger" style="margin-top: 12px">
+                        <span class="bera-alert__code" x-text="previewError.code"></span>
+                        <span x-text="previewError.msg"></span>
+                      </div>
+                    </template>
+
+                    <template x-if="previewDecision">
+                      <div style="margin-top: 12px">
+                        <p class="bera-caption" style="margin: 0 0 4px">
+                          Decision:
+                          <strong x-text="previewDecision.allow ? 'Allow' : 'Deny'"
+                                  :style="previewDecision.allow ? 'color: var(--color-success, var(--neutral-700))' : 'color: var(--color-danger, var(--neutral-700))'"></strong>
+                        </p>
+                        <p class="bera-caption bera-mono" style="margin: 0" x-text="previewDecision.reason"></p>
+                        <template x-if="previewTrace">
+                          <p class="bera-caption" style="margin: 8px 0 0">
+                            Grants considered:
+                            <span class="bera-mono" x-text="(previewTrace.Considered || []).length"></span>
+                          </p>
+                        </template>
                       </div>
                     </template>
                   </div>

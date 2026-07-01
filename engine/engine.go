@@ -367,6 +367,26 @@ func (e *Engine) WithStore(store model.Storage) *Engine {
 	return &clone
 }
 
+// WithRuleEvaluator returns a shallow copy of e whose rule-backed scope
+// strategies (inclusive/exclusive with a rule reference) consult re instead of
+// e's own rule evaluator. It is the READ-ONLY what-if seam for previewing an
+// UNSAVED rule (E7-S3): the simulate path layers a hypothetical rule over the
+// live rule source and evaluates Check / Explain against the returned copy
+// without ever persisting the edit. e itself is unchanged, so the live engine and
+// the transient preview engine never interfere.
+//
+// It only affects an engine that resolves scopes (WithScopeResolution); on an
+// engine using the literal coverer there are no rule-backed strategies to
+// redirect, so the copy is returned unchanged.
+func (e *Engine) WithRuleEvaluator(re scope.RuleEvaluator) *Engine {
+	clone := *e
+	if sc, ok := clone.coverer.(scopeCoverer); ok {
+		sc.deps.Rules = re
+		clone.coverer = sc
+	}
+	return &clone
+}
+
 // requireMembership reports whether the request may proceed under the active
 // membership policy. With enforcement off it always returns true. With
 // enforcement on it returns whether principal is a member of account; a storage

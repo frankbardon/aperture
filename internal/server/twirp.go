@@ -742,6 +742,173 @@ func (h *twirpHandler) ImpersonationStop(ctx context.Context, req *rpc.Impersona
 	return empty(h.svc.ImpersonationStop(ctx, operator, nil))
 }
 
+// ---- Rules (writes require system-admin; reads require auth) ----
+
+func (h *twirpHandler) PutRule(ctx context.Context, req *rpc.RuleRequest) (*rpc.Empty, error) {
+	r, err := decodeRule(req)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	actor, err := h.actor(ctx, ruleActorAccount(req))
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return empty(h.svc.PutRule(ctx, actor, r))
+}
+
+func (h *twirpHandler) GetRule(ctx context.Context, req *rpc.GetRequest) (*rpc.RuleResponse, error) {
+	if _, err := h.principal(ctx); err != nil {
+		return nil, mapErr(err)
+	}
+	r, err := h.svc.GetRule(ctx, req.Id)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	js, err := json.Marshal(r)
+	if err != nil {
+		return nil, mapErr(aerr.Wrap(aerr.APERTURE_STORAGE, "twirp: marshalling rule", err))
+	}
+	return &rpc.RuleResponse{RuleJson: string(js)}, nil
+}
+
+func (h *twirpHandler) ListRules(ctx context.Context, _ *rpc.Empty) (*rpc.RuleListResponse, error) {
+	if _, err := h.principal(ctx); err != nil {
+		return nil, mapErr(err)
+	}
+	items, err := h.svc.ListRules(ctx)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	out := make([]string, len(items))
+	for i := range items {
+		js, mErr := json.Marshal(items[i])
+		if mErr != nil {
+			return nil, mapErr(aerr.Wrap(aerr.APERTURE_STORAGE, "twirp: marshalling rule", mErr))
+		}
+		out[i] = string(js)
+	}
+	return &rpc.RuleListResponse{RulesJson: out}, nil
+}
+
+func (h *twirpHandler) DeleteRule(ctx context.Context, req *rpc.DeleteRequest) (*rpc.Empty, error) {
+	actor, err := h.actor(ctx, actorAccount(req.Actor))
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return empty(h.svc.DeleteRule(ctx, actor, req.Id))
+}
+
+// ValidateRule compiles/validates a rule AST without persisting it. It requires
+// an authenticated principal (the editor is an admin tool) but no admin tier — it
+// writes nothing. A valid rule returns Empty; an invalid one surfaces its
+// APERTURE_RULE_* code for the canvas.
+func (h *twirpHandler) ValidateRule(ctx context.Context, req *rpc.RuleRequest) (*rpc.Empty, error) {
+	if _, err := h.principal(ctx); err != nil {
+		return nil, mapErr(err)
+	}
+	r, err := decodeRule(req)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return empty(h.svc.ValidateRule(ctx, r))
+}
+
+// decodeRule unmarshals a RuleRequest's rule_json into a model.Rule.
+func decodeRule(req *rpc.RuleRequest) (model.Rule, error) {
+	if req == nil {
+		return model.Rule{}, aerr.New(aerr.APERTURE_INVALID_INPUT, "twirp: empty request")
+	}
+	var r model.Rule
+	if err := json.Unmarshal([]byte(req.RuleJson), &r); err != nil {
+		return model.Rule{}, aerr.Wrap(aerr.APERTURE_INVALID_INPUT, "twirp: rule_json is not valid JSON", err)
+	}
+	return r, nil
+}
+
+func ruleActorAccount(req *rpc.RuleRequest) string {
+	if req == nil {
+		return ""
+	}
+	return actorAccount(req.Actor)
+}
+
+// ---- Read-only what-if over a hypothetical overlay (E7-S3 live preview) ----
+
+func (h *twirpHandler) Simulate(ctx context.Context, req *rpc.SimulateRequest) (*rpc.Decision, error) {
+	if _, err := h.principal(ctx); err != nil {
+		return nil, mapErr(err)
+	}
+	ov, q, err := decodeSimulate(req)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	res, err := h.svc.Simulate(ctx, ov, q)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return &rpc.Decision{Allow: res.Allow, Reason: res.Reason, DecidingGrantIds: res.DecidingGrantIDs}, nil
+}
+
+func (h *twirpHandler) SimulateExplain(ctx context.Context, req *rpc.SimulateRequest) (*rpc.ExplainResponse, error) {
+	if _, err := h.principal(ctx); err != nil {
+		return nil, mapErr(err)
+	}
+	ov, q, err := decodeSimulate(req)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	tr, err := h.svc.SimulateExplain(ctx, ov, q)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	js, err := json.Marshal(tr)
+	if err != nil {
+		return nil, mapErr(aerr.Wrap(aerr.APERTURE_STORAGE, "twirp: marshalling trace", err))
+	}
+	return &rpc.ExplainResponse{TraceJson: string(js)}, nil
+}
+
+// decodeSimulate builds the read-only Overlay and Query a Simulate call layers
+// over the live model. Every overlay entity rides as canonical JSON; a malformed
+// item is an input error (nothing is written regardless).
+func decodeSimulate(req *rpc.SimulateRequest) (service.Overlay, service.Query, error) {
+	if req == nil || req.Query == nil {
+		return service.Overlay{}, service.Query{}, aerr.New(aerr.APERTURE_INVALID_INPUT, "twirp: simulate request needs a query")
+	}
+	var ov service.Overlay
+	if err := unmarshalEach(req.RulesJson, "rule", &ov.Rules); err != nil {
+		return ov, service.Query{}, err
+	}
+	if err := unmarshalEach(req.GrantsJson, "grant", &ov.Grants); err != nil {
+		return ov, service.Query{}, err
+	}
+	if err := unmarshalEach(req.PermissionsJson, "permission", &ov.Permissions); err != nil {
+		return ov, service.Query{}, err
+	}
+	if err := unmarshalEach(req.PrincipalsJson, "principal", &ov.Principals); err != nil {
+		return ov, service.Query{}, err
+	}
+	q := service.Query{
+		Account:   req.Query.Account,
+		Principal: req.Query.Principal,
+		Action:    req.Query.Action,
+		Object:    req.Query.Object,
+	}
+	return ov, q, nil
+}
+
+// unmarshalEach decodes each JSON string in src into a fresh T appended to *dst.
+func unmarshalEach[T any](src []string, kind string, dst *[]T) error {
+	for _, s := range src {
+		var v T
+		if err := json.Unmarshal([]byte(s), &v); err != nil {
+			return aerr.Wrap(aerr.APERTURE_INVALID_INPUT, "twirp: overlay "+kind+" is not valid JSON", err)
+		}
+		*dst = append(*dst, v)
+	}
+	return nil
+}
+
 // empty adapts a mutation's error-only return to the (*Empty, error) RPC shape.
 func empty(err error) (*rpc.Empty, error) {
 	if err != nil {

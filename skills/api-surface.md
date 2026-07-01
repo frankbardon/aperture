@@ -45,6 +45,19 @@ Full surface:
 - **Entity CRUD**: `Put/Get/List/Delete` for `ObjectType`, `Permission`,
   `Principal`, `Role`, `Group`, `Account`; `Put/Delete` for `Membership`;
   `Put/Get/List/Delete` for `Grant`.
+- **Rules (E7-S3)**: `Put/Get/List/Delete` for `Rule` (the named rule-AST
+  definitions the node editor authors and rule-backed scope strategies resolve;
+  the AST rides as `rule_json`/`rules_json`, the exact `rules.Node` serialization).
+  `PutRule` DEEP-validates the AST (structure + compile pass) and rejects an
+  invalid rule with its `APERTURE_RULE_*` code before persisting. `ValidateRule`
+  runs that same validation WITHOUT persisting, so the editor can check before it
+  saves. Rule DEFINITION is SYSTEM tier; reads require auth only.
+- **What-if (read-only, E7-S3)**: `Simulate` / `SimulateExplain` render the
+  decision (and full Explain trace) for a query under a hypothetical `Overlay`
+  (rules / grants / permissions / principals) layered over the live model,
+  persisting nothing. They back the rule editor's live preview of an UNSAVED rule:
+  the overlay rule shadows the stored one of the same name, so a preview reflects
+  the edit against grants that reference it. Requires an authenticated principal.
 - **Delegation**: `Bestow`, `Revoke`.
 - **Impersonation**: `ImpersonationStart`, `ImpersonationStop`.
 - **Provisioning (E5-S1)**: `Put/Get/List/Delete` for `Template` (named,
