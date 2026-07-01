@@ -16,6 +16,7 @@
     <script defer src="/js/audit.js"></script>
     <script defer src="/js/whatif.js"></script>
     <script defer src="/js/portability.js"></script>
+    <script defer src="/js/rules-serializer.js"></script>
     <script defer src="/js/rules.js"></script>
     <script defer src="/vendor/alpine.min.js"></script>
   </head>
@@ -1331,40 +1332,96 @@
             </template>
           </div>
 
-          <!-- Rules (E7-S1): the hello-canvas that proves the vendored Rete.js
-               bundle mounts an editor in the embedded shell with no node build.
-               E7-S2 replaces the placeholder graph with the real
-               pulse-expression node<->AST editor built on this same bundle. -->
+          <!-- Rules (E7-S2): the Blueprints-style node editor over the E2-S3
+               pulse-expression rule AST. The palette adds AST nodes; typed
+               sockets wire them; the canvas pans/zooms/reroutes. The graph is
+               serialized to and from the exact rules.Node JSON by the pure
+               serializer (js/rules-serializer.js) — there is no second format.
+               window.blueprintEditor exposes toAST/fromAST/validate for E7-S3. -->
           <template x-if="active === 'rules'">
             <div x-data="rules()">
               <div class="bera-section-head">
                 <h1 class="bera-h3">Rules</h1>
-                <span class="bera-caption">Rete canvas · vendored bundle</span>
+                <span class="bera-caption">Node editor · pulse-expression AST</span>
               </div>
               <p class="bera-caption" style="margin: 0 0 12px">
-                The node canvas that edits the pulse-expression rule AST. This is the
-                E7-S1 hello-canvas — an empty editor seeded with one placeholder node,
-                proving the vendored Rete.js bundle loads and renders with no node
-                build. The node↔AST editor lands in
-                <span class="bera-mono">E7-S2</span>.
+                Build a rule as a graph of nodes over object metadata and the
+                principal, account and action context. The graph serializes to
+                the same rule AST the engine evaluates and the state file
+                persists — the editor is a view over that one format. Structural
+                checks run here as you edit; full type-checking runs on the
+                server when you save (<span class="bera-mono">E7-S3</span>).
               </p>
 
               <template x-if="error">
                 <div class="bera-alert bera-alert--danger">
-                  <span class="bera-alert__code">RETE</span>
+                  <span class="bera-alert__code">RULE</span>
                   <span x-text="error"></span>
                 </div>
               </template>
 
-              <div class="bera-card" style="padding: 0; overflow: hidden">
-                <div
-                  x-ref="canvas"
-                  class="rete-canvas"
-                  style="position: relative; width: 100%; height: 480px"
-                >
-                  <template x-if="booting">
-                    <p class="bera-caption" style="padding: 16px">Loading the canvas.</p>
+              <div class="bera-rule-editor" style="display: grid; grid-template-columns: 200px 1fr; gap: 12px; align-items: start">
+                <!-- Palette -->
+                <div class="bera-card" style="padding: 12px">
+                  <p class="bera-label" style="margin-bottom: 8px">Palette</p>
+                  <template x-for="grp in palette" :key="grp.group">
+                    <div style="margin-bottom: 12px">
+                      <p class="bera-caption" style="margin: 0 0 6px" x-text="grp.group"></p>
+                      <div style="display: flex; flex-direction: column; gap: 6px">
+                        <template x-for="item in grp.items" :key="item.kind">
+                          <button
+                            type="button"
+                            class="bera-btn bera-btn--secondary"
+                            style="justify-content: flex-start"
+                            @click="add(item.kind)"
+                            x-text="item.label"
+                          ></button>
+                        </template>
+                      </div>
+                    </div>
                   </template>
+                  <div style="display: flex; flex-direction: column; gap: 6px; margin-top: 8px; border-top: 1px solid var(--color-border); padding-top: 12px">
+                    <button type="button" class="bera-btn bera-btn--secondary" @click="zoomToFit()">Fit to view</button>
+                    <button type="button" class="bera-btn bera-btn--secondary" @click="clearCanvas()">Clear canvas</button>
+                  </div>
+                </div>
+
+                <!-- Canvas + validation -->
+                <div>
+                  <div class="bera-card" style="padding: 0; overflow: hidden">
+                    <div
+                      x-ref="canvas"
+                      class="rete-canvas"
+                      style="position: relative; width: 100%; height: 480px; background: var(--color-surface-2)"
+                    >
+                      <template x-if="booting">
+                        <p class="bera-caption" style="padding: 16px">Loading the canvas.</p>
+                      </template>
+                    </div>
+                  </div>
+
+                  <!-- Inline structural validation (client-side; AST shape + unknown
+                       variable roots). Full validation is the engine's, in E7-S3. -->
+                  <div style="margin-top: 12px">
+                    <template x-if="!booting && valid">
+                      <p class="bera-caption" style="margin: 0; color: var(--color-success, var(--neutral-700))">
+                        The rule is structurally valid. Server validation runs on save.
+                      </p>
+                    </template>
+                    <template x-if="!booting && !valid && problems.length">
+                      <div class="bera-card" style="padding: 12px">
+                        <p class="bera-label" style="margin-bottom: 8px">Validation</p>
+                        <ul style="margin: 0; padding-left: 16px; display: flex; flex-direction: column; gap: 4px">
+                          <template x-for="(p, i) in problems" :key="i">
+                            <li class="bera-caption">
+                              <span class="bera-mono" x-text="p.code"></span>
+                              <span x-text="' · ' + p.path + ' — ' + p.message"></span>
+                            </li>
+                          </template>
+                        </ul>
+                      </div>
+                    </template>
+                  </div>
                 </div>
               </div>
             </div>

@@ -35,6 +35,9 @@ func TestStaticShellServed(t *testing.T) {
 		{"/js/crud.js", "window.crud", ""},
 		{"/js/grants.js", "window.grants", ""},
 		{"/js/rules.js", "window.rules", ""},
+		// E7-S2: the pure graph<->AST serializer and the node editor that builds
+		// on the vendored Rete bundle both serve as JS the shell loads.
+		{"/js/rules-serializer.js", "graphToAST", ""},
 		{"/vendor/alpine.min.js", "", ""},
 		{"/vendor/tailwind.min.css", "tailwindcss", "text/css"},
 		{"/vendor/daisyui.full.css", ":root", "text/css"},
@@ -92,6 +95,56 @@ func TestRuleCanvasReferencesVendoredRete(t *testing.T) {
 	defer rules.Body.Close()
 	if body := readAll(t, rules); !strings.Contains(body, "/vendor/rete/rete.min.js") {
 		t.Errorf("rules.js does not import the vendored /vendor/rete/rete.min.js bundle")
+	}
+}
+
+// TestRuleEditorWiring asserts the E7-S2 node-editor chain is intact end to end:
+// the shell loads the pure serializer before the editor, the editor consumes it
+// and exposes the E7-S3 save/load hooks on window.blueprintEditor, and the
+// serializer exports both directions of the graph<->AST bridge. A regression in
+// any link would leave the rules editor unable to serialize against the AST.
+func TestRuleEditorWiring(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	get := func(path string) string {
+		res, err := http.Get(srv.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		defer res.Body.Close()
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s: status = %d, want 200", path, res.StatusCode)
+		}
+		return readAll(t, res)
+	}
+
+	// The shell loads the serializer, and it must precede the editor so
+	// window.RuleSerializer exists when rules.js mounts.
+	index := get("/")
+	sIdx := strings.Index(index, "/js/rules-serializer.js")
+	eIdx := strings.Index(index, "/js/rules.js")
+	if sIdx < 0 || eIdx < 0 {
+		t.Fatalf("index.html must load both rules-serializer.js (%d) and rules.js (%d)", sIdx, eIdx)
+	}
+	if sIdx > eIdx {
+		t.Errorf("rules-serializer.js must load before rules.js (serializer=%d editor=%d)", sIdx, eIdx)
+	}
+
+	// The editor consumes the serializer and exposes the E7-S3 hooks.
+	editor := get("/js/rules.js")
+	for _, sub := range []string{"window.RuleSerializer", "window.blueprintEditor", "toAST", "fromAST", "validate"} {
+		if !strings.Contains(editor, sub) {
+			t.Errorf("rules.js is missing %q — the E7-S3 hook surface must be present", sub)
+		}
+	}
+
+	// The serializer exports both directions of the graph<->AST bridge and its
+	// client-side structural validation.
+	ser := get("/js/rules-serializer.js")
+	for _, sub := range []string{"graphToAST", "astToGraph", "validateAST"} {
+		if !strings.Contains(ser, sub) {
+			t.Errorf("rules-serializer.js is missing %q", sub)
+		}
 	}
 }
 

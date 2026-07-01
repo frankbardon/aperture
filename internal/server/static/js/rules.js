@@ -1,27 +1,398 @@
 /*
- * rules.js — the Rules section Alpine component (E7-S1 hello-canvas).
+ * rules.js — the Rules section: a Blueprints-style node editor over the E2-S3
+ * pulse-expression rule AST (E7-S2).
  *
- * Proves the vendored Rete.js bundle (static/vendor/rete/rete.min.js) loads and
- * mounts an editor inside the embedded admin shell, with NO node build in dev or
- * CI. It is deliberately minimal: it dynamically imports the vendored ESM bundle
- * at runtime and mounts createHelloCanvas() — an empty editor seeded with one
- * placeholder node — to exercise the area + connection + render pipeline.
+ * This replaces the E7-S1 hello-canvas. It builds the real node<->AST editor on
+ * the toolkit the vendored Rete bundle re-exports (NodeEditor, ClassicPreset,
+ * AreaPlugin, AreaExtensions, ConnectionPlugin/Presets, ReactPlugin/Presets),
+ * imported at runtime from /vendor/rete/rete.min.js (no node build in dev/CI).
  *
- * A classic <script defer> like the other domain screens (crud.js, grants.js):
- * app.js registers its factory on window before Alpine walks the DOM. The ESM
- * bundle is pulled in via a runtime dynamic import(), so no module-script load
- * ordering is involved. E7-S2 replaces the placeholder graph with the real
- * node<->AST editor built on the toolkit the same bundle re-exports.
+ * The editor is ONLY an editing surface. All graph<->AST correctness lives in
+ * the pure, DOM-free serializer (rules-serializer.js, window.RuleSerializer):
+ * the Rete graph is read into that module's plain graph model and folded to the
+ * exact rules.Node JSON — there is no second rule format.
+ *
+ * Alpine holds the section state and exposes the E7-S3 save/load HOOKS on
+ * `window.blueprintEditor`:
+ *
+ *   window.blueprintEditor.toAST()        -> rule AST (rules.Node JSON) | null
+ *   window.blueprintEditor.fromAST(ast)   -> Promise (render an AST into the graph)
+ *   window.blueprintEditor.validate()     -> [{ code, message, path }]  (client-side)
+ *   window.blueprintEditor.getGraph()     -> plain { nodes, connections }
+ *   window.blueprintEditor.addNode(kind)  -> Promise (palette add)
+ *   window.blueprintEditor.clear()        -> Promise
+ *   window.blueprintEditor.destroy()
+ *   window.blueprintEditor.onChange = fn  (set by the host; fires on any edit)
+ *
+ * E7-S3 wires POST-to-API load/save/validate over these hooks; the split is:
+ * client-side validate() is structural/AST-shape only (mirrors ast.go Validate);
+ * full type-checking is the engine's and runs server-side.
  */
+
+// createBlueprintEditor mounts the Rete editor into `container` and returns the
+// blueprintEditor hook object. `mod` is the vendored Rete bundle namespace and
+// `S` is window.RuleSerializer.
+async function createBlueprintEditor(container, mod, S) {
+  const {
+    NodeEditor,
+    ClassicPreset,
+    AreaPlugin,
+    AreaExtensions,
+    ConnectionPlugin,
+    ConnectionPresets,
+    ReactPlugin,
+    ReactPresets,
+  } = mod;
+
+  const editor = new NodeEditor();
+  const area = new AreaPlugin(container);
+  const connection = new ConnectionPlugin();
+  const render = new ReactPlugin({ createRoot: mod.createRoot || undefined });
+
+  // The bundle re-exports React's createRoot indirectly through ReactPlugin's
+  // own default when not supplied; pass it if the bundle exposed it.
+  render.addPreset(ReactPresets.classic.setup());
+  connection.addPreset(ConnectionPresets.classic.setup());
+
+  editor.use(area);
+  area.use(connection);
+  area.use(render);
+
+  AreaExtensions.simpleNodesOrder(area);
+  AreaExtensions.selectableNodes(area, AreaExtensions.selector(), {
+    accumulating: AreaExtensions.accumulateOnCtrl(),
+  });
+
+  // One shared socket instance: Rete's default compatibility then permits any
+  // wire, and the typed-socket rules are enforced by the connectioncreate guard
+  // below using the serializer's NODE_SPECS. Keeping one socket avoids the
+  // classic preset silently refusing visually-identical pins.
+  const socket = new ClassicPreset.Socket("pin");
+
+  const hook = {
+    editor,
+    area,
+    onChange: function () {},
+  };
+
+  // fireChange notifies the host (Alpine) that the graph changed so it can
+  // re-run validation. Debounced to a microtask so a burst of Rete events
+  // (e.g. clearing) collapses into one refresh.
+  let pending = false;
+  function fireChange() {
+    if (pending) return;
+    pending = true;
+    Promise.resolve().then(function () {
+      pending = false;
+      try {
+        hook.onChange();
+      } catch (_) {
+        /* host errors must not break the editor pipeline */
+      }
+    });
+  }
+
+  // Typed-socket guard + change notifications. Returning undefined from a
+  // 'connectioncreate' cancels the connection (Rete pipe contract).
+  editor.addPipe(function (context) {
+    if (!context || typeof context !== "object") return context;
+    if (context.type === "connectioncreate") {
+      if (!isCompatible(context.data)) {
+        return; // reject incompatible or self-referential wires
+      }
+    }
+    if (
+      context.type === "connectioncreated" ||
+      context.type === "connectionremoved" ||
+      context.type === "noderemoved" ||
+      context.type === "nodecreated"
+    ) {
+      fireChange();
+    }
+    return context;
+  });
+
+  // isCompatible enforces the typed-socket rules from NODE_SPECS: a source
+  // node's output type must be accepted by the target input, and a node may not
+  // wire into itself.
+  function isCompatible(data) {
+    const src = editor.getNode(data.source);
+    const tgt = editor.getNode(data.target);
+    if (!src || !tgt) return false;
+    if (src.id === tgt.id) return false;
+    const outType = (S.NODE_SPECS[src.kind] || {}).out;
+    const accepts = (S.NODE_SPECS[tgt.kind] || {}).accepts || [];
+    return accepts.indexOf(outType) >= 0;
+  }
+
+  // makeNode builds a Rete node for an AST kind, seeding its controls from
+  // optional `data` (op/name/value) and its variadic pins from `data.arity`.
+  function makeNode(kind, data) {
+    const spec = S.NODE_SPECS[kind];
+    if (!spec) throw new Error("unknown node kind: " + kind);
+    const d = data || {};
+    const node = new ClassicPreset.Node(spec.title);
+    node.kind = kind;
+
+    node.addOutput("out", new ClassicPreset.Output(socket, spec.out));
+
+    if (kind === S.TYPES.COMPARE) {
+      node.addControl(
+        "op",
+        new ClassicPreset.InputControl("text", {
+          initial: d.op || "eq",
+          change: fireChange,
+        })
+      );
+    }
+    if (kind === S.TYPES.VAR) {
+      node.addControl(
+        "name",
+        new ClassicPreset.InputControl("text", {
+          initial: d.name || "object.",
+          change: fireChange,
+        })
+      );
+    }
+    if (kind === S.TYPES.LITERAL) {
+      node.addControl(
+        "value",
+        new ClassicPreset.InputControl("text", {
+          initial: S.formatLiteral(d.value === undefined ? "" : d.value),
+          change: fireChange,
+        })
+      );
+    }
+    if (kind === S.TYPES.CALL) {
+      node.addControl(
+        "name",
+        new ClassicPreset.InputControl("text", {
+          initial: d.name || "len",
+          change: fireChange,
+        })
+      );
+    }
+
+    // Inputs.
+    if (spec.inputs === "child") {
+      node.addInput("in", new ClassicPreset.Input(socket, ""));
+    } else if (spec.inputs === "leftright") {
+      node.addInput("left", new ClassicPreset.Input(socket, "left"));
+      node.addInput("right", new ClassicPreset.Input(socket, "right"));
+    } else if (spec.inputs === "variadic") {
+      const arity = Math.max(minArity(kind), d.arity || 0);
+      node.arity = 0;
+      for (let i = 0; i < arity; i++) {
+        node.addInput("in-" + i, new ClassicPreset.Input(socket, "in " + i));
+        node.arity++;
+      }
+      // A number control drives how many ordered input pins the node exposes;
+      // order is meaningful for list/call arguments.
+      node.addControl(
+        "slots",
+        new ClassicPreset.InputControl("number", {
+          initial: node.arity,
+          change: function (v) {
+            adjustArity(node, v);
+          },
+        })
+      );
+    }
+    return node;
+  }
+
+  function minArity(kind) {
+    if (kind === S.TYPES.AND || kind === S.TYPES.OR) return 2;
+    if (kind === S.TYPES.LIST) return 1;
+    return 1; // call: allow zero-arg is possible, but keep one slot for editing
+  }
+
+  // adjustArity grows/shrinks a variadic node's ordered input pins, removing any
+  // connections that fall off when shrinking.
+  async function adjustArity(node, next) {
+    next = Math.max(minArity(node.kind), Math.floor(next || 0));
+    const cur = node.arity;
+    if (next === cur) return;
+    if (next > cur) {
+      for (let i = cur; i < next; i++) {
+        node.addInput("in-" + i, new ClassicPreset.Input(socket, "in " + i));
+      }
+    } else {
+      for (let i = cur; i > next; i--) {
+        const key = "in-" + (i - 1);
+        const drop = editor.getConnections().filter(function (c) {
+          return c.target === node.id && c.targetInput === key;
+        });
+        for (const c of drop) {
+          await editor.removeConnection(c.id);
+        }
+        node.removeInput(key);
+      }
+    }
+    node.arity = next;
+    await area.update("node", node.id);
+    fireChange();
+  }
+
+  // reteToGraph reads the live Rete editor into the serializer's plain graph
+  // model — the ONLY bridge between the runtime and the pure serializer.
+  function reteToGraph() {
+    const nodes = editor.getNodes().map(function (n) {
+      const g = { id: n.id, type: n.kind };
+      if (n.controls.op) g.op = n.controls.op.value;
+      if (n.kind === S.TYPES.VAR || n.kind === S.TYPES.CALL) {
+        g.name = n.controls.name ? n.controls.name.value : "";
+      }
+      if (n.kind === S.TYPES.LITERAL) {
+        g.value = S.parseLiteral(n.controls.value ? n.controls.value.value : "");
+      }
+      return g;
+    });
+    const connections = editor.getConnections().map(function (c) {
+      return {
+        source: c.source,
+        sourceKey: c.sourceOutput,
+        target: c.target,
+        targetKey: c.targetInput,
+      };
+    });
+    return { nodes: nodes, connections: connections };
+  }
+
+  async function clear() {
+    for (const c of editor.getConnections().slice()) {
+      await editor.removeConnection(c.id);
+    }
+    for (const n of editor.getNodes().slice()) {
+      await editor.removeNode(n.id);
+    }
+  }
+
+  // fromAST renders an AST into the canvas. Node ids/positions are editor
+  // concerns produced by astToGraph and are dropped on the way back, so the
+  // round-trip stays lossless.
+  async function fromAST(ast) {
+    await clear();
+    const graph = S.astToGraph(ast);
+
+    // Per-node variadic arity = count of its in-N connections.
+    const arity = {};
+    graph.connections.forEach(function (c) {
+      if (/^in-\d+$/.test(c.targetKey)) {
+        arity[c.target] = (arity[c.target] || 0) + 1;
+      }
+    });
+
+    const idMap = {};
+    for (const gn of graph.nodes) {
+      const node = makeNode(gn.type, {
+        op: gn.op,
+        name: gn.name,
+        value: gn.value,
+        arity: arity[gn.id] || 0,
+      });
+      idMap[gn.id] = node;
+      await editor.addNode(node);
+      if (gn.position) {
+        await area.translate(node.id, gn.position);
+      }
+    }
+    for (const c of graph.connections) {
+      const src = idMap[c.source];
+      const tgt = idMap[c.target];
+      if (!src || !tgt) continue;
+      await editor.addConnection(
+        new ClassicPreset.Connection(src, c.sourceKey, tgt, c.targetKey)
+      );
+    }
+    await zoomToFit();
+    fireChange();
+  }
+
+  // addNode drops a fresh palette node onto the canvas near the origin, staggered
+  // so successive adds do not stack exactly.
+  let addOffset = 0;
+  async function addNode(kind) {
+    const node = makeNode(kind, {});
+    await editor.addNode(node);
+    const x = 40 + (addOffset % 5) * 30;
+    const y = 40 + (addOffset % 5) * 30;
+    addOffset++;
+    await area.translate(node.id, { x: x, y: y });
+    return node;
+  }
+
+  async function zoomToFit() {
+    const nodes = editor.getNodes();
+    if (nodes.length > 0) {
+      await AreaExtensions.zoomAt(area, nodes);
+    }
+  }
+
+  // toAST folds the live graph to the rule AST via the pure serializer. Throws a
+  // structured error ({code, message}) if the graph is not a single tree.
+  hook.toAST = function () {
+    return S.graphToAST(reteToGraph());
+  };
+  hook.fromAST = fromAST;
+  hook.getGraph = reteToGraph;
+  hook.addNode = addNode;
+  hook.clear = clear;
+  hook.zoomToFit = zoomToFit;
+  hook.validate = function () {
+    let ast;
+    try {
+      ast = S.graphToAST(reteToGraph());
+    } catch (e) {
+      return [{ code: e.code || "APERTURE_RULE_INVALID", message: e.message, path: "$" }];
+    }
+    if (ast === null) return [];
+    return S.validateAST(ast);
+  };
+  hook.destroy = function () {
+    area.destroy();
+  };
+
+  return hook;
+}
+
+// A small starter rule so the canvas is not blank on first open; also exercises
+// fromAST end to end. object.classification == "public".
+const STARTER_AST = {
+  type: "compare",
+  op: "eq",
+  left: { type: "var", name: "object.classification" },
+  right: { type: "literal", value: "public" },
+};
 
 function rules() {
   return {
     booting: true,
     error: "",
-    _canvas: null,
+    problems: [],
+    // The node palette, grouped by category. Covers the whole AST: logical
+    // combinators, comparisons over variables/literals, and the Pulse building
+    // blocks (list/call) from E2-S3.
+    palette: [
+      { group: "Logic", items: [
+        { kind: "and", label: "And" },
+        { kind: "or", label: "Or" },
+        { kind: "not", label: "Not" },
+      ] },
+      { group: "Compare", items: [
+        { kind: "compare", label: "Compare" },
+      ] },
+      { group: "Operands", items: [
+        { kind: "var", label: "Variable" },
+        { kind: "literal", label: "Literal" },
+      ] },
+      { group: "Pulse", items: [
+        { kind: "list", label: "List" },
+        { kind: "call", label: "Call" },
+      ] },
+    ],
+    _editor: null,
 
-    // init runs when the rules section's x-if creates this component (i.e. when
-    // the section becomes active). mount() loads the bundle and renders.
     init() {
       this.mount();
     },
@@ -30,14 +401,19 @@ function rules() {
       this.booting = true;
       this.error = "";
       try {
-        // Runtime dynamic import of the committed, embedded ESM blob. Served by
-        // the Go file server from the //go:embed static tree — no CDN, no build.
+        if (!window.RuleSerializer) {
+          throw new Error("rule serializer not loaded");
+        }
         const mod = await import("/vendor/rete/rete.min.js");
         const el = this.$refs.canvas;
         if (!el) {
           throw new Error("canvas container not found");
         }
-        this._canvas = await mod.createHelloCanvas(el);
+        this._editor = await createBlueprintEditor(el, mod, window.RuleSerializer);
+        // Expose the E7-S3 save/load hooks and wire validation refresh.
+        window.blueprintEditor = this._editor;
+        this._editor.onChange = () => this.refreshValidation();
+        await this._editor.fromAST(STARTER_AST);
         this.booting = false;
       } catch (e) {
         this.error = e && e.message ? e.message : String(e);
@@ -45,14 +421,53 @@ function rules() {
       }
     },
 
-    // destroy tears the editor down when the section is left (x-if removes it).
-    destroy() {
-      if (this._canvas && typeof this._canvas.destroy === "function") {
-        this._canvas.destroy();
+    // refreshValidation runs the client-side structural check and surfaces its
+    // problems. Full type-checking is the engine's (server-side, E7-S3).
+    refreshValidation() {
+      if (!window.blueprintEditor) return;
+      try {
+        this.problems = window.blueprintEditor.validate();
+        this.error = "";
+      } catch (e) {
+        this.problems = [];
+        this.error = e && e.message ? e.message : String(e);
       }
-      this._canvas = null;
+    },
+
+    add(kind) {
+      if (window.blueprintEditor) {
+        window.blueprintEditor.addNode(kind);
+      }
+    },
+
+    async clearCanvas() {
+      if (window.blueprintEditor) {
+        await window.blueprintEditor.clear();
+        this.refreshValidation();
+      }
+    },
+
+    zoomToFit() {
+      if (window.blueprintEditor) {
+        window.blueprintEditor.zoomToFit();
+      }
+    },
+
+    get valid() {
+      return this.problems.length === 0 && !this.error;
+    },
+
+    destroy() {
+      if (this._editor && typeof this._editor.destroy === "function") {
+        this._editor.destroy();
+      }
+      if (window.blueprintEditor === this._editor) {
+        window.blueprintEditor = null;
+      }
+      this._editor = null;
     },
   };
 }
 
 window.rules = rules;
+window.createBlueprintEditor = createBlueprintEditor;
