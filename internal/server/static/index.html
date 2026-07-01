@@ -16,6 +16,7 @@
     <script defer src="/js/audit.js"></script>
     <script defer src="/js/whatif.js"></script>
     <script defer src="/js/portability.js"></script>
+    <script defer src="/js/rules.js"></script>
     <script defer src="/vendor/alpine.min.js"></script>
   </head>
   <body>
@@ -1330,15 +1331,42 @@
             </template>
           </div>
 
-          <!-- Sections not yet built keep the shell's factual placeholder. -->
+          <!-- Rules (E7-S1): the hello-canvas that proves the vendored Rete.js
+               bundle mounts an editor in the embedded shell with no node build.
+               E7-S2 replaces the placeholder graph with the real
+               pulse-expression node<->AST editor built on this same bundle. -->
           <template x-if="active === 'rules'">
-            <div class="bera-empty">
-              <h1 class="bera-h3" x-text="activeSection.label"></h1>
-              <p class="bera-body" style="margin-top: 8px" x-text="activeSection.note"></p>
-              <p class="bera-caption" style="margin-top: 12px">
-                This section is part of the shell. Its screen lands in
-                <span class="bera-mono" x-text="activeSection.story"></span>.
+            <div x-data="rules()">
+              <div class="bera-section-head">
+                <h1 class="bera-h3">Rules</h1>
+                <span class="bera-caption">Rete canvas · vendored bundle</span>
+              </div>
+              <p class="bera-caption" style="margin: 0 0 12px">
+                The node canvas that edits the pulse-expression rule AST. This is the
+                E7-S1 hello-canvas — an empty editor seeded with one placeholder node,
+                proving the vendored Rete.js bundle loads and renders with no node
+                build. The node↔AST editor lands in
+                <span class="bera-mono">E7-S2</span>.
               </p>
+
+              <template x-if="error">
+                <div class="bera-alert bera-alert--danger">
+                  <span class="bera-alert__code">RETE</span>
+                  <span x-text="error"></span>
+                </div>
+              </template>
+
+              <div class="bera-card" style="padding: 0; overflow: hidden">
+                <div
+                  x-ref="canvas"
+                  class="rete-canvas"
+                  style="position: relative; width: 100%; height: 480px"
+                >
+                  <template x-if="booting">
+                    <p class="bera-caption" style="padding: 16px">Loading the canvas.</p>
+                  </template>
+                </div>
+              </div>
             </div>
           </template>
         </main>

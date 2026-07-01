@@ -34,9 +34,15 @@ func TestStaticShellServed(t *testing.T) {
 		{"/js/app.js", "apiFetch", ""},
 		{"/js/crud.js", "window.crud", ""},
 		{"/js/grants.js", "window.grants", ""},
+		{"/js/rules.js", "window.rules", ""},
 		{"/vendor/alpine.min.js", "", ""},
 		{"/vendor/tailwind.min.css", "tailwindcss", "text/css"},
 		{"/vendor/daisyui.full.css", ":root", "text/css"},
+		// The vendored Rete.js bundle is embedded and serves as a JS module so the
+		// rules hello-canvas loads with no node build. Assert the entry file is
+		// reachable, carries a JS content-type (so `import()` accepts it), and
+		// exports createHelloCanvas — the wiring the rules section imports.
+		{"/vendor/rete/rete.min.js", "createHelloCanvas", "text/javascript"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.path, func(t *testing.T) {
@@ -60,6 +66,32 @@ func TestStaticShellServed(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestRuleCanvasReferencesVendoredRete asserts the reference chain that mounts
+// the E7-S1 hello-canvas is intact end to end: the shell loads the rules script,
+// and the rules script imports the vendored Rete.js bundle by its served path. A
+// broken link here would leave the rules section blank at runtime.
+func TestRuleCanvasReferencesVendoredRete(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	index, err := http.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer index.Body.Close()
+	if body := readAll(t, index); !strings.Contains(body, "/js/rules.js") {
+		t.Errorf("index.html does not load /js/rules.js")
+	}
+
+	rules, err := http.Get(srv.URL + "/js/rules.js")
+	if err != nil {
+		t.Fatalf("GET /js/rules.js: %v", err)
+	}
+	defer rules.Body.Close()
+	if body := readAll(t, rules); !strings.Contains(body, "/vendor/rete/rete.min.js") {
+		t.Errorf("rules.js does not import the vendored /vendor/rete/rete.min.js bundle")
 	}
 }
 

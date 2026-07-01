@@ -1,4 +1,4 @@
-.PHONY: build run clean test bench fmt vet lint proto
+.PHONY: build run clean test bench fmt vet lint proto vendor-rete
 
 BINARY_NAME=aperture
 BUILD_DIR=bin
@@ -59,6 +59,16 @@ proto:
 
 vet:
 	$(GO) vet ./...
+
+# vendor-rete regenerates the committed Rete.js bundle at
+# internal/server/static/vendor/rete/rete.min.js. This is the ONLY target that
+# invokes node, and it is a MANUAL, OCCASIONAL step (version bumps / plugin
+# changes) — it is deliberately NOT a dependency of build/test/CI. The normal
+# build ships the committed blob and never runs node. All npm work happens in a
+# throwaway temp dir (no node_modules/package-lock in the repo). See
+# build/rete/build.sh + internal/server/static/vendor/rete/README.md.
+vendor-rete:
+	build/rete/build.sh
 
 # lint runs go vet plus a static analyser when one is available. In a clean
 # environment without staticcheck / golangci-lint on PATH the target degrades to
