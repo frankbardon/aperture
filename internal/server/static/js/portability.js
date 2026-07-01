@@ -136,7 +136,8 @@
 
       async loadAccounts() {
         try {
-          this.accounts = (await rpcCall("ListAccounts", {})).entities_json.map((s) => JSON.parse(s));
+          const resp = await rpcCall("ListAccounts", {});
+          this.accounts = (resp.entities_json || []).map((s) => JSON.parse(s));
           if (!this.account && this.accounts.length > 0) this.account = this.accounts[0].ID;
         } catch (e) {
           if (e.status !== 401) this.error = { code: e.code, msg: e.message };
