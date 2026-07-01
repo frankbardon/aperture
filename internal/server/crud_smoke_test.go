@@ -53,6 +53,46 @@ func TestCRUDSmokeRole(t *testing.T) {
 	}
 }
 
+// TestCRUDSmokeObjectTypeMultipleActions guards the object-type screen's Actions
+// field end to end: the crud.js taglist widget lets an admin type several
+// comma-separated verbs, which must persist as a multi-element string array. A
+// widget regression (deriving the input value from the parsed array on every
+// keystroke) erased the comma and capped the field at one action; this asserts
+// the server contract the fixed widget feeds — many actions in, many actions out.
+func TestCRUDSmokeObjectTypeMultipleActions(t *testing.T) {
+	srv, _ := newTestServer(t)
+	c := client(srv)
+	ctx := asPrincipal(context.Background(), t, "root")
+	actor := &rpc.Actor{Principal: "root", Account: acct}
+
+	ot := model.ObjectType{
+		Name:        "folder",
+		Description: "A container of documents.",
+		Actions:     []string{"read", "write", "delete", "share"},
+	}
+	if _, err := c.PutObjectType(ctx, &rpc.EntityRequest{Actor: actor, EntityJson: mustJSON(t, ot)}); err != nil {
+		t.Fatalf("PutObjectType: %v", err)
+	}
+
+	resp, err := c.GetObjectType(ctx, &rpc.GetRequest{Actor: actor, Id: "folder"})
+	if err != nil {
+		t.Fatalf("GetObjectType: %v", err)
+	}
+	var got model.ObjectType
+	if err := json.Unmarshal([]byte(resp.EntityJson), &got); err != nil {
+		t.Fatalf("decode object type: %v", err)
+	}
+	want := []string{"read", "write", "delete", "share"}
+	if len(got.Actions) != len(want) {
+		t.Fatalf("persisted actions = %v, want %v", got.Actions, want)
+	}
+	for i, a := range want {
+		if got.Actions[i] != a {
+			t.Fatalf("action[%d] = %q, want %q (full: %v)", i, got.Actions[i], a, got.Actions)
+		}
+	}
+}
+
 // TestCRUDSmokePrincipal is the happy-path UI proxy for the principals screen:
 // create → list → edit → delete a principal as the admin.
 func TestCRUDSmokePrincipal(t *testing.T) {

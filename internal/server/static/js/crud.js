@@ -183,7 +183,7 @@ function crud() {
     // small (the whole model) and refreshed after each mutation.
     refs: { roles: [], permissions: [], objectTypes: [], principals: [] },
 
-    modal: { open: false, mode: "create", form: {}, saving: false, error: null },
+    modal: { open: false, mode: "create", form: {}, saving: false, error: null, tagText: {} },
     confirm: { open: false, row: null, message: "", deleting: false, error: null },
 
     init() {
@@ -338,22 +338,50 @@ function crud() {
       this.modal.form[fieldKey] = cur;
     },
 
-    setTagList(fieldKey, text) {
-      this.modal.form[fieldKey] = text
+    // Tag-list fields (e.g. ObjectType.Actions) edit as free text: the input is
+    // bound to a raw string buffer (modal.tagText) so the user can type commas
+    // and spaces freely. The buffer is parsed into the form's string array only
+    // at save time — NOT on every keystroke. Deriving the input value from the
+    // parsed array on each keystroke (the old approach) erased the comma the user
+    // just typed and jumped the cursor, making a second entry impossible.
+    seedTagText(form) {
+      const tagText = {};
+      for (const f of this.currentType.fields || []) {
+        if (f.widget === "taglist") {
+          tagText[f.key] = (form[f.key] || []).join(", ");
+        }
+      }
+      return tagText;
+    },
+
+    parseTags(text) {
+      return (text || "")
         .split(",")
         .map((s) => s.trim())
         .filter((s) => s.length > 0);
     },
 
+    // commitTagLists folds each raw tag buffer back into its form array. Called
+    // once at save time.
+    commitTagLists() {
+      for (const f of this.currentType.fields || []) {
+        if (f.widget === "taglist") {
+          this.modal.form[f.key] = this.parseTags(this.modal.tagText[f.key]);
+        }
+      }
+    },
+
     // ---- create / edit ----
 
     openCreate() {
-      this.modal = { open: true, mode: "create", form: this.currentType.blank(), saving: false, error: null };
+      const form = this.currentType.blank();
+      this.modal = { open: true, mode: "create", form, saving: false, error: null, tagText: this.seedTagText(form) };
     },
 
     openEdit(row) {
       // Deep-clone so an aborted edit does not mutate the visible row.
-      this.modal = { open: true, mode: "edit", form: JSON.parse(JSON.stringify(row)), saving: false, error: null };
+      const form = JSON.parse(JSON.stringify(row));
+      this.modal = { open: true, mode: "edit", form, saving: false, error: null, tagText: this.seedTagText(form) };
     },
 
     closeModal() {
@@ -363,6 +391,8 @@ function crud() {
     async save() {
       this.modal.error = null;
       const type = this.currentType;
+      // Fold free-text tag buffers (e.g. Actions) into their form arrays first.
+      this.commitTagLists();
       for (const f of type.fields) {
         if (f.required) {
           const v = this.modal.form[f.key];

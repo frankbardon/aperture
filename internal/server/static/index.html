@@ -311,8 +311,7 @@
                             <template x-if="field.widget === 'taglist'">
                               <input
                                 class="bera-input bera-cell-mono"
-                                :value="(modal.form[field.key] || []).join(', ')"
-                                @input="setTagList(field.key, $event.target.value)"
+                                x-model="modal.tagText[field.key]"
                                 placeholder="read, write, delete"
                               />
                             </template>
