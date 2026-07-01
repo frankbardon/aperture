@@ -304,3 +304,104 @@ body {
 .bera-signin__title { font: 600 var(--text-xl)/var(--leading-snug) var(--font-display); margin: 0 0 var(--space-2); }
 .bera-signin__hint { color: var(--color-fg-muted); font-size: var(--text-sm); margin: 0 0 var(--space-4); }
 .bera-signin__row { display: flex; gap: var(--space-2); margin-top: var(--space-4); }
+
+/* ---------- CRUD screen (E6-S2): section head + toolbar ---------- */
+.bera-section-head { display: flex; align-items: baseline; gap: var(--space-3); margin-bottom: var(--space-4); }
+.bera-muted { color: var(--color-fg-muted); }
+.bera-cell-mono { font-family: var(--font-mono); }
+
+.bera-toolbar { display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-4); flex-wrap: wrap; }
+.bera-toolbar__spacer { flex: 1; }
+
+/* Segmented control for switching entity types (§6 controls) */
+.bera-tabs { display: inline-flex; gap: 2px; padding: 3px; background: var(--neutral-300); border-radius: var(--radius-md); }
+.bera-tab {
+  border: none; background: transparent; padding: 6px 12px; border-radius: 6px;
+  font: 600 var(--text-sm)/1 var(--font-body); color: var(--color-fg-muted); cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-standard);
+}
+.bera-tab:hover { color: var(--color-fg); }
+.bera-tab--active { background: var(--color-surface); color: var(--color-fg); box-shadow: var(--shadow-card); }
+
+/* ---------- Table (§6.9) ---------- */
+.bera-table-wrap {
+  background: var(--color-surface); border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg); overflow: hidden; box-shadow: var(--shadow-card);
+}
+.bera-table { width: 100%; border-collapse: collapse; font: 400 var(--text-sm)/var(--leading-normal) var(--font-body); }
+.bera-table thead th {
+  text-align: left; font: 600 var(--text-2xs)/1 var(--font-body);
+  text-transform: uppercase; letter-spacing: var(--tracking-label); color: var(--neutral-600);
+  padding: 9px 12px; border-bottom: 1px solid var(--color-border); white-space: nowrap;
+}
+.bera-table tbody td { padding: 10px 12px; border-bottom: 1px solid var(--color-divider); color: var(--color-fg); vertical-align: top; }
+.bera-table tbody tr:last-child td { border-bottom: none; }
+.bera-table tbody tr:hover { background: var(--neutral-200); }
+.bera-table td.bera-cell-mono { font-family: var(--font-mono); }
+
+/* Per-row text actions */
+.bera-row-actions { display: inline-flex; gap: var(--space-2); }
+.bera-linkbtn {
+  border: none; background: none; padding: 2px 2px; cursor: pointer;
+  font: 600 var(--text-sm)/1 var(--font-body); color: var(--color-link);
+}
+.bera-linkbtn:hover { color: var(--color-link-hover); text-decoration: underline; }
+.bera-linkbtn--danger { color: var(--color-danger); }
+
+/* ---------- Status pill / badge (§6.7) ---------- */
+.bera-badge {
+  display: inline-flex; align-items: center; height: 20px; padding: 0 8px;
+  border-radius: var(--radius-full); font: 600 var(--text-2xs)/1 var(--font-body);
+  border: 1px solid var(--color-border); background: var(--neutral-200); color: var(--color-fg-muted);
+}
+.bera-badge--user { background: var(--bera-50); color: var(--bera-700); border-color: var(--bera-75); }
+.bera-badge--machine { background: var(--neutral-300); color: var(--neutral-700); border-color: var(--neutral-400); }
+.bera-badge--allow { background: var(--grass-50); color: var(--color-success); border-color: var(--grass-100); }
+.bera-badge--deny { background: var(--strawberry-50); color: var(--color-danger); border-color: var(--strawberry-100); }
+
+/* ---------- Inline alert / banner ---------- */
+.bera-alert {
+  display: flex; gap: var(--space-2); padding: 10px 12px; margin-bottom: var(--space-4);
+  border-radius: var(--radius-md); border: 1px solid var(--color-border);
+  background: var(--neutral-200); color: var(--color-fg); font: 400 var(--text-sm)/1.4 var(--font-body);
+}
+.bera-alert__code { font-family: var(--font-mono); font-weight: 600; flex: none; }
+.bera-alert--danger { background: var(--strawberry-50); border-color: var(--strawberry-100); color: var(--color-danger); }
+.bera-alert--info { background: var(--bera-50); border-color: var(--bera-75); color: var(--bera-800); }
+
+/* ---------- Modal (reuses .bera-scrim backdrop, §8 modals cap 640px) ---------- */
+.bera-modal__panel {
+  width: 100%; max-width: 640px; max-height: calc(100vh - 64px); overflow-y: auto;
+  background: var(--color-surface); border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-floating); padding: var(--space-6);
+}
+.bera-modal__title { font: 600 var(--text-xl)/var(--leading-snug) var(--font-display); margin: 0 0 var(--space-1); }
+.bera-modal__foot { display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-5); }
+
+/* ---------- Form field widgets ---------- */
+.bera-field { margin-bottom: var(--space-4); }
+.bera-field__hint { font: 400 var(--text-xs)/1.4 var(--font-body); color: var(--color-fg-muted); margin-top: 4px; }
+.bera-select {
+  width: 100%; height: 32px; padding: 0 10px; border: 1px solid var(--color-border);
+  border-radius: var(--radius-md); background: var(--neutral-200);
+  font: 400 12px/1 var(--font-body); color: var(--color-fg);
+}
+.bera-select:focus { outline: none; background: var(--neutral-100); border-color: var(--bera-500); box-shadow: 0 0 0 2px var(--neutral-100), 0 0 0 4px rgba(0,174,255,0.25); }
+.bera-textarea {
+  width: 100%; min-height: 64px; padding: 8px 12px; border: 1px solid var(--color-border);
+  border-radius: var(--radius-md); background: var(--neutral-200); resize: vertical;
+  font: 400 12px/var(--leading-normal) var(--font-body); color: var(--color-fg);
+}
+.bera-textarea:focus { outline: none; background: var(--neutral-100); border-color: var(--bera-500); box-shadow: 0 0 0 2px var(--neutral-100), 0 0 0 4px rgba(0,174,255,0.25); }
+.bera-input:disabled { opacity: .55; cursor: not-allowed; }
+
+/* Checkbox chips for multi-select reference fields */
+.bera-checks { display: flex; flex-wrap: wrap; gap: 6px; }
+.bera-check {
+  display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px;
+  border: 1px solid var(--color-border); border-radius: var(--radius-md);
+  background: var(--neutral-100); font: 400 var(--text-sm)/1 var(--font-body);
+  color: var(--color-fg); cursor: pointer;
+}
+.bera-check input { accent-color: var(--bera-600); margin: 0; }
+.bera-check--on { border-color: var(--bera-500); background: var(--bera-50); color: var(--bera-800); }

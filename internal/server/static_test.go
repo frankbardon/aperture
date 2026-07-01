@@ -32,6 +32,7 @@ func TestStaticShellServed(t *testing.T) {
 		{"/index.html", "shell()", "text/html"},
 		{"/css/bera.css", "--bera-500", "text/css"},
 		{"/js/app.js", "apiFetch", ""},
+		{"/js/crud.js", "window.crud", ""},
 		{"/vendor/alpine.min.js", "", ""},
 		{"/vendor/tailwind.min.css", "tailwindcss", "text/css"},
 		{"/vendor/daisyui.full.css", ":root", "text/css"},

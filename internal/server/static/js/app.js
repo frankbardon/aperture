@@ -90,11 +90,15 @@ function shell() {
       localStorage.setItem(TOKEN_KEY, id);
       this.principal = id;
       this.signInId = "";
+      // Notify per-screen components (e.g. crud.js) that a principal is present
+      // so they can (re)load their data through the now-authenticated apiFetch.
+      document.dispatchEvent(new CustomEvent("aperture:authenticated", { detail: { principal: id } }));
     },
 
     signOut() {
       localStorage.removeItem(TOKEN_KEY);
       this.principal = "";
+      document.dispatchEvent(new CustomEvent("aperture:signout"));
     },
   };
 }

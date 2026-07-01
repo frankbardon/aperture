@@ -10,8 +10,9 @@
       Tailwind/DaisyUI are available to later domain screens.
     -->
     <link rel="stylesheet" href="/css/bera.css" />
-    <script defer src="/vendor/alpine.min.js"></script>
     <script defer src="/js/app.js"></script>
+    <script defer src="/js/crud.js"></script>
+    <script defer src="/vendor/alpine.min.js"></script>
   </head>
   <body>
     <!--
@@ -95,16 +96,267 @@
           </template>
         </header>
 
-        <!-- Flex content area — section placeholders (E6-S2/S3/S4, E7 fill these) -->
+        <!-- Flex content area. The Model (crud) section is filled by E6-S2; the
+             other sections keep the shell placeholder until their story lands. -->
         <main class="shell__content">
-          <div class="bera-empty">
-            <h1 class="bera-h3" x-text="activeSection.label"></h1>
-            <p class="bera-body" style="margin-top: 8px" x-text="activeSection.note"></p>
-            <p class="bera-caption" style="margin-top: 12px">
-              This section is part of the shell. Its screen lands in
-              <span class="bera-mono" x-text="activeSection.story"></span>.
-            </p>
+          <!-- Model management (E6-S2): principals, roles, groups, permissions,
+               object types + their typed action sets. Its own Alpine scope. -->
+          <div x-show="active === 'crud'" x-data="crud()">
+            <div class="bera-section-head">
+              <h1 class="bera-h3">Model</h1>
+              <span class="bera-caption" x-show="account">
+                Account <span class="bera-mono" x-text="account"></span>
+              </span>
+            </div>
+
+            <!-- Not signed in: factual gate, no editing surface. -->
+            <template x-if="!principal">
+              <div class="bera-empty">
+                <p class="bera-body">Sign in to manage the model.</p>
+              </div>
+            </template>
+
+            <template x-if="principal">
+              <div>
+                <!-- Tier gate: read-only viewers are told why editing is hidden. -->
+                <template x-if="tierChecked && !canEdit">
+                  <div class="bera-alert bera-alert--info">
+                    <span>
+                      You are signed in as <span class="bera-mono" x-text="principal"></span>.
+                      Editing the model requires system-admin authority; you have read-only access.
+                    </span>
+                  </div>
+                </template>
+
+                <div class="bera-toolbar">
+                  <div class="bera-tabs">
+                    <template x-for="t in types" :key="t.key">
+                      <button
+                        class="bera-tab"
+                        :class="{ 'bera-tab--active': activeType === t.key }"
+                        @click="selectType(t.key)"
+                        x-text="t.label"
+                      ></button>
+                    </template>
+                  </div>
+                  <div class="bera-toolbar__spacer"></div>
+                  <template x-if="accounts.length > 1">
+                    <select class="bera-select" style="width: auto" x-model="account" @change="onAccountChange()">
+                      <template x-for="a in accounts" :key="a.ID">
+                        <option :value="a.ID" x-text="a.Name || a.ID"></option>
+                      </template>
+                    </select>
+                  </template>
+                  <button class="bera-btn bera-btn--secondary" @click="load()">Reload</button>
+                  <button
+                    class="bera-btn bera-btn--primary"
+                    x-show="canEdit"
+                    @click="openCreate()"
+                    x-text="'New ' + currentType.singular"
+                  ></button>
+                </div>
+
+                <template x-if="error">
+                  <div class="bera-alert bera-alert--danger">
+                    <span class="bera-alert__code" x-text="error.code"></span>
+                    <span x-text="error.msg"></span>
+                  </div>
+                </template>
+
+                <template x-if="loading">
+                  <p class="bera-body bera-muted">Loading.</p>
+                </template>
+
+                <template x-if="!loading && !error && rows.length === 0">
+                  <div class="bera-empty">
+                    <p class="bera-body" x-text="emptyText()"></p>
+                  </div>
+                </template>
+
+                <template x-if="!loading && rows.length > 0">
+                  <div class="bera-table-wrap">
+                    <table class="bera-table">
+                      <thead>
+                        <tr>
+                          <template x-for="col in currentType.columns" :key="col.key">
+                            <th x-text="col.label"></th>
+                          </template>
+                          <th style="text-align: right">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <template x-for="row in rows" :key="rowId(row)">
+                          <tr>
+                            <template x-for="col in currentType.columns" :key="col.key">
+                              <td :class="col.mono ? 'bera-cell-mono' : ''">
+                                <template x-if="col.badge">
+                                  <span
+                                    class="bera-badge"
+                                    :class="'bera-badge--' + String(row[col.key] || '').toLowerCase()"
+                                    x-text="row[col.key] || '—'"
+                                  ></span>
+                                </template>
+                                <template x-if="!col.badge">
+                                  <span x-text="cellText(row, col)"></span>
+                                </template>
+                              </td>
+                            </template>
+                            <td style="text-align: right">
+                              <template x-if="canEdit">
+                                <span class="bera-row-actions">
+                                  <button class="bera-linkbtn" @click="openEdit(row)">Edit</button>
+                                  <button class="bera-linkbtn bera-linkbtn--danger" @click="askDelete(row)">Delete</button>
+                                </span>
+                              </template>
+                              <template x-if="!canEdit">
+                                <span class="bera-muted">—</span>
+                              </template>
+                            </td>
+                          </tr>
+                        </template>
+                      </tbody>
+                    </table>
+                  </div>
+                </template>
+
+                <!-- Create / edit modal -->
+                <template x-if="modal.open">
+                  <div class="bera-scrim" @keydown.escape.window="closeModal()">
+                    <div class="bera-modal__panel">
+                      <h2 class="bera-modal__title" x-text="(modal.mode === 'create' ? 'New ' : 'Edit ') + currentType.singular"></h2>
+                      <p class="bera-caption" style="margin-bottom: 16px">Fields are validated against the API.</p>
+
+                      <template x-if="modal.error">
+                        <div class="bera-alert bera-alert--danger">
+                          <span class="bera-alert__code" x-text="modal.error.code"></span>
+                          <span x-text="modal.error.msg"></span>
+                        </div>
+                      </template>
+
+                      <form @submit.prevent="save()">
+                        <template x-for="field in currentType.fields" :key="field.key">
+                          <div class="bera-field">
+                            <label class="bera-label" x-text="field.label"></label>
+
+                            <template x-if="field.widget === 'text'">
+                              <input
+                                class="bera-input"
+                                :class="field.mono ? 'bera-cell-mono' : ''"
+                                x-model="modal.form[field.key]"
+                                :placeholder="field.placeholder || ''"
+                                :disabled="field.lockOnEdit && modal.mode === 'edit'"
+                              />
+                            </template>
+
+                            <template x-if="field.widget === 'textarea'">
+                              <textarea class="bera-textarea" x-model="modal.form[field.key]"></textarea>
+                            </template>
+
+                            <template x-if="field.widget === 'select'">
+                              <select class="bera-select" x-model="modal.form[field.key]">
+                                <template x-for="o in field.options" :key="o">
+                                  <option :value="o" x-text="o"></option>
+                                </template>
+                              </select>
+                            </template>
+
+                            <template x-if="field.widget === 'refselect'">
+                              <select class="bera-select" x-model="modal.form[field.key]">
+                                <option value="">Select an option</option>
+                                <template x-for="o in refOptions(field)" :key="o.value">
+                                  <option :value="o.value" x-text="o.label"></option>
+                                </template>
+                              </select>
+                            </template>
+
+                            <template x-if="field.widget === 'actionselect'">
+                              <select class="bera-select" x-model="modal.form[field.key]">
+                                <option value="">Select an action</option>
+                                <template x-for="a in actionOptions()" :key="a">
+                                  <option :value="a" x-text="a"></option>
+                                </template>
+                              </select>
+                            </template>
+
+                            <template x-if="field.widget === 'refchecks'">
+                              <div class="bera-checks">
+                                <template x-if="refOptions(field).length === 0">
+                                  <span class="bera-caption">No options available.</span>
+                                </template>
+                                <template x-for="o in refOptions(field)" :key="o.value">
+                                  <label class="bera-check" :class="(modal.form[field.key] || []).includes(o.value) ? 'bera-check--on' : ''">
+                                    <input type="checkbox" :checked="(modal.form[field.key] || []).includes(o.value)" @change="toggleRef(field.key, o.value)" />
+                                    <span class="bera-cell-mono" x-text="o.label"></span>
+                                  </label>
+                                </template>
+                              </div>
+                            </template>
+
+                            <template x-if="field.widget === 'taglist'">
+                              <input
+                                class="bera-input bera-cell-mono"
+                                :value="(modal.form[field.key] || []).join(', ')"
+                                @input="setTagList(field.key, $event.target.value)"
+                                placeholder="read, write, delete"
+                              />
+                            </template>
+
+                            <template x-if="field.widget === 'checkbox'">
+                              <label class="bera-check" :class="modal.form[field.key] ? 'bera-check--on' : ''">
+                                <input type="checkbox" x-model="modal.form[field.key]" />
+                                <span>Delegatable</span>
+                              </label>
+                            </template>
+
+                            <template x-if="field.hint">
+                              <p class="bera-field__hint" x-text="field.hint"></p>
+                            </template>
+                          </div>
+                        </template>
+
+                        <div class="bera-modal__foot">
+                          <button type="button" class="bera-btn bera-btn--secondary" @click="closeModal()">Cancel</button>
+                          <button type="submit" class="bera-btn bera-btn--primary" :disabled="modal.saving" x-text="modal.saving ? 'Saving' : 'Save'"></button>
+                        </div>
+                      </form>
+                    </div>
+                  </div>
+                </template>
+
+                <!-- Delete confirmation (state-of-the-world) -->
+                <template x-if="confirm.open">
+                  <div class="bera-scrim" @keydown.escape.window="confirm.open = false">
+                    <div class="bera-modal__panel" style="max-width: 460px">
+                      <h2 class="bera-modal__title">Confirm deletion</h2>
+                      <p class="bera-body" x-text="confirm.message"></p>
+                      <template x-if="confirm.error">
+                        <div class="bera-alert bera-alert--danger" style="margin-top: 16px">
+                          <span class="bera-alert__code" x-text="confirm.error.code"></span>
+                          <span x-text="confirm.error.msg"></span>
+                        </div>
+                      </template>
+                      <div class="bera-modal__foot">
+                        <button class="bera-btn bera-btn--secondary" @click="confirm.open = false">Cancel</button>
+                        <button class="bera-btn bera-btn--primary" :disabled="confirm.deleting" @click="doDelete()" x-text="confirm.deleting ? 'Deleting' : 'Delete'"></button>
+                      </div>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </template>
           </div>
+
+          <!-- Sections not yet built keep the shell's factual placeholder. -->
+          <template x-if="active !== 'crud'">
+            <div class="bera-empty">
+              <h1 class="bera-h3" x-text="activeSection.label"></h1>
+              <p class="bera-body" style="margin-top: 8px" x-text="activeSection.note"></p>
+              <p class="bera-caption" style="margin-top: 12px">
+                This section is part of the shell. Its screen lands in
+                <span class="bera-mono" x-text="activeSection.story"></span>.
+              </p>
+            </div>
+          </template>
         </main>
       </div>
 

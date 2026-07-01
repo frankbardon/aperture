@@ -1,0 +1,88 @@
+# Aperture admin-enabled demo seed.
+#
+# Unlike example.yaml (which has NO administrative grant, so the admin UI cannot
+# mutate against it), this fixture seeds a principal — "admin" — that holds the
+# all-covering ** admin grant, so it is BOTH system-admin (schema editing) and
+# account-admin (grants) in account "demo". Boot it with:
+#
+#   ./bin/aperture serve --seed seed/testdata/admin-demo.yaml
+#
+# then sign in to the shell as principal "admin" to exercise the CRUD screens'
+# authenticated create/edit/delete path. It also backs E6-S3/S4 (grants, audit).
+
+accounts:
+  - id: demo
+    name: Demo tenant
+    description: The tenant every grant in this fixture is stamped to.
+
+memberships:
+  - {principal: admin, account: demo}
+  - {principal: sam, account: demo}
+
+object_types:
+  # The reserved object type that carries administrative authority in-scheme
+  # (an admin right is an ordinary allow grant on the aperture.admin verb).
+  - name: system
+    description: Reserved object type carrying administrative authority.
+    actions: [aperture.admin]
+  - name: document
+    description: A protected document.
+    actions: [read, write, delete, share]
+
+permissions:
+  - id: perm-admin
+    object_type: system
+    action: aperture.admin
+    description: Full administrative authority (system and account tiers).
+  - id: perm-doc-read
+    object_type: document
+    action: read
+    description: Read a document.
+  - id: perm-doc-write
+    object_type: document
+    action: write
+    description: Write a document.
+
+principals:
+  - id: admin
+    kind: user
+    identity: user:admin
+    display_name: Admin
+  - id: sam
+    kind: user
+    identity: user:sam
+    display_name: Sam (editor)
+    roles: [editor]
+
+roles:
+  - id: editor
+    name: Editor
+    description: May read and write documents.
+    permissions: [perm-doc-read, perm-doc-write]
+  - id: viewer
+    name: Viewer
+    description: May read documents.
+    permissions: [perm-doc-read]
+
+groups:
+  - id: engineering
+    name: Engineering
+    description: Everyone on the engineering team.
+    members: [admin, sam]
+
+grants:
+  # The all-covering admin grant: covers system:schema (system tier) and
+  # account:demo/admin:all (account tier), so "admin" can drive every CRUD screen.
+  - id: g-admin
+    account: demo
+    subject: {kind: principal, id: admin}
+    permission: perm-admin
+    object: "**"
+    effect: allow
+  # A sample data grant so the grants/audit screens have something to show.
+  - id: g-editor-write
+    account: demo
+    subject: {kind: role, id: editor}
+    permission: perm-doc-write
+    object: "account:demo/document:*"
+    effect: allow

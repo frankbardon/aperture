@@ -16,7 +16,9 @@ frontend is pre-built, committed blobs behind `//go:embed`.
 
 - `internal/server/static/` — the embedded tree (`//go:embed all:static` in
   `internal/server/static.go`). `index.html` is the shell; `css/bera.css` is the
-  authoritative BERA styling; `js/app.js` is the Alpine component; `vendor/` holds
+  authoritative BERA styling; `js/app.js` is the shell Alpine component; per-screen
+  components live alongside it (`js/crud.js` fills the Model section, E6-S2, with a
+  data-driven entity-CRUD component driving the Twirp entity RPCs); `vendor/` holds
   the pre-built blobs (see `vendor/README.md` for pinned versions + regeneration).
 - Served by `staticHandler()`, mounted **LAST** on the mux in `server.New`
   (`mux.Handle("/", …)`). net/http resolves by longest matching pattern, so the
@@ -28,7 +30,10 @@ frontend is pre-built, committed blobs behind `//go:embed`.
 Aperture consumes credentials; it never mints them. The shell carries a bearer on
 every API request through one wrapper, `window.apiFetch` (`js/app.js`), which
 adds `Authorization: Bearer <token>` and, on a `401`, clears the token and
-re-opens the sign-in affordance. For local/demo the **dev/static authenticator**
+re-opens the sign-in affordance. Sign-in / sign-out dispatch DOM events —
+`aperture:authenticated` (`detail.principal`), `aperture:signout`, and
+`aperture:unauthenticated` (on a 401) — so per-screen components (e.g.
+`js/crud.js`) can (re)load or reset when the presented principal changes. For local/demo the **dev/static authenticator**
 (`auth/dev.go`) treats the bearer AS the principal id, so "sign in" only names
 which principal the session presents. An unauthenticated shell shows a sign-in
 modal; there is no credential issuance UI. Later per-screen Alpine components
