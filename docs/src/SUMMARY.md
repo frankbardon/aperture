@@ -28,6 +28,9 @@
 
 # Service Surfaces
 
+- [RPC / HTTP overview](surfaces/rpc-overview.md)
+  - [RPC reference](surfaces/rpc-reference.md)
+
 # Concepts
 
 # Reference
