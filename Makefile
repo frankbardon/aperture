@@ -1,4 +1,4 @@
-.PHONY: build run clean test bench fmt vet lint proto vendor-rete
+.PHONY: build run clean test bench fmt vet lint proto vendor-rete docs docs-serve docs-clean
 
 BINARY_NAME=aperture
 BUILD_DIR=bin
@@ -81,5 +81,20 @@ lint: vet
 	else \
 		echo "lint: no staticcheck/golangci-lint on PATH; ran go vet only (skipping static analysis)"; \
 	fi
+
+# docs builds the mdBook documentation site from docs/src into docs/book
+# (gitignored output). Mermaid renders client-side via the vendored additional-js
+# files (docs/mermaid.min.js + mermaid-init.js) — there are no preprocessor
+# plugins. Requires mdbook on PATH.
+docs:
+	mdbook build docs
+
+# docs-serve serves the book locally with live reload and opens a browser.
+docs-serve:
+	mdbook serve docs --open
+
+# docs-clean removes the built book output.
+docs-clean:
+	rm -rf docs/book
 
 .DEFAULT_GOAL := build
