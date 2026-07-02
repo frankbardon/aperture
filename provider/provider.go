@@ -81,7 +81,7 @@ type Filter struct {
 //
 // Implementations return APERTURE_NOT_FOUND (from errors/) for a Fetch of an
 // object that does not exist, so the Registry can distinguish "absent" from an
-// operational failure. Any error already carrying an Aperture or pulse code is
+// operational failure. Any error already carrying an APERTURE_* code is
 // surfaced verbatim; a plain error is wrapped as APERTURE_PROVIDER_FETCH.
 type ObjectProvider interface {
 	// Fetch returns the metadata for id. The id's terminal segment type matches

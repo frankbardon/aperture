@@ -64,15 +64,20 @@ type ApertureService interface {
 
 	GetObjectType(context.Context, *GetRequest) (*EntityResponse, error)
 
-	ListObjectTypes(context.Context, *Empty) (*EntityListResponse, error)
+	ListObjectTypes(context.Context, *ListRequest) (*EntityListResponse, error)
 
 	DeleteObjectType(context.Context, *DeleteRequest) (*Empty, error)
+
+	// ObjectIdentifiers enumerates all instance ids of an object type from its
+	// provider (the complete set); exclude removes ids for the exclusive
+	// "all except these" allow-list expansion.
+	ObjectIdentifiers(context.Context, *ObjectIdentifiersRequest) (*ObjectIdentifiersResponse, error)
 
 	PutPermission(context.Context, *EntityRequest) (*Empty, error)
 
 	GetPermission(context.Context, *GetRequest) (*EntityResponse, error)
 
-	ListPermissions(context.Context, *Empty) (*EntityListResponse, error)
+	ListPermissions(context.Context, *ListRequest) (*EntityListResponse, error)
 
 	DeletePermission(context.Context, *DeleteRequest) (*Empty, error)
 
@@ -80,7 +85,7 @@ type ApertureService interface {
 
 	GetPrincipal(context.Context, *GetRequest) (*EntityResponse, error)
 
-	ListPrincipals(context.Context, *Empty) (*EntityListResponse, error)
+	ListPrincipals(context.Context, *ListRequest) (*EntityListResponse, error)
 
 	DeletePrincipal(context.Context, *DeleteRequest) (*Empty, error)
 
@@ -88,7 +93,7 @@ type ApertureService interface {
 
 	GetRole(context.Context, *GetRequest) (*EntityResponse, error)
 
-	ListRoles(context.Context, *Empty) (*EntityListResponse, error)
+	ListRoles(context.Context, *ListRequest) (*EntityListResponse, error)
 
 	DeleteRole(context.Context, *DeleteRequest) (*Empty, error)
 
@@ -96,7 +101,7 @@ type ApertureService interface {
 
 	GetGroup(context.Context, *GetRequest) (*EntityResponse, error)
 
-	ListGroups(context.Context, *Empty) (*EntityListResponse, error)
+	ListGroups(context.Context, *ListRequest) (*EntityListResponse, error)
 
 	DeleteGroup(context.Context, *DeleteRequest) (*Empty, error)
 
@@ -104,7 +109,7 @@ type ApertureService interface {
 
 	GetAccount(context.Context, *GetRequest) (*EntityResponse, error)
 
-	ListAccounts(context.Context, *Empty) (*EntityListResponse, error)
+	ListAccounts(context.Context, *ListRequest) (*EntityListResponse, error)
 
 	DeleteAccount(context.Context, *DeleteRequest) (*Empty, error)
 
@@ -139,6 +144,11 @@ type ApertureService interface {
 
 	SimulateExplain(context.Context, *SimulateRequest) (*ExplainResponse, error)
 
+	// EvaluateRule runs an UNSAVED rule AST directly against one object's provider
+	// metadata (no account/principal/grant), returning the boolean result — the
+	// rule builder's object-based what-if.
+	EvaluateRule(context.Context, *EvaluateRuleRequest) (*EvaluateRuleResponse, error)
+
 	// ---- Account-scoped entities (writes require account-admin) ----
 	PutMembership(context.Context, *EntityRequest) (*Empty, error)
 
@@ -157,7 +167,7 @@ type ApertureService interface {
 
 	GetTemplate(context.Context, *TemplateKeyRequest) (*EntityResponse, error)
 
-	ListTemplates(context.Context, *Empty) (*EntityListResponse, error)
+	ListTemplates(context.Context, *ListRequest) (*EntityListResponse, error)
 
 	DeleteTemplate(context.Context, *TemplateKeyRequest) (*Empty, error)
 
@@ -202,7 +212,7 @@ type ApertureService interface {
 
 type apertureServiceProtobufClient struct {
 	client      HTTPClient
-	urls        [57]string
+	urls        [59]string
 	interceptor twirp.Interceptor
 	opts        twirp.ClientOptions
 }
@@ -230,7 +240,7 @@ func NewApertureServiceProtobufClient(baseURL string, client HTTPClient, opts ..
 	// Build method URLs: <baseURL>[<prefix>]/<package>.<Service>/<Method>
 	serviceURL := sanitizeBaseURL(baseURL)
 	serviceURL += baseServicePath(pathPrefix, "aperture", "ApertureService")
-	urls := [57]string{
+	urls := [59]string{
 		serviceURL + "Check",
 		serviceURL + "CheckBatch",
 		serviceURL + "Enumerate",
@@ -241,6 +251,7 @@ func NewApertureServiceProtobufClient(baseURL string, client HTTPClient, opts ..
 		serviceURL + "GetObjectType",
 		serviceURL + "ListObjectTypes",
 		serviceURL + "DeleteObjectType",
+		serviceURL + "ObjectIdentifiers",
 		serviceURL + "PutPermission",
 		serviceURL + "GetPermission",
 		serviceURL + "ListPermissions",
@@ -268,6 +279,7 @@ func NewApertureServiceProtobufClient(baseURL string, client HTTPClient, opts ..
 		serviceURL + "ValidateRule",
 		serviceURL + "Simulate",
 		serviceURL + "SimulateExplain",
+		serviceURL + "EvaluateRule",
 		serviceURL + "PutMembership",
 		serviceURL + "DeleteMembership",
 		serviceURL + "PutGrant",
@@ -666,18 +678,18 @@ func (c *apertureServiceProtobufClient) callGetObjectType(ctx context.Context, i
 	return out, nil
 }
 
-func (c *apertureServiceProtobufClient) ListObjectTypes(ctx context.Context, in *Empty) (*EntityListResponse, error) {
+func (c *apertureServiceProtobufClient) ListObjectTypes(ctx context.Context, in *ListRequest) (*EntityListResponse, error) {
 	ctx = ctxsetters.WithPackageName(ctx, "aperture")
 	ctx = ctxsetters.WithServiceName(ctx, "ApertureService")
 	ctx = ctxsetters.WithMethodName(ctx, "ListObjectTypes")
 	caller := c.callListObjectTypes
 	if c.interceptor != nil {
-		caller = func(ctx context.Context, req *Empty) (*EntityListResponse, error) {
+		caller = func(ctx context.Context, req *ListRequest) (*EntityListResponse, error) {
 			resp, err := c.interceptor(
 				func(ctx context.Context, req interface{}) (interface{}, error) {
-					typedReq, ok := req.(*Empty)
+					typedReq, ok := req.(*ListRequest)
 					if !ok {
-						return nil, twirp.InternalError("failed type assertion req.(*Empty) when calling interceptor")
+						return nil, twirp.InternalError("failed type assertion req.(*ListRequest) when calling interceptor")
 					}
 					return c.callListObjectTypes(ctx, typedReq)
 				},
@@ -695,7 +707,7 @@ func (c *apertureServiceProtobufClient) ListObjectTypes(ctx context.Context, in 
 	return caller(ctx, in)
 }
 
-func (c *apertureServiceProtobufClient) callListObjectTypes(ctx context.Context, in *Empty) (*EntityListResponse, error) {
+func (c *apertureServiceProtobufClient) callListObjectTypes(ctx context.Context, in *ListRequest) (*EntityListResponse, error) {
 	out := new(EntityListResponse)
 	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[8], in, out)
 	if err != nil {
@@ -758,6 +770,52 @@ func (c *apertureServiceProtobufClient) callDeleteObjectType(ctx context.Context
 	return out, nil
 }
 
+func (c *apertureServiceProtobufClient) ObjectIdentifiers(ctx context.Context, in *ObjectIdentifiersRequest) (*ObjectIdentifiersResponse, error) {
+	ctx = ctxsetters.WithPackageName(ctx, "aperture")
+	ctx = ctxsetters.WithServiceName(ctx, "ApertureService")
+	ctx = ctxsetters.WithMethodName(ctx, "ObjectIdentifiers")
+	caller := c.callObjectIdentifiers
+	if c.interceptor != nil {
+		caller = func(ctx context.Context, req *ObjectIdentifiersRequest) (*ObjectIdentifiersResponse, error) {
+			resp, err := c.interceptor(
+				func(ctx context.Context, req interface{}) (interface{}, error) {
+					typedReq, ok := req.(*ObjectIdentifiersRequest)
+					if !ok {
+						return nil, twirp.InternalError("failed type assertion req.(*ObjectIdentifiersRequest) when calling interceptor")
+					}
+					return c.callObjectIdentifiers(ctx, typedReq)
+				},
+			)(ctx, req)
+			if resp != nil {
+				typedResp, ok := resp.(*ObjectIdentifiersResponse)
+				if !ok {
+					return nil, twirp.InternalError("failed type assertion resp.(*ObjectIdentifiersResponse) when calling interceptor")
+				}
+				return typedResp, err
+			}
+			return nil, err
+		}
+	}
+	return caller(ctx, in)
+}
+
+func (c *apertureServiceProtobufClient) callObjectIdentifiers(ctx context.Context, in *ObjectIdentifiersRequest) (*ObjectIdentifiersResponse, error) {
+	out := new(ObjectIdentifiersResponse)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[10], in, out)
+	if err != nil {
+		twerr, ok := err.(twirp.Error)
+		if !ok {
+			twerr = twirp.InternalErrorWith(err)
+		}
+		callClientError(ctx, c.opts.Hooks, twerr)
+		return nil, err
+	}
+
+	callClientResponseReceived(ctx, c.opts.Hooks)
+
+	return out, nil
+}
+
 func (c *apertureServiceProtobufClient) PutPermission(ctx context.Context, in *EntityRequest) (*Empty, error) {
 	ctx = ctxsetters.WithPackageName(ctx, "aperture")
 	ctx = ctxsetters.WithServiceName(ctx, "ApertureService")
@@ -789,7 +847,7 @@ func (c *apertureServiceProtobufClient) PutPermission(ctx context.Context, in *E
 
 func (c *apertureServiceProtobufClient) callPutPermission(ctx context.Context, in *EntityRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[10], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[11], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -835,7 +893,7 @@ func (c *apertureServiceProtobufClient) GetPermission(ctx context.Context, in *G
 
 func (c *apertureServiceProtobufClient) callGetPermission(ctx context.Context, in *GetRequest) (*EntityResponse, error) {
 	out := new(EntityResponse)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[11], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[12], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -850,18 +908,18 @@ func (c *apertureServiceProtobufClient) callGetPermission(ctx context.Context, i
 	return out, nil
 }
 
-func (c *apertureServiceProtobufClient) ListPermissions(ctx context.Context, in *Empty) (*EntityListResponse, error) {
+func (c *apertureServiceProtobufClient) ListPermissions(ctx context.Context, in *ListRequest) (*EntityListResponse, error) {
 	ctx = ctxsetters.WithPackageName(ctx, "aperture")
 	ctx = ctxsetters.WithServiceName(ctx, "ApertureService")
 	ctx = ctxsetters.WithMethodName(ctx, "ListPermissions")
 	caller := c.callListPermissions
 	if c.interceptor != nil {
-		caller = func(ctx context.Context, req *Empty) (*EntityListResponse, error) {
+		caller = func(ctx context.Context, req *ListRequest) (*EntityListResponse, error) {
 			resp, err := c.interceptor(
 				func(ctx context.Context, req interface{}) (interface{}, error) {
-					typedReq, ok := req.(*Empty)
+					typedReq, ok := req.(*ListRequest)
 					if !ok {
-						return nil, twirp.InternalError("failed type assertion req.(*Empty) when calling interceptor")
+						return nil, twirp.InternalError("failed type assertion req.(*ListRequest) when calling interceptor")
 					}
 					return c.callListPermissions(ctx, typedReq)
 				},
@@ -879,9 +937,9 @@ func (c *apertureServiceProtobufClient) ListPermissions(ctx context.Context, in 
 	return caller(ctx, in)
 }
 
-func (c *apertureServiceProtobufClient) callListPermissions(ctx context.Context, in *Empty) (*EntityListResponse, error) {
+func (c *apertureServiceProtobufClient) callListPermissions(ctx context.Context, in *ListRequest) (*EntityListResponse, error) {
 	out := new(EntityListResponse)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[12], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[13], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -927,7 +985,7 @@ func (c *apertureServiceProtobufClient) DeletePermission(ctx context.Context, in
 
 func (c *apertureServiceProtobufClient) callDeletePermission(ctx context.Context, in *DeleteRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[13], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[14], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -973,7 +1031,7 @@ func (c *apertureServiceProtobufClient) PutPrincipal(ctx context.Context, in *En
 
 func (c *apertureServiceProtobufClient) callPutPrincipal(ctx context.Context, in *EntityRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[14], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[15], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -1019,7 +1077,7 @@ func (c *apertureServiceProtobufClient) GetPrincipal(ctx context.Context, in *Ge
 
 func (c *apertureServiceProtobufClient) callGetPrincipal(ctx context.Context, in *GetRequest) (*EntityResponse, error) {
 	out := new(EntityResponse)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[15], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[16], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -1034,18 +1092,18 @@ func (c *apertureServiceProtobufClient) callGetPrincipal(ctx context.Context, in
 	return out, nil
 }
 
-func (c *apertureServiceProtobufClient) ListPrincipals(ctx context.Context, in *Empty) (*EntityListResponse, error) {
+func (c *apertureServiceProtobufClient) ListPrincipals(ctx context.Context, in *ListRequest) (*EntityListResponse, error) {
 	ctx = ctxsetters.WithPackageName(ctx, "aperture")
 	ctx = ctxsetters.WithServiceName(ctx, "ApertureService")
 	ctx = ctxsetters.WithMethodName(ctx, "ListPrincipals")
 	caller := c.callListPrincipals
 	if c.interceptor != nil {
-		caller = func(ctx context.Context, req *Empty) (*EntityListResponse, error) {
+		caller = func(ctx context.Context, req *ListRequest) (*EntityListResponse, error) {
 			resp, err := c.interceptor(
 				func(ctx context.Context, req interface{}) (interface{}, error) {
-					typedReq, ok := req.(*Empty)
+					typedReq, ok := req.(*ListRequest)
 					if !ok {
-						return nil, twirp.InternalError("failed type assertion req.(*Empty) when calling interceptor")
+						return nil, twirp.InternalError("failed type assertion req.(*ListRequest) when calling interceptor")
 					}
 					return c.callListPrincipals(ctx, typedReq)
 				},
@@ -1063,9 +1121,9 @@ func (c *apertureServiceProtobufClient) ListPrincipals(ctx context.Context, in *
 	return caller(ctx, in)
 }
 
-func (c *apertureServiceProtobufClient) callListPrincipals(ctx context.Context, in *Empty) (*EntityListResponse, error) {
+func (c *apertureServiceProtobufClient) callListPrincipals(ctx context.Context, in *ListRequest) (*EntityListResponse, error) {
 	out := new(EntityListResponse)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[16], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[17], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -1111,7 +1169,7 @@ func (c *apertureServiceProtobufClient) DeletePrincipal(ctx context.Context, in 
 
 func (c *apertureServiceProtobufClient) callDeletePrincipal(ctx context.Context, in *DeleteRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[17], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[18], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -1157,7 +1215,7 @@ func (c *apertureServiceProtobufClient) PutRole(ctx context.Context, in *EntityR
 
 func (c *apertureServiceProtobufClient) callPutRole(ctx context.Context, in *EntityRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[18], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[19], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -1203,7 +1261,7 @@ func (c *apertureServiceProtobufClient) GetRole(ctx context.Context, in *GetRequ
 
 func (c *apertureServiceProtobufClient) callGetRole(ctx context.Context, in *GetRequest) (*EntityResponse, error) {
 	out := new(EntityResponse)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[19], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[20], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -1218,18 +1276,18 @@ func (c *apertureServiceProtobufClient) callGetRole(ctx context.Context, in *Get
 	return out, nil
 }
 
-func (c *apertureServiceProtobufClient) ListRoles(ctx context.Context, in *Empty) (*EntityListResponse, error) {
+func (c *apertureServiceProtobufClient) ListRoles(ctx context.Context, in *ListRequest) (*EntityListResponse, error) {
 	ctx = ctxsetters.WithPackageName(ctx, "aperture")
 	ctx = ctxsetters.WithServiceName(ctx, "ApertureService")
 	ctx = ctxsetters.WithMethodName(ctx, "ListRoles")
 	caller := c.callListRoles
 	if c.interceptor != nil {
-		caller = func(ctx context.Context, req *Empty) (*EntityListResponse, error) {
+		caller = func(ctx context.Context, req *ListRequest) (*EntityListResponse, error) {
 			resp, err := c.interceptor(
 				func(ctx context.Context, req interface{}) (interface{}, error) {
-					typedReq, ok := req.(*Empty)
+					typedReq, ok := req.(*ListRequest)
 					if !ok {
-						return nil, twirp.InternalError("failed type assertion req.(*Empty) when calling interceptor")
+						return nil, twirp.InternalError("failed type assertion req.(*ListRequest) when calling interceptor")
 					}
 					return c.callListRoles(ctx, typedReq)
 				},
@@ -1247,9 +1305,9 @@ func (c *apertureServiceProtobufClient) ListRoles(ctx context.Context, in *Empty
 	return caller(ctx, in)
 }
 
-func (c *apertureServiceProtobufClient) callListRoles(ctx context.Context, in *Empty) (*EntityListResponse, error) {
+func (c *apertureServiceProtobufClient) callListRoles(ctx context.Context, in *ListRequest) (*EntityListResponse, error) {
 	out := new(EntityListResponse)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[20], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[21], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -1295,7 +1353,7 @@ func (c *apertureServiceProtobufClient) DeleteRole(ctx context.Context, in *Dele
 
 func (c *apertureServiceProtobufClient) callDeleteRole(ctx context.Context, in *DeleteRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[21], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[22], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -1341,7 +1399,7 @@ func (c *apertureServiceProtobufClient) PutGroup(ctx context.Context, in *Entity
 
 func (c *apertureServiceProtobufClient) callPutGroup(ctx context.Context, in *EntityRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[22], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[23], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -1387,7 +1445,7 @@ func (c *apertureServiceProtobufClient) GetGroup(ctx context.Context, in *GetReq
 
 func (c *apertureServiceProtobufClient) callGetGroup(ctx context.Context, in *GetRequest) (*EntityResponse, error) {
 	out := new(EntityResponse)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[23], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[24], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -1402,18 +1460,18 @@ func (c *apertureServiceProtobufClient) callGetGroup(ctx context.Context, in *Ge
 	return out, nil
 }
 
-func (c *apertureServiceProtobufClient) ListGroups(ctx context.Context, in *Empty) (*EntityListResponse, error) {
+func (c *apertureServiceProtobufClient) ListGroups(ctx context.Context, in *ListRequest) (*EntityListResponse, error) {
 	ctx = ctxsetters.WithPackageName(ctx, "aperture")
 	ctx = ctxsetters.WithServiceName(ctx, "ApertureService")
 	ctx = ctxsetters.WithMethodName(ctx, "ListGroups")
 	caller := c.callListGroups
 	if c.interceptor != nil {
-		caller = func(ctx context.Context, req *Empty) (*EntityListResponse, error) {
+		caller = func(ctx context.Context, req *ListRequest) (*EntityListResponse, error) {
 			resp, err := c.interceptor(
 				func(ctx context.Context, req interface{}) (interface{}, error) {
-					typedReq, ok := req.(*Empty)
+					typedReq, ok := req.(*ListRequest)
 					if !ok {
-						return nil, twirp.InternalError("failed type assertion req.(*Empty) when calling interceptor")
+						return nil, twirp.InternalError("failed type assertion req.(*ListRequest) when calling interceptor")
 					}
 					return c.callListGroups(ctx, typedReq)
 				},
@@ -1431,9 +1489,9 @@ func (c *apertureServiceProtobufClient) ListGroups(ctx context.Context, in *Empt
 	return caller(ctx, in)
 }
 
-func (c *apertureServiceProtobufClient) callListGroups(ctx context.Context, in *Empty) (*EntityListResponse, error) {
+func (c *apertureServiceProtobufClient) callListGroups(ctx context.Context, in *ListRequest) (*EntityListResponse, error) {
 	out := new(EntityListResponse)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[24], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[25], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -1479,7 +1537,7 @@ func (c *apertureServiceProtobufClient) DeleteGroup(ctx context.Context, in *Del
 
 func (c *apertureServiceProtobufClient) callDeleteGroup(ctx context.Context, in *DeleteRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[25], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[26], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -1525,7 +1583,7 @@ func (c *apertureServiceProtobufClient) PutAccount(ctx context.Context, in *Enti
 
 func (c *apertureServiceProtobufClient) callPutAccount(ctx context.Context, in *EntityRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[26], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[27], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -1571,7 +1629,7 @@ func (c *apertureServiceProtobufClient) GetAccount(ctx context.Context, in *GetR
 
 func (c *apertureServiceProtobufClient) callGetAccount(ctx context.Context, in *GetRequest) (*EntityResponse, error) {
 	out := new(EntityResponse)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[27], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[28], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -1586,18 +1644,18 @@ func (c *apertureServiceProtobufClient) callGetAccount(ctx context.Context, in *
 	return out, nil
 }
 
-func (c *apertureServiceProtobufClient) ListAccounts(ctx context.Context, in *Empty) (*EntityListResponse, error) {
+func (c *apertureServiceProtobufClient) ListAccounts(ctx context.Context, in *ListRequest) (*EntityListResponse, error) {
 	ctx = ctxsetters.WithPackageName(ctx, "aperture")
 	ctx = ctxsetters.WithServiceName(ctx, "ApertureService")
 	ctx = ctxsetters.WithMethodName(ctx, "ListAccounts")
 	caller := c.callListAccounts
 	if c.interceptor != nil {
-		caller = func(ctx context.Context, req *Empty) (*EntityListResponse, error) {
+		caller = func(ctx context.Context, req *ListRequest) (*EntityListResponse, error) {
 			resp, err := c.interceptor(
 				func(ctx context.Context, req interface{}) (interface{}, error) {
-					typedReq, ok := req.(*Empty)
+					typedReq, ok := req.(*ListRequest)
 					if !ok {
-						return nil, twirp.InternalError("failed type assertion req.(*Empty) when calling interceptor")
+						return nil, twirp.InternalError("failed type assertion req.(*ListRequest) when calling interceptor")
 					}
 					return c.callListAccounts(ctx, typedReq)
 				},
@@ -1615,9 +1673,9 @@ func (c *apertureServiceProtobufClient) ListAccounts(ctx context.Context, in *Em
 	return caller(ctx, in)
 }
 
-func (c *apertureServiceProtobufClient) callListAccounts(ctx context.Context, in *Empty) (*EntityListResponse, error) {
+func (c *apertureServiceProtobufClient) callListAccounts(ctx context.Context, in *ListRequest) (*EntityListResponse, error) {
 	out := new(EntityListResponse)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[28], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[29], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -1663,7 +1721,7 @@ func (c *apertureServiceProtobufClient) DeleteAccount(ctx context.Context, in *D
 
 func (c *apertureServiceProtobufClient) callDeleteAccount(ctx context.Context, in *DeleteRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[29], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[30], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -1709,7 +1767,7 @@ func (c *apertureServiceProtobufClient) PutRule(ctx context.Context, in *RuleReq
 
 func (c *apertureServiceProtobufClient) callPutRule(ctx context.Context, in *RuleRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[30], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[31], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -1755,7 +1813,7 @@ func (c *apertureServiceProtobufClient) GetRule(ctx context.Context, in *GetRequ
 
 func (c *apertureServiceProtobufClient) callGetRule(ctx context.Context, in *GetRequest) (*RuleResponse, error) {
 	out := new(RuleResponse)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[31], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[32], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -1801,7 +1859,7 @@ func (c *apertureServiceProtobufClient) ListRules(ctx context.Context, in *Empty
 
 func (c *apertureServiceProtobufClient) callListRules(ctx context.Context, in *Empty) (*RuleListResponse, error) {
 	out := new(RuleListResponse)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[32], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[33], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -1847,7 +1905,7 @@ func (c *apertureServiceProtobufClient) DeleteRule(ctx context.Context, in *Dele
 
 func (c *apertureServiceProtobufClient) callDeleteRule(ctx context.Context, in *DeleteRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[33], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[34], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -1893,7 +1951,7 @@ func (c *apertureServiceProtobufClient) ValidateRule(ctx context.Context, in *Ru
 
 func (c *apertureServiceProtobufClient) callValidateRule(ctx context.Context, in *RuleRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[34], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[35], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -1939,7 +1997,7 @@ func (c *apertureServiceProtobufClient) Simulate(ctx context.Context, in *Simula
 
 func (c *apertureServiceProtobufClient) callSimulate(ctx context.Context, in *SimulateRequest) (*Decision, error) {
 	out := new(Decision)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[35], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[36], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -1985,7 +2043,53 @@ func (c *apertureServiceProtobufClient) SimulateExplain(ctx context.Context, in 
 
 func (c *apertureServiceProtobufClient) callSimulateExplain(ctx context.Context, in *SimulateRequest) (*ExplainResponse, error) {
 	out := new(ExplainResponse)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[36], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[37], in, out)
+	if err != nil {
+		twerr, ok := err.(twirp.Error)
+		if !ok {
+			twerr = twirp.InternalErrorWith(err)
+		}
+		callClientError(ctx, c.opts.Hooks, twerr)
+		return nil, err
+	}
+
+	callClientResponseReceived(ctx, c.opts.Hooks)
+
+	return out, nil
+}
+
+func (c *apertureServiceProtobufClient) EvaluateRule(ctx context.Context, in *EvaluateRuleRequest) (*EvaluateRuleResponse, error) {
+	ctx = ctxsetters.WithPackageName(ctx, "aperture")
+	ctx = ctxsetters.WithServiceName(ctx, "ApertureService")
+	ctx = ctxsetters.WithMethodName(ctx, "EvaluateRule")
+	caller := c.callEvaluateRule
+	if c.interceptor != nil {
+		caller = func(ctx context.Context, req *EvaluateRuleRequest) (*EvaluateRuleResponse, error) {
+			resp, err := c.interceptor(
+				func(ctx context.Context, req interface{}) (interface{}, error) {
+					typedReq, ok := req.(*EvaluateRuleRequest)
+					if !ok {
+						return nil, twirp.InternalError("failed type assertion req.(*EvaluateRuleRequest) when calling interceptor")
+					}
+					return c.callEvaluateRule(ctx, typedReq)
+				},
+			)(ctx, req)
+			if resp != nil {
+				typedResp, ok := resp.(*EvaluateRuleResponse)
+				if !ok {
+					return nil, twirp.InternalError("failed type assertion resp.(*EvaluateRuleResponse) when calling interceptor")
+				}
+				return typedResp, err
+			}
+			return nil, err
+		}
+	}
+	return caller(ctx, in)
+}
+
+func (c *apertureServiceProtobufClient) callEvaluateRule(ctx context.Context, in *EvaluateRuleRequest) (*EvaluateRuleResponse, error) {
+	out := new(EvaluateRuleResponse)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[38], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -2031,7 +2135,7 @@ func (c *apertureServiceProtobufClient) PutMembership(ctx context.Context, in *E
 
 func (c *apertureServiceProtobufClient) callPutMembership(ctx context.Context, in *EntityRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[37], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[39], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -2077,7 +2181,7 @@ func (c *apertureServiceProtobufClient) DeleteMembership(ctx context.Context, in
 
 func (c *apertureServiceProtobufClient) callDeleteMembership(ctx context.Context, in *MembershipKeyRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[38], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[40], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -2123,7 +2227,7 @@ func (c *apertureServiceProtobufClient) PutGrant(ctx context.Context, in *Entity
 
 func (c *apertureServiceProtobufClient) callPutGrant(ctx context.Context, in *EntityRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[39], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[41], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -2169,7 +2273,7 @@ func (c *apertureServiceProtobufClient) GetGrant(ctx context.Context, in *GetReq
 
 func (c *apertureServiceProtobufClient) callGetGrant(ctx context.Context, in *GetRequest) (*EntityResponse, error) {
 	out := new(EntityResponse)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[40], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[42], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -2215,7 +2319,7 @@ func (c *apertureServiceProtobufClient) ListGrants(ctx context.Context, in *List
 
 func (c *apertureServiceProtobufClient) callListGrants(ctx context.Context, in *ListGrantsRequest) (*EntityListResponse, error) {
 	out := new(EntityListResponse)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[41], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[43], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -2261,7 +2365,7 @@ func (c *apertureServiceProtobufClient) DeleteGrant(ctx context.Context, in *Del
 
 func (c *apertureServiceProtobufClient) callDeleteGrant(ctx context.Context, in *DeleteRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[42], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[44], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -2307,7 +2411,7 @@ func (c *apertureServiceProtobufClient) PutTemplate(ctx context.Context, in *Ent
 
 func (c *apertureServiceProtobufClient) callPutTemplate(ctx context.Context, in *EntityRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[43], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[45], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -2353,7 +2457,7 @@ func (c *apertureServiceProtobufClient) GetTemplate(ctx context.Context, in *Tem
 
 func (c *apertureServiceProtobufClient) callGetTemplate(ctx context.Context, in *TemplateKeyRequest) (*EntityResponse, error) {
 	out := new(EntityResponse)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[44], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[46], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -2368,18 +2472,18 @@ func (c *apertureServiceProtobufClient) callGetTemplate(ctx context.Context, in 
 	return out, nil
 }
 
-func (c *apertureServiceProtobufClient) ListTemplates(ctx context.Context, in *Empty) (*EntityListResponse, error) {
+func (c *apertureServiceProtobufClient) ListTemplates(ctx context.Context, in *ListRequest) (*EntityListResponse, error) {
 	ctx = ctxsetters.WithPackageName(ctx, "aperture")
 	ctx = ctxsetters.WithServiceName(ctx, "ApertureService")
 	ctx = ctxsetters.WithMethodName(ctx, "ListTemplates")
 	caller := c.callListTemplates
 	if c.interceptor != nil {
-		caller = func(ctx context.Context, req *Empty) (*EntityListResponse, error) {
+		caller = func(ctx context.Context, req *ListRequest) (*EntityListResponse, error) {
 			resp, err := c.interceptor(
 				func(ctx context.Context, req interface{}) (interface{}, error) {
-					typedReq, ok := req.(*Empty)
+					typedReq, ok := req.(*ListRequest)
 					if !ok {
-						return nil, twirp.InternalError("failed type assertion req.(*Empty) when calling interceptor")
+						return nil, twirp.InternalError("failed type assertion req.(*ListRequest) when calling interceptor")
 					}
 					return c.callListTemplates(ctx, typedReq)
 				},
@@ -2397,9 +2501,9 @@ func (c *apertureServiceProtobufClient) ListTemplates(ctx context.Context, in *E
 	return caller(ctx, in)
 }
 
-func (c *apertureServiceProtobufClient) callListTemplates(ctx context.Context, in *Empty) (*EntityListResponse, error) {
+func (c *apertureServiceProtobufClient) callListTemplates(ctx context.Context, in *ListRequest) (*EntityListResponse, error) {
 	out := new(EntityListResponse)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[45], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[47], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -2445,7 +2549,7 @@ func (c *apertureServiceProtobufClient) DeleteTemplate(ctx context.Context, in *
 
 func (c *apertureServiceProtobufClient) callDeleteTemplate(ctx context.Context, in *TemplateKeyRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[46], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[48], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -2491,7 +2595,7 @@ func (c *apertureServiceProtobufClient) ApplyTemplate(ctx context.Context, in *A
 
 func (c *apertureServiceProtobufClient) callApplyTemplate(ctx context.Context, in *ApplyTemplateRequest) (*EntityListResponse, error) {
 	out := new(EntityListResponse)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[47], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[49], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -2537,7 +2641,7 @@ func (c *apertureServiceProtobufClient) BulkPutGrants(ctx context.Context, in *B
 
 func (c *apertureServiceProtobufClient) callBulkPutGrants(ctx context.Context, in *BulkGrantsRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[48], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[50], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -2583,7 +2687,7 @@ func (c *apertureServiceProtobufClient) BulkDeleteGrants(ctx context.Context, in
 
 func (c *apertureServiceProtobufClient) callBulkDeleteGrants(ctx context.Context, in *BulkDeleteGrantsRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[49], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[51], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -2629,7 +2733,7 @@ func (c *apertureServiceProtobufClient) Export(ctx context.Context, in *ExportRe
 
 func (c *apertureServiceProtobufClient) callExport(ctx context.Context, in *ExportRequest) (*ExportResponse, error) {
 	out := new(ExportResponse)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[50], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[52], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -2675,7 +2779,7 @@ func (c *apertureServiceProtobufClient) Import(ctx context.Context, in *ImportRe
 
 func (c *apertureServiceProtobufClient) callImport(ctx context.Context, in *ImportRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[51], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[53], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -2721,7 +2825,7 @@ func (c *apertureServiceProtobufClient) QueryAudit(ctx context.Context, in *Quer
 
 func (c *apertureServiceProtobufClient) callQueryAudit(ctx context.Context, in *QueryAuditRequest) (*QueryAuditResponse, error) {
 	out := new(QueryAuditResponse)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[52], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[54], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -2767,7 +2871,7 @@ func (c *apertureServiceProtobufClient) Bestow(ctx context.Context, in *BestowRe
 
 func (c *apertureServiceProtobufClient) callBestow(ctx context.Context, in *BestowRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[53], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[55], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -2813,7 +2917,7 @@ func (c *apertureServiceProtobufClient) Revoke(ctx context.Context, in *RevokeRe
 
 func (c *apertureServiceProtobufClient) callRevoke(ctx context.Context, in *RevokeRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[54], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[56], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -2859,7 +2963,7 @@ func (c *apertureServiceProtobufClient) ImpersonationStart(ctx context.Context, 
 
 func (c *apertureServiceProtobufClient) callImpersonationStart(ctx context.Context, in *ImpersonationStartRequest) (*ImpersonationSession, error) {
 	out := new(ImpersonationSession)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[55], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[57], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -2905,7 +3009,7 @@ func (c *apertureServiceProtobufClient) ImpersonationStop(ctx context.Context, i
 
 func (c *apertureServiceProtobufClient) callImpersonationStop(ctx context.Context, in *ImpersonationStopRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[56], in, out)
+	ctx, err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[58], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -2926,7 +3030,7 @@ func (c *apertureServiceProtobufClient) callImpersonationStop(ctx context.Contex
 
 type apertureServiceJSONClient struct {
 	client      HTTPClient
-	urls        [57]string
+	urls        [59]string
 	interceptor twirp.Interceptor
 	opts        twirp.ClientOptions
 }
@@ -2954,7 +3058,7 @@ func NewApertureServiceJSONClient(baseURL string, client HTTPClient, opts ...twi
 	// Build method URLs: <baseURL>[<prefix>]/<package>.<Service>/<Method>
 	serviceURL := sanitizeBaseURL(baseURL)
 	serviceURL += baseServicePath(pathPrefix, "aperture", "ApertureService")
-	urls := [57]string{
+	urls := [59]string{
 		serviceURL + "Check",
 		serviceURL + "CheckBatch",
 		serviceURL + "Enumerate",
@@ -2965,6 +3069,7 @@ func NewApertureServiceJSONClient(baseURL string, client HTTPClient, opts ...twi
 		serviceURL + "GetObjectType",
 		serviceURL + "ListObjectTypes",
 		serviceURL + "DeleteObjectType",
+		serviceURL + "ObjectIdentifiers",
 		serviceURL + "PutPermission",
 		serviceURL + "GetPermission",
 		serviceURL + "ListPermissions",
@@ -2992,6 +3097,7 @@ func NewApertureServiceJSONClient(baseURL string, client HTTPClient, opts ...twi
 		serviceURL + "ValidateRule",
 		serviceURL + "Simulate",
 		serviceURL + "SimulateExplain",
+		serviceURL + "EvaluateRule",
 		serviceURL + "PutMembership",
 		serviceURL + "DeleteMembership",
 		serviceURL + "PutGrant",
@@ -3390,18 +3496,18 @@ func (c *apertureServiceJSONClient) callGetObjectType(ctx context.Context, in *G
 	return out, nil
 }
 
-func (c *apertureServiceJSONClient) ListObjectTypes(ctx context.Context, in *Empty) (*EntityListResponse, error) {
+func (c *apertureServiceJSONClient) ListObjectTypes(ctx context.Context, in *ListRequest) (*EntityListResponse, error) {
 	ctx = ctxsetters.WithPackageName(ctx, "aperture")
 	ctx = ctxsetters.WithServiceName(ctx, "ApertureService")
 	ctx = ctxsetters.WithMethodName(ctx, "ListObjectTypes")
 	caller := c.callListObjectTypes
 	if c.interceptor != nil {
-		caller = func(ctx context.Context, req *Empty) (*EntityListResponse, error) {
+		caller = func(ctx context.Context, req *ListRequest) (*EntityListResponse, error) {
 			resp, err := c.interceptor(
 				func(ctx context.Context, req interface{}) (interface{}, error) {
-					typedReq, ok := req.(*Empty)
+					typedReq, ok := req.(*ListRequest)
 					if !ok {
-						return nil, twirp.InternalError("failed type assertion req.(*Empty) when calling interceptor")
+						return nil, twirp.InternalError("failed type assertion req.(*ListRequest) when calling interceptor")
 					}
 					return c.callListObjectTypes(ctx, typedReq)
 				},
@@ -3419,7 +3525,7 @@ func (c *apertureServiceJSONClient) ListObjectTypes(ctx context.Context, in *Emp
 	return caller(ctx, in)
 }
 
-func (c *apertureServiceJSONClient) callListObjectTypes(ctx context.Context, in *Empty) (*EntityListResponse, error) {
+func (c *apertureServiceJSONClient) callListObjectTypes(ctx context.Context, in *ListRequest) (*EntityListResponse, error) {
 	out := new(EntityListResponse)
 	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[8], in, out)
 	if err != nil {
@@ -3482,6 +3588,52 @@ func (c *apertureServiceJSONClient) callDeleteObjectType(ctx context.Context, in
 	return out, nil
 }
 
+func (c *apertureServiceJSONClient) ObjectIdentifiers(ctx context.Context, in *ObjectIdentifiersRequest) (*ObjectIdentifiersResponse, error) {
+	ctx = ctxsetters.WithPackageName(ctx, "aperture")
+	ctx = ctxsetters.WithServiceName(ctx, "ApertureService")
+	ctx = ctxsetters.WithMethodName(ctx, "ObjectIdentifiers")
+	caller := c.callObjectIdentifiers
+	if c.interceptor != nil {
+		caller = func(ctx context.Context, req *ObjectIdentifiersRequest) (*ObjectIdentifiersResponse, error) {
+			resp, err := c.interceptor(
+				func(ctx context.Context, req interface{}) (interface{}, error) {
+					typedReq, ok := req.(*ObjectIdentifiersRequest)
+					if !ok {
+						return nil, twirp.InternalError("failed type assertion req.(*ObjectIdentifiersRequest) when calling interceptor")
+					}
+					return c.callObjectIdentifiers(ctx, typedReq)
+				},
+			)(ctx, req)
+			if resp != nil {
+				typedResp, ok := resp.(*ObjectIdentifiersResponse)
+				if !ok {
+					return nil, twirp.InternalError("failed type assertion resp.(*ObjectIdentifiersResponse) when calling interceptor")
+				}
+				return typedResp, err
+			}
+			return nil, err
+		}
+	}
+	return caller(ctx, in)
+}
+
+func (c *apertureServiceJSONClient) callObjectIdentifiers(ctx context.Context, in *ObjectIdentifiersRequest) (*ObjectIdentifiersResponse, error) {
+	out := new(ObjectIdentifiersResponse)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[10], in, out)
+	if err != nil {
+		twerr, ok := err.(twirp.Error)
+		if !ok {
+			twerr = twirp.InternalErrorWith(err)
+		}
+		callClientError(ctx, c.opts.Hooks, twerr)
+		return nil, err
+	}
+
+	callClientResponseReceived(ctx, c.opts.Hooks)
+
+	return out, nil
+}
+
 func (c *apertureServiceJSONClient) PutPermission(ctx context.Context, in *EntityRequest) (*Empty, error) {
 	ctx = ctxsetters.WithPackageName(ctx, "aperture")
 	ctx = ctxsetters.WithServiceName(ctx, "ApertureService")
@@ -3513,7 +3665,7 @@ func (c *apertureServiceJSONClient) PutPermission(ctx context.Context, in *Entit
 
 func (c *apertureServiceJSONClient) callPutPermission(ctx context.Context, in *EntityRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[10], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[11], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -3559,7 +3711,7 @@ func (c *apertureServiceJSONClient) GetPermission(ctx context.Context, in *GetRe
 
 func (c *apertureServiceJSONClient) callGetPermission(ctx context.Context, in *GetRequest) (*EntityResponse, error) {
 	out := new(EntityResponse)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[11], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[12], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -3574,18 +3726,18 @@ func (c *apertureServiceJSONClient) callGetPermission(ctx context.Context, in *G
 	return out, nil
 }
 
-func (c *apertureServiceJSONClient) ListPermissions(ctx context.Context, in *Empty) (*EntityListResponse, error) {
+func (c *apertureServiceJSONClient) ListPermissions(ctx context.Context, in *ListRequest) (*EntityListResponse, error) {
 	ctx = ctxsetters.WithPackageName(ctx, "aperture")
 	ctx = ctxsetters.WithServiceName(ctx, "ApertureService")
 	ctx = ctxsetters.WithMethodName(ctx, "ListPermissions")
 	caller := c.callListPermissions
 	if c.interceptor != nil {
-		caller = func(ctx context.Context, req *Empty) (*EntityListResponse, error) {
+		caller = func(ctx context.Context, req *ListRequest) (*EntityListResponse, error) {
 			resp, err := c.interceptor(
 				func(ctx context.Context, req interface{}) (interface{}, error) {
-					typedReq, ok := req.(*Empty)
+					typedReq, ok := req.(*ListRequest)
 					if !ok {
-						return nil, twirp.InternalError("failed type assertion req.(*Empty) when calling interceptor")
+						return nil, twirp.InternalError("failed type assertion req.(*ListRequest) when calling interceptor")
 					}
 					return c.callListPermissions(ctx, typedReq)
 				},
@@ -3603,9 +3755,9 @@ func (c *apertureServiceJSONClient) ListPermissions(ctx context.Context, in *Emp
 	return caller(ctx, in)
 }
 
-func (c *apertureServiceJSONClient) callListPermissions(ctx context.Context, in *Empty) (*EntityListResponse, error) {
+func (c *apertureServiceJSONClient) callListPermissions(ctx context.Context, in *ListRequest) (*EntityListResponse, error) {
 	out := new(EntityListResponse)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[12], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[13], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -3651,7 +3803,7 @@ func (c *apertureServiceJSONClient) DeletePermission(ctx context.Context, in *De
 
 func (c *apertureServiceJSONClient) callDeletePermission(ctx context.Context, in *DeleteRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[13], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[14], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -3697,7 +3849,7 @@ func (c *apertureServiceJSONClient) PutPrincipal(ctx context.Context, in *Entity
 
 func (c *apertureServiceJSONClient) callPutPrincipal(ctx context.Context, in *EntityRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[14], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[15], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -3743,7 +3895,7 @@ func (c *apertureServiceJSONClient) GetPrincipal(ctx context.Context, in *GetReq
 
 func (c *apertureServiceJSONClient) callGetPrincipal(ctx context.Context, in *GetRequest) (*EntityResponse, error) {
 	out := new(EntityResponse)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[15], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[16], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -3758,18 +3910,18 @@ func (c *apertureServiceJSONClient) callGetPrincipal(ctx context.Context, in *Ge
 	return out, nil
 }
 
-func (c *apertureServiceJSONClient) ListPrincipals(ctx context.Context, in *Empty) (*EntityListResponse, error) {
+func (c *apertureServiceJSONClient) ListPrincipals(ctx context.Context, in *ListRequest) (*EntityListResponse, error) {
 	ctx = ctxsetters.WithPackageName(ctx, "aperture")
 	ctx = ctxsetters.WithServiceName(ctx, "ApertureService")
 	ctx = ctxsetters.WithMethodName(ctx, "ListPrincipals")
 	caller := c.callListPrincipals
 	if c.interceptor != nil {
-		caller = func(ctx context.Context, req *Empty) (*EntityListResponse, error) {
+		caller = func(ctx context.Context, req *ListRequest) (*EntityListResponse, error) {
 			resp, err := c.interceptor(
 				func(ctx context.Context, req interface{}) (interface{}, error) {
-					typedReq, ok := req.(*Empty)
+					typedReq, ok := req.(*ListRequest)
 					if !ok {
-						return nil, twirp.InternalError("failed type assertion req.(*Empty) when calling interceptor")
+						return nil, twirp.InternalError("failed type assertion req.(*ListRequest) when calling interceptor")
 					}
 					return c.callListPrincipals(ctx, typedReq)
 				},
@@ -3787,9 +3939,9 @@ func (c *apertureServiceJSONClient) ListPrincipals(ctx context.Context, in *Empt
 	return caller(ctx, in)
 }
 
-func (c *apertureServiceJSONClient) callListPrincipals(ctx context.Context, in *Empty) (*EntityListResponse, error) {
+func (c *apertureServiceJSONClient) callListPrincipals(ctx context.Context, in *ListRequest) (*EntityListResponse, error) {
 	out := new(EntityListResponse)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[16], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[17], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -3835,7 +3987,7 @@ func (c *apertureServiceJSONClient) DeletePrincipal(ctx context.Context, in *Del
 
 func (c *apertureServiceJSONClient) callDeletePrincipal(ctx context.Context, in *DeleteRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[17], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[18], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -3881,7 +4033,7 @@ func (c *apertureServiceJSONClient) PutRole(ctx context.Context, in *EntityReque
 
 func (c *apertureServiceJSONClient) callPutRole(ctx context.Context, in *EntityRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[18], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[19], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -3927,7 +4079,7 @@ func (c *apertureServiceJSONClient) GetRole(ctx context.Context, in *GetRequest)
 
 func (c *apertureServiceJSONClient) callGetRole(ctx context.Context, in *GetRequest) (*EntityResponse, error) {
 	out := new(EntityResponse)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[19], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[20], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -3942,18 +4094,18 @@ func (c *apertureServiceJSONClient) callGetRole(ctx context.Context, in *GetRequ
 	return out, nil
 }
 
-func (c *apertureServiceJSONClient) ListRoles(ctx context.Context, in *Empty) (*EntityListResponse, error) {
+func (c *apertureServiceJSONClient) ListRoles(ctx context.Context, in *ListRequest) (*EntityListResponse, error) {
 	ctx = ctxsetters.WithPackageName(ctx, "aperture")
 	ctx = ctxsetters.WithServiceName(ctx, "ApertureService")
 	ctx = ctxsetters.WithMethodName(ctx, "ListRoles")
 	caller := c.callListRoles
 	if c.interceptor != nil {
-		caller = func(ctx context.Context, req *Empty) (*EntityListResponse, error) {
+		caller = func(ctx context.Context, req *ListRequest) (*EntityListResponse, error) {
 			resp, err := c.interceptor(
 				func(ctx context.Context, req interface{}) (interface{}, error) {
-					typedReq, ok := req.(*Empty)
+					typedReq, ok := req.(*ListRequest)
 					if !ok {
-						return nil, twirp.InternalError("failed type assertion req.(*Empty) when calling interceptor")
+						return nil, twirp.InternalError("failed type assertion req.(*ListRequest) when calling interceptor")
 					}
 					return c.callListRoles(ctx, typedReq)
 				},
@@ -3971,9 +4123,9 @@ func (c *apertureServiceJSONClient) ListRoles(ctx context.Context, in *Empty) (*
 	return caller(ctx, in)
 }
 
-func (c *apertureServiceJSONClient) callListRoles(ctx context.Context, in *Empty) (*EntityListResponse, error) {
+func (c *apertureServiceJSONClient) callListRoles(ctx context.Context, in *ListRequest) (*EntityListResponse, error) {
 	out := new(EntityListResponse)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[20], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[21], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -4019,7 +4171,7 @@ func (c *apertureServiceJSONClient) DeleteRole(ctx context.Context, in *DeleteRe
 
 func (c *apertureServiceJSONClient) callDeleteRole(ctx context.Context, in *DeleteRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[21], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[22], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -4065,7 +4217,7 @@ func (c *apertureServiceJSONClient) PutGroup(ctx context.Context, in *EntityRequ
 
 func (c *apertureServiceJSONClient) callPutGroup(ctx context.Context, in *EntityRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[22], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[23], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -4111,7 +4263,7 @@ func (c *apertureServiceJSONClient) GetGroup(ctx context.Context, in *GetRequest
 
 func (c *apertureServiceJSONClient) callGetGroup(ctx context.Context, in *GetRequest) (*EntityResponse, error) {
 	out := new(EntityResponse)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[23], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[24], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -4126,18 +4278,18 @@ func (c *apertureServiceJSONClient) callGetGroup(ctx context.Context, in *GetReq
 	return out, nil
 }
 
-func (c *apertureServiceJSONClient) ListGroups(ctx context.Context, in *Empty) (*EntityListResponse, error) {
+func (c *apertureServiceJSONClient) ListGroups(ctx context.Context, in *ListRequest) (*EntityListResponse, error) {
 	ctx = ctxsetters.WithPackageName(ctx, "aperture")
 	ctx = ctxsetters.WithServiceName(ctx, "ApertureService")
 	ctx = ctxsetters.WithMethodName(ctx, "ListGroups")
 	caller := c.callListGroups
 	if c.interceptor != nil {
-		caller = func(ctx context.Context, req *Empty) (*EntityListResponse, error) {
+		caller = func(ctx context.Context, req *ListRequest) (*EntityListResponse, error) {
 			resp, err := c.interceptor(
 				func(ctx context.Context, req interface{}) (interface{}, error) {
-					typedReq, ok := req.(*Empty)
+					typedReq, ok := req.(*ListRequest)
 					if !ok {
-						return nil, twirp.InternalError("failed type assertion req.(*Empty) when calling interceptor")
+						return nil, twirp.InternalError("failed type assertion req.(*ListRequest) when calling interceptor")
 					}
 					return c.callListGroups(ctx, typedReq)
 				},
@@ -4155,9 +4307,9 @@ func (c *apertureServiceJSONClient) ListGroups(ctx context.Context, in *Empty) (
 	return caller(ctx, in)
 }
 
-func (c *apertureServiceJSONClient) callListGroups(ctx context.Context, in *Empty) (*EntityListResponse, error) {
+func (c *apertureServiceJSONClient) callListGroups(ctx context.Context, in *ListRequest) (*EntityListResponse, error) {
 	out := new(EntityListResponse)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[24], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[25], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -4203,7 +4355,7 @@ func (c *apertureServiceJSONClient) DeleteGroup(ctx context.Context, in *DeleteR
 
 func (c *apertureServiceJSONClient) callDeleteGroup(ctx context.Context, in *DeleteRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[25], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[26], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -4249,7 +4401,7 @@ func (c *apertureServiceJSONClient) PutAccount(ctx context.Context, in *EntityRe
 
 func (c *apertureServiceJSONClient) callPutAccount(ctx context.Context, in *EntityRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[26], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[27], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -4295,7 +4447,7 @@ func (c *apertureServiceJSONClient) GetAccount(ctx context.Context, in *GetReque
 
 func (c *apertureServiceJSONClient) callGetAccount(ctx context.Context, in *GetRequest) (*EntityResponse, error) {
 	out := new(EntityResponse)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[27], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[28], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -4310,18 +4462,18 @@ func (c *apertureServiceJSONClient) callGetAccount(ctx context.Context, in *GetR
 	return out, nil
 }
 
-func (c *apertureServiceJSONClient) ListAccounts(ctx context.Context, in *Empty) (*EntityListResponse, error) {
+func (c *apertureServiceJSONClient) ListAccounts(ctx context.Context, in *ListRequest) (*EntityListResponse, error) {
 	ctx = ctxsetters.WithPackageName(ctx, "aperture")
 	ctx = ctxsetters.WithServiceName(ctx, "ApertureService")
 	ctx = ctxsetters.WithMethodName(ctx, "ListAccounts")
 	caller := c.callListAccounts
 	if c.interceptor != nil {
-		caller = func(ctx context.Context, req *Empty) (*EntityListResponse, error) {
+		caller = func(ctx context.Context, req *ListRequest) (*EntityListResponse, error) {
 			resp, err := c.interceptor(
 				func(ctx context.Context, req interface{}) (interface{}, error) {
-					typedReq, ok := req.(*Empty)
+					typedReq, ok := req.(*ListRequest)
 					if !ok {
-						return nil, twirp.InternalError("failed type assertion req.(*Empty) when calling interceptor")
+						return nil, twirp.InternalError("failed type assertion req.(*ListRequest) when calling interceptor")
 					}
 					return c.callListAccounts(ctx, typedReq)
 				},
@@ -4339,9 +4491,9 @@ func (c *apertureServiceJSONClient) ListAccounts(ctx context.Context, in *Empty)
 	return caller(ctx, in)
 }
 
-func (c *apertureServiceJSONClient) callListAccounts(ctx context.Context, in *Empty) (*EntityListResponse, error) {
+func (c *apertureServiceJSONClient) callListAccounts(ctx context.Context, in *ListRequest) (*EntityListResponse, error) {
 	out := new(EntityListResponse)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[28], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[29], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -4387,7 +4539,7 @@ func (c *apertureServiceJSONClient) DeleteAccount(ctx context.Context, in *Delet
 
 func (c *apertureServiceJSONClient) callDeleteAccount(ctx context.Context, in *DeleteRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[29], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[30], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -4433,7 +4585,7 @@ func (c *apertureServiceJSONClient) PutRule(ctx context.Context, in *RuleRequest
 
 func (c *apertureServiceJSONClient) callPutRule(ctx context.Context, in *RuleRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[30], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[31], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -4479,7 +4631,7 @@ func (c *apertureServiceJSONClient) GetRule(ctx context.Context, in *GetRequest)
 
 func (c *apertureServiceJSONClient) callGetRule(ctx context.Context, in *GetRequest) (*RuleResponse, error) {
 	out := new(RuleResponse)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[31], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[32], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -4525,7 +4677,7 @@ func (c *apertureServiceJSONClient) ListRules(ctx context.Context, in *Empty) (*
 
 func (c *apertureServiceJSONClient) callListRules(ctx context.Context, in *Empty) (*RuleListResponse, error) {
 	out := new(RuleListResponse)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[32], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[33], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -4571,7 +4723,7 @@ func (c *apertureServiceJSONClient) DeleteRule(ctx context.Context, in *DeleteRe
 
 func (c *apertureServiceJSONClient) callDeleteRule(ctx context.Context, in *DeleteRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[33], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[34], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -4617,7 +4769,7 @@ func (c *apertureServiceJSONClient) ValidateRule(ctx context.Context, in *RuleRe
 
 func (c *apertureServiceJSONClient) callValidateRule(ctx context.Context, in *RuleRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[34], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[35], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -4663,7 +4815,7 @@ func (c *apertureServiceJSONClient) Simulate(ctx context.Context, in *SimulateRe
 
 func (c *apertureServiceJSONClient) callSimulate(ctx context.Context, in *SimulateRequest) (*Decision, error) {
 	out := new(Decision)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[35], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[36], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -4709,7 +4861,53 @@ func (c *apertureServiceJSONClient) SimulateExplain(ctx context.Context, in *Sim
 
 func (c *apertureServiceJSONClient) callSimulateExplain(ctx context.Context, in *SimulateRequest) (*ExplainResponse, error) {
 	out := new(ExplainResponse)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[36], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[37], in, out)
+	if err != nil {
+		twerr, ok := err.(twirp.Error)
+		if !ok {
+			twerr = twirp.InternalErrorWith(err)
+		}
+		callClientError(ctx, c.opts.Hooks, twerr)
+		return nil, err
+	}
+
+	callClientResponseReceived(ctx, c.opts.Hooks)
+
+	return out, nil
+}
+
+func (c *apertureServiceJSONClient) EvaluateRule(ctx context.Context, in *EvaluateRuleRequest) (*EvaluateRuleResponse, error) {
+	ctx = ctxsetters.WithPackageName(ctx, "aperture")
+	ctx = ctxsetters.WithServiceName(ctx, "ApertureService")
+	ctx = ctxsetters.WithMethodName(ctx, "EvaluateRule")
+	caller := c.callEvaluateRule
+	if c.interceptor != nil {
+		caller = func(ctx context.Context, req *EvaluateRuleRequest) (*EvaluateRuleResponse, error) {
+			resp, err := c.interceptor(
+				func(ctx context.Context, req interface{}) (interface{}, error) {
+					typedReq, ok := req.(*EvaluateRuleRequest)
+					if !ok {
+						return nil, twirp.InternalError("failed type assertion req.(*EvaluateRuleRequest) when calling interceptor")
+					}
+					return c.callEvaluateRule(ctx, typedReq)
+				},
+			)(ctx, req)
+			if resp != nil {
+				typedResp, ok := resp.(*EvaluateRuleResponse)
+				if !ok {
+					return nil, twirp.InternalError("failed type assertion resp.(*EvaluateRuleResponse) when calling interceptor")
+				}
+				return typedResp, err
+			}
+			return nil, err
+		}
+	}
+	return caller(ctx, in)
+}
+
+func (c *apertureServiceJSONClient) callEvaluateRule(ctx context.Context, in *EvaluateRuleRequest) (*EvaluateRuleResponse, error) {
+	out := new(EvaluateRuleResponse)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[38], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -4755,7 +4953,7 @@ func (c *apertureServiceJSONClient) PutMembership(ctx context.Context, in *Entit
 
 func (c *apertureServiceJSONClient) callPutMembership(ctx context.Context, in *EntityRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[37], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[39], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -4801,7 +4999,7 @@ func (c *apertureServiceJSONClient) DeleteMembership(ctx context.Context, in *Me
 
 func (c *apertureServiceJSONClient) callDeleteMembership(ctx context.Context, in *MembershipKeyRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[38], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[40], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -4847,7 +5045,7 @@ func (c *apertureServiceJSONClient) PutGrant(ctx context.Context, in *EntityRequ
 
 func (c *apertureServiceJSONClient) callPutGrant(ctx context.Context, in *EntityRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[39], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[41], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -4893,7 +5091,7 @@ func (c *apertureServiceJSONClient) GetGrant(ctx context.Context, in *GetRequest
 
 func (c *apertureServiceJSONClient) callGetGrant(ctx context.Context, in *GetRequest) (*EntityResponse, error) {
 	out := new(EntityResponse)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[40], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[42], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -4939,7 +5137,7 @@ func (c *apertureServiceJSONClient) ListGrants(ctx context.Context, in *ListGran
 
 func (c *apertureServiceJSONClient) callListGrants(ctx context.Context, in *ListGrantsRequest) (*EntityListResponse, error) {
 	out := new(EntityListResponse)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[41], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[43], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -4985,7 +5183,7 @@ func (c *apertureServiceJSONClient) DeleteGrant(ctx context.Context, in *DeleteR
 
 func (c *apertureServiceJSONClient) callDeleteGrant(ctx context.Context, in *DeleteRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[42], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[44], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -5031,7 +5229,7 @@ func (c *apertureServiceJSONClient) PutTemplate(ctx context.Context, in *EntityR
 
 func (c *apertureServiceJSONClient) callPutTemplate(ctx context.Context, in *EntityRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[43], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[45], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -5077,7 +5275,7 @@ func (c *apertureServiceJSONClient) GetTemplate(ctx context.Context, in *Templat
 
 func (c *apertureServiceJSONClient) callGetTemplate(ctx context.Context, in *TemplateKeyRequest) (*EntityResponse, error) {
 	out := new(EntityResponse)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[44], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[46], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -5092,18 +5290,18 @@ func (c *apertureServiceJSONClient) callGetTemplate(ctx context.Context, in *Tem
 	return out, nil
 }
 
-func (c *apertureServiceJSONClient) ListTemplates(ctx context.Context, in *Empty) (*EntityListResponse, error) {
+func (c *apertureServiceJSONClient) ListTemplates(ctx context.Context, in *ListRequest) (*EntityListResponse, error) {
 	ctx = ctxsetters.WithPackageName(ctx, "aperture")
 	ctx = ctxsetters.WithServiceName(ctx, "ApertureService")
 	ctx = ctxsetters.WithMethodName(ctx, "ListTemplates")
 	caller := c.callListTemplates
 	if c.interceptor != nil {
-		caller = func(ctx context.Context, req *Empty) (*EntityListResponse, error) {
+		caller = func(ctx context.Context, req *ListRequest) (*EntityListResponse, error) {
 			resp, err := c.interceptor(
 				func(ctx context.Context, req interface{}) (interface{}, error) {
-					typedReq, ok := req.(*Empty)
+					typedReq, ok := req.(*ListRequest)
 					if !ok {
-						return nil, twirp.InternalError("failed type assertion req.(*Empty) when calling interceptor")
+						return nil, twirp.InternalError("failed type assertion req.(*ListRequest) when calling interceptor")
 					}
 					return c.callListTemplates(ctx, typedReq)
 				},
@@ -5121,9 +5319,9 @@ func (c *apertureServiceJSONClient) ListTemplates(ctx context.Context, in *Empty
 	return caller(ctx, in)
 }
 
-func (c *apertureServiceJSONClient) callListTemplates(ctx context.Context, in *Empty) (*EntityListResponse, error) {
+func (c *apertureServiceJSONClient) callListTemplates(ctx context.Context, in *ListRequest) (*EntityListResponse, error) {
 	out := new(EntityListResponse)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[45], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[47], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -5169,7 +5367,7 @@ func (c *apertureServiceJSONClient) DeleteTemplate(ctx context.Context, in *Temp
 
 func (c *apertureServiceJSONClient) callDeleteTemplate(ctx context.Context, in *TemplateKeyRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[46], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[48], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -5215,7 +5413,7 @@ func (c *apertureServiceJSONClient) ApplyTemplate(ctx context.Context, in *Apply
 
 func (c *apertureServiceJSONClient) callApplyTemplate(ctx context.Context, in *ApplyTemplateRequest) (*EntityListResponse, error) {
 	out := new(EntityListResponse)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[47], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[49], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -5261,7 +5459,7 @@ func (c *apertureServiceJSONClient) BulkPutGrants(ctx context.Context, in *BulkG
 
 func (c *apertureServiceJSONClient) callBulkPutGrants(ctx context.Context, in *BulkGrantsRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[48], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[50], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -5307,7 +5505,7 @@ func (c *apertureServiceJSONClient) BulkDeleteGrants(ctx context.Context, in *Bu
 
 func (c *apertureServiceJSONClient) callBulkDeleteGrants(ctx context.Context, in *BulkDeleteGrantsRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[49], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[51], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -5353,7 +5551,7 @@ func (c *apertureServiceJSONClient) Export(ctx context.Context, in *ExportReques
 
 func (c *apertureServiceJSONClient) callExport(ctx context.Context, in *ExportRequest) (*ExportResponse, error) {
 	out := new(ExportResponse)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[50], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[52], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -5399,7 +5597,7 @@ func (c *apertureServiceJSONClient) Import(ctx context.Context, in *ImportReques
 
 func (c *apertureServiceJSONClient) callImport(ctx context.Context, in *ImportRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[51], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[53], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -5445,7 +5643,7 @@ func (c *apertureServiceJSONClient) QueryAudit(ctx context.Context, in *QueryAud
 
 func (c *apertureServiceJSONClient) callQueryAudit(ctx context.Context, in *QueryAuditRequest) (*QueryAuditResponse, error) {
 	out := new(QueryAuditResponse)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[52], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[54], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -5491,7 +5689,7 @@ func (c *apertureServiceJSONClient) Bestow(ctx context.Context, in *BestowReques
 
 func (c *apertureServiceJSONClient) callBestow(ctx context.Context, in *BestowRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[53], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[55], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -5537,7 +5735,7 @@ func (c *apertureServiceJSONClient) Revoke(ctx context.Context, in *RevokeReques
 
 func (c *apertureServiceJSONClient) callRevoke(ctx context.Context, in *RevokeRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[54], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[56], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -5583,7 +5781,7 @@ func (c *apertureServiceJSONClient) ImpersonationStart(ctx context.Context, in *
 
 func (c *apertureServiceJSONClient) callImpersonationStart(ctx context.Context, in *ImpersonationStartRequest) (*ImpersonationSession, error) {
 	out := new(ImpersonationSession)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[55], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[57], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -5629,7 +5827,7 @@ func (c *apertureServiceJSONClient) ImpersonationStop(ctx context.Context, in *I
 
 func (c *apertureServiceJSONClient) callImpersonationStop(ctx context.Context, in *ImpersonationStopRequest) (*Empty, error) {
 	out := new(Empty)
-	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[56], in, out)
+	ctx, err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[58], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -5771,6 +5969,9 @@ func (s *apertureServiceServer) ServeHTTP(resp http.ResponseWriter, req *http.Re
 	case "DeleteObjectType":
 		s.serveDeleteObjectType(ctx, resp, req)
 		return
+	case "ObjectIdentifiers":
+		s.serveObjectIdentifiers(ctx, resp, req)
+		return
 	case "PutPermission":
 		s.servePutPermission(ctx, resp, req)
 		return
@@ -5851,6 +6052,9 @@ func (s *apertureServiceServer) ServeHTTP(resp http.ResponseWriter, req *http.Re
 		return
 	case "SimulateExplain":
 		s.serveSimulateExplain(ctx, resp, req)
+		return
+	case "EvaluateRule":
+		s.serveEvaluateRule(ctx, resp, req)
 		return
 	case "PutMembership":
 		s.servePutMembership(ctx, resp, req)
@@ -7392,7 +7596,7 @@ func (s *apertureServiceServer) serveListObjectTypesJSON(ctx context.Context, re
 		s.handleRequestBodyError(ctx, resp, "the json request could not be decoded", err)
 		return
 	}
-	reqContent := new(Empty)
+	reqContent := new(ListRequest)
 	unmarshaler := protojson.UnmarshalOptions{DiscardUnknown: true}
 	if err = unmarshaler.Unmarshal(rawReqBody, reqContent); err != nil {
 		s.handleRequestBodyError(ctx, resp, "the json request could not be decoded", err)
@@ -7401,12 +7605,12 @@ func (s *apertureServiceServer) serveListObjectTypesJSON(ctx context.Context, re
 
 	handler := s.ApertureService.ListObjectTypes
 	if s.interceptor != nil {
-		handler = func(ctx context.Context, req *Empty) (*EntityListResponse, error) {
+		handler = func(ctx context.Context, req *ListRequest) (*EntityListResponse, error) {
 			resp, err := s.interceptor(
 				func(ctx context.Context, req interface{}) (interface{}, error) {
-					typedReq, ok := req.(*Empty)
+					typedReq, ok := req.(*ListRequest)
 					if !ok {
-						return nil, twirp.InternalError("failed type assertion req.(*Empty) when calling interceptor")
+						return nil, twirp.InternalError("failed type assertion req.(*ListRequest) when calling interceptor")
 					}
 					return s.ApertureService.ListObjectTypes(ctx, typedReq)
 				},
@@ -7474,7 +7678,7 @@ func (s *apertureServiceServer) serveListObjectTypesProtobuf(ctx context.Context
 		s.handleRequestBodyError(ctx, resp, "failed to read request body", err)
 		return
 	}
-	reqContent := new(Empty)
+	reqContent := new(ListRequest)
 	if err = proto.Unmarshal(buf, reqContent); err != nil {
 		s.writeError(ctx, resp, malformedRequestError("the protobuf request could not be decoded"))
 		return
@@ -7482,12 +7686,12 @@ func (s *apertureServiceServer) serveListObjectTypesProtobuf(ctx context.Context
 
 	handler := s.ApertureService.ListObjectTypes
 	if s.interceptor != nil {
-		handler = func(ctx context.Context, req *Empty) (*EntityListResponse, error) {
+		handler = func(ctx context.Context, req *ListRequest) (*EntityListResponse, error) {
 			resp, err := s.interceptor(
 				func(ctx context.Context, req interface{}) (interface{}, error) {
-					typedReq, ok := req.(*Empty)
+					typedReq, ok := req.(*ListRequest)
 					if !ok {
-						return nil, twirp.InternalError("failed type assertion req.(*Empty) when calling interceptor")
+						return nil, twirp.InternalError("failed type assertion req.(*ListRequest) when calling interceptor")
 					}
 					return s.ApertureService.ListObjectTypes(ctx, typedReq)
 				},
@@ -7696,6 +7900,186 @@ func (s *apertureServiceServer) serveDeleteObjectTypeProtobuf(ctx context.Contex
 	}
 	if respContent == nil {
 		s.writeError(ctx, resp, twirp.InternalError("received a nil *Empty and nil error while calling DeleteObjectType. nil responses are not supported"))
+		return
+	}
+
+	ctx = callResponsePrepared(ctx, s.hooks)
+
+	respBytes, err := proto.Marshal(respContent)
+	if err != nil {
+		s.writeError(ctx, resp, wrapInternal(err, "failed to marshal proto response"))
+		return
+	}
+
+	ctx = ctxsetters.WithStatusCode(ctx, http.StatusOK)
+	resp.Header().Set("Content-Type", "application/protobuf")
+	resp.Header().Set("Content-Length", strconv.Itoa(len(respBytes)))
+	resp.WriteHeader(http.StatusOK)
+	if n, err := resp.Write(respBytes); err != nil {
+		msg := fmt.Sprintf("failed to write response, %d of %d bytes written: %s", n, len(respBytes), err.Error())
+		twerr := twirp.NewError(twirp.Unknown, msg)
+		ctx = callError(ctx, s.hooks, twerr)
+	}
+	callResponseSent(ctx, s.hooks)
+}
+
+func (s *apertureServiceServer) serveObjectIdentifiers(ctx context.Context, resp http.ResponseWriter, req *http.Request) {
+	header := req.Header.Get("Content-Type")
+	i := strings.Index(header, ";")
+	if i == -1 {
+		i = len(header)
+	}
+	switch strings.TrimSpace(strings.ToLower(header[:i])) {
+	case "application/json":
+		s.serveObjectIdentifiersJSON(ctx, resp, req)
+	case "application/protobuf":
+		s.serveObjectIdentifiersProtobuf(ctx, resp, req)
+	default:
+		msg := fmt.Sprintf("unexpected Content-Type: %q", req.Header.Get("Content-Type"))
+		twerr := badRouteError(msg, req.Method, req.URL.Path)
+		s.writeError(ctx, resp, twerr)
+	}
+}
+
+func (s *apertureServiceServer) serveObjectIdentifiersJSON(ctx context.Context, resp http.ResponseWriter, req *http.Request) {
+	var err error
+	ctx = ctxsetters.WithMethodName(ctx, "ObjectIdentifiers")
+	ctx, err = callRequestRouted(ctx, s.hooks)
+	if err != nil {
+		s.writeError(ctx, resp, err)
+		return
+	}
+
+	d := json.NewDecoder(req.Body)
+	rawReqBody := json.RawMessage{}
+	if err := d.Decode(&rawReqBody); err != nil {
+		s.handleRequestBodyError(ctx, resp, "the json request could not be decoded", err)
+		return
+	}
+	reqContent := new(ObjectIdentifiersRequest)
+	unmarshaler := protojson.UnmarshalOptions{DiscardUnknown: true}
+	if err = unmarshaler.Unmarshal(rawReqBody, reqContent); err != nil {
+		s.handleRequestBodyError(ctx, resp, "the json request could not be decoded", err)
+		return
+	}
+
+	handler := s.ApertureService.ObjectIdentifiers
+	if s.interceptor != nil {
+		handler = func(ctx context.Context, req *ObjectIdentifiersRequest) (*ObjectIdentifiersResponse, error) {
+			resp, err := s.interceptor(
+				func(ctx context.Context, req interface{}) (interface{}, error) {
+					typedReq, ok := req.(*ObjectIdentifiersRequest)
+					if !ok {
+						return nil, twirp.InternalError("failed type assertion req.(*ObjectIdentifiersRequest) when calling interceptor")
+					}
+					return s.ApertureService.ObjectIdentifiers(ctx, typedReq)
+				},
+			)(ctx, req)
+			if resp != nil {
+				typedResp, ok := resp.(*ObjectIdentifiersResponse)
+				if !ok {
+					return nil, twirp.InternalError("failed type assertion resp.(*ObjectIdentifiersResponse) when calling interceptor")
+				}
+				return typedResp, err
+			}
+			return nil, err
+		}
+	}
+
+	// Call service method
+	var respContent *ObjectIdentifiersResponse
+	func() {
+		defer ensurePanicResponses(ctx, resp, s.hooks)
+		respContent, err = handler(ctx, reqContent)
+	}()
+
+	if err != nil {
+		s.writeError(ctx, resp, err)
+		return
+	}
+	if respContent == nil {
+		s.writeError(ctx, resp, twirp.InternalError("received a nil *ObjectIdentifiersResponse and nil error while calling ObjectIdentifiers. nil responses are not supported"))
+		return
+	}
+
+	ctx = callResponsePrepared(ctx, s.hooks)
+
+	marshaler := &protojson.MarshalOptions{UseProtoNames: !s.jsonCamelCase, EmitUnpopulated: !s.jsonSkipDefaults}
+	respBytes, err := marshaler.Marshal(respContent)
+	if err != nil {
+		s.writeError(ctx, resp, wrapInternal(err, "failed to marshal json response"))
+		return
+	}
+
+	ctx = ctxsetters.WithStatusCode(ctx, http.StatusOK)
+	resp.Header().Set("Content-Type", "application/json")
+	resp.Header().Set("Content-Length", strconv.Itoa(len(respBytes)))
+	resp.WriteHeader(http.StatusOK)
+
+	if n, err := resp.Write(respBytes); err != nil {
+		msg := fmt.Sprintf("failed to write response, %d of %d bytes written: %s", n, len(respBytes), err.Error())
+		twerr := twirp.NewError(twirp.Unknown, msg)
+		ctx = callError(ctx, s.hooks, twerr)
+	}
+	callResponseSent(ctx, s.hooks)
+}
+
+func (s *apertureServiceServer) serveObjectIdentifiersProtobuf(ctx context.Context, resp http.ResponseWriter, req *http.Request) {
+	var err error
+	ctx = ctxsetters.WithMethodName(ctx, "ObjectIdentifiers")
+	ctx, err = callRequestRouted(ctx, s.hooks)
+	if err != nil {
+		s.writeError(ctx, resp, err)
+		return
+	}
+
+	buf, err := io.ReadAll(req.Body)
+	if err != nil {
+		s.handleRequestBodyError(ctx, resp, "failed to read request body", err)
+		return
+	}
+	reqContent := new(ObjectIdentifiersRequest)
+	if err = proto.Unmarshal(buf, reqContent); err != nil {
+		s.writeError(ctx, resp, malformedRequestError("the protobuf request could not be decoded"))
+		return
+	}
+
+	handler := s.ApertureService.ObjectIdentifiers
+	if s.interceptor != nil {
+		handler = func(ctx context.Context, req *ObjectIdentifiersRequest) (*ObjectIdentifiersResponse, error) {
+			resp, err := s.interceptor(
+				func(ctx context.Context, req interface{}) (interface{}, error) {
+					typedReq, ok := req.(*ObjectIdentifiersRequest)
+					if !ok {
+						return nil, twirp.InternalError("failed type assertion req.(*ObjectIdentifiersRequest) when calling interceptor")
+					}
+					return s.ApertureService.ObjectIdentifiers(ctx, typedReq)
+				},
+			)(ctx, req)
+			if resp != nil {
+				typedResp, ok := resp.(*ObjectIdentifiersResponse)
+				if !ok {
+					return nil, twirp.InternalError("failed type assertion resp.(*ObjectIdentifiersResponse) when calling interceptor")
+				}
+				return typedResp, err
+			}
+			return nil, err
+		}
+	}
+
+	// Call service method
+	var respContent *ObjectIdentifiersResponse
+	func() {
+		defer ensurePanicResponses(ctx, resp, s.hooks)
+		respContent, err = handler(ctx, reqContent)
+	}()
+
+	if err != nil {
+		s.writeError(ctx, resp, err)
+		return
+	}
+	if respContent == nil {
+		s.writeError(ctx, resp, twirp.InternalError("received a nil *ObjectIdentifiersResponse and nil error while calling ObjectIdentifiers. nil responses are not supported"))
 		return
 	}
 
@@ -8112,7 +8496,7 @@ func (s *apertureServiceServer) serveListPermissionsJSON(ctx context.Context, re
 		s.handleRequestBodyError(ctx, resp, "the json request could not be decoded", err)
 		return
 	}
-	reqContent := new(Empty)
+	reqContent := new(ListRequest)
 	unmarshaler := protojson.UnmarshalOptions{DiscardUnknown: true}
 	if err = unmarshaler.Unmarshal(rawReqBody, reqContent); err != nil {
 		s.handleRequestBodyError(ctx, resp, "the json request could not be decoded", err)
@@ -8121,12 +8505,12 @@ func (s *apertureServiceServer) serveListPermissionsJSON(ctx context.Context, re
 
 	handler := s.ApertureService.ListPermissions
 	if s.interceptor != nil {
-		handler = func(ctx context.Context, req *Empty) (*EntityListResponse, error) {
+		handler = func(ctx context.Context, req *ListRequest) (*EntityListResponse, error) {
 			resp, err := s.interceptor(
 				func(ctx context.Context, req interface{}) (interface{}, error) {
-					typedReq, ok := req.(*Empty)
+					typedReq, ok := req.(*ListRequest)
 					if !ok {
-						return nil, twirp.InternalError("failed type assertion req.(*Empty) when calling interceptor")
+						return nil, twirp.InternalError("failed type assertion req.(*ListRequest) when calling interceptor")
 					}
 					return s.ApertureService.ListPermissions(ctx, typedReq)
 				},
@@ -8194,7 +8578,7 @@ func (s *apertureServiceServer) serveListPermissionsProtobuf(ctx context.Context
 		s.handleRequestBodyError(ctx, resp, "failed to read request body", err)
 		return
 	}
-	reqContent := new(Empty)
+	reqContent := new(ListRequest)
 	if err = proto.Unmarshal(buf, reqContent); err != nil {
 		s.writeError(ctx, resp, malformedRequestError("the protobuf request could not be decoded"))
 		return
@@ -8202,12 +8586,12 @@ func (s *apertureServiceServer) serveListPermissionsProtobuf(ctx context.Context
 
 	handler := s.ApertureService.ListPermissions
 	if s.interceptor != nil {
-		handler = func(ctx context.Context, req *Empty) (*EntityListResponse, error) {
+		handler = func(ctx context.Context, req *ListRequest) (*EntityListResponse, error) {
 			resp, err := s.interceptor(
 				func(ctx context.Context, req interface{}) (interface{}, error) {
-					typedReq, ok := req.(*Empty)
+					typedReq, ok := req.(*ListRequest)
 					if !ok {
-						return nil, twirp.InternalError("failed type assertion req.(*Empty) when calling interceptor")
+						return nil, twirp.InternalError("failed type assertion req.(*ListRequest) when calling interceptor")
 					}
 					return s.ApertureService.ListPermissions(ctx, typedReq)
 				},
@@ -8832,7 +9216,7 @@ func (s *apertureServiceServer) serveListPrincipalsJSON(ctx context.Context, res
 		s.handleRequestBodyError(ctx, resp, "the json request could not be decoded", err)
 		return
 	}
-	reqContent := new(Empty)
+	reqContent := new(ListRequest)
 	unmarshaler := protojson.UnmarshalOptions{DiscardUnknown: true}
 	if err = unmarshaler.Unmarshal(rawReqBody, reqContent); err != nil {
 		s.handleRequestBodyError(ctx, resp, "the json request could not be decoded", err)
@@ -8841,12 +9225,12 @@ func (s *apertureServiceServer) serveListPrincipalsJSON(ctx context.Context, res
 
 	handler := s.ApertureService.ListPrincipals
 	if s.interceptor != nil {
-		handler = func(ctx context.Context, req *Empty) (*EntityListResponse, error) {
+		handler = func(ctx context.Context, req *ListRequest) (*EntityListResponse, error) {
 			resp, err := s.interceptor(
 				func(ctx context.Context, req interface{}) (interface{}, error) {
-					typedReq, ok := req.(*Empty)
+					typedReq, ok := req.(*ListRequest)
 					if !ok {
-						return nil, twirp.InternalError("failed type assertion req.(*Empty) when calling interceptor")
+						return nil, twirp.InternalError("failed type assertion req.(*ListRequest) when calling interceptor")
 					}
 					return s.ApertureService.ListPrincipals(ctx, typedReq)
 				},
@@ -8914,7 +9298,7 @@ func (s *apertureServiceServer) serveListPrincipalsProtobuf(ctx context.Context,
 		s.handleRequestBodyError(ctx, resp, "failed to read request body", err)
 		return
 	}
-	reqContent := new(Empty)
+	reqContent := new(ListRequest)
 	if err = proto.Unmarshal(buf, reqContent); err != nil {
 		s.writeError(ctx, resp, malformedRequestError("the protobuf request could not be decoded"))
 		return
@@ -8922,12 +9306,12 @@ func (s *apertureServiceServer) serveListPrincipalsProtobuf(ctx context.Context,
 
 	handler := s.ApertureService.ListPrincipals
 	if s.interceptor != nil {
-		handler = func(ctx context.Context, req *Empty) (*EntityListResponse, error) {
+		handler = func(ctx context.Context, req *ListRequest) (*EntityListResponse, error) {
 			resp, err := s.interceptor(
 				func(ctx context.Context, req interface{}) (interface{}, error) {
-					typedReq, ok := req.(*Empty)
+					typedReq, ok := req.(*ListRequest)
 					if !ok {
-						return nil, twirp.InternalError("failed type assertion req.(*Empty) when calling interceptor")
+						return nil, twirp.InternalError("failed type assertion req.(*ListRequest) when calling interceptor")
 					}
 					return s.ApertureService.ListPrincipals(ctx, typedReq)
 				},
@@ -9552,7 +9936,7 @@ func (s *apertureServiceServer) serveListRolesJSON(ctx context.Context, resp htt
 		s.handleRequestBodyError(ctx, resp, "the json request could not be decoded", err)
 		return
 	}
-	reqContent := new(Empty)
+	reqContent := new(ListRequest)
 	unmarshaler := protojson.UnmarshalOptions{DiscardUnknown: true}
 	if err = unmarshaler.Unmarshal(rawReqBody, reqContent); err != nil {
 		s.handleRequestBodyError(ctx, resp, "the json request could not be decoded", err)
@@ -9561,12 +9945,12 @@ func (s *apertureServiceServer) serveListRolesJSON(ctx context.Context, resp htt
 
 	handler := s.ApertureService.ListRoles
 	if s.interceptor != nil {
-		handler = func(ctx context.Context, req *Empty) (*EntityListResponse, error) {
+		handler = func(ctx context.Context, req *ListRequest) (*EntityListResponse, error) {
 			resp, err := s.interceptor(
 				func(ctx context.Context, req interface{}) (interface{}, error) {
-					typedReq, ok := req.(*Empty)
+					typedReq, ok := req.(*ListRequest)
 					if !ok {
-						return nil, twirp.InternalError("failed type assertion req.(*Empty) when calling interceptor")
+						return nil, twirp.InternalError("failed type assertion req.(*ListRequest) when calling interceptor")
 					}
 					return s.ApertureService.ListRoles(ctx, typedReq)
 				},
@@ -9634,7 +10018,7 @@ func (s *apertureServiceServer) serveListRolesProtobuf(ctx context.Context, resp
 		s.handleRequestBodyError(ctx, resp, "failed to read request body", err)
 		return
 	}
-	reqContent := new(Empty)
+	reqContent := new(ListRequest)
 	if err = proto.Unmarshal(buf, reqContent); err != nil {
 		s.writeError(ctx, resp, malformedRequestError("the protobuf request could not be decoded"))
 		return
@@ -9642,12 +10026,12 @@ func (s *apertureServiceServer) serveListRolesProtobuf(ctx context.Context, resp
 
 	handler := s.ApertureService.ListRoles
 	if s.interceptor != nil {
-		handler = func(ctx context.Context, req *Empty) (*EntityListResponse, error) {
+		handler = func(ctx context.Context, req *ListRequest) (*EntityListResponse, error) {
 			resp, err := s.interceptor(
 				func(ctx context.Context, req interface{}) (interface{}, error) {
-					typedReq, ok := req.(*Empty)
+					typedReq, ok := req.(*ListRequest)
 					if !ok {
-						return nil, twirp.InternalError("failed type assertion req.(*Empty) when calling interceptor")
+						return nil, twirp.InternalError("failed type assertion req.(*ListRequest) when calling interceptor")
 					}
 					return s.ApertureService.ListRoles(ctx, typedReq)
 				},
@@ -10272,7 +10656,7 @@ func (s *apertureServiceServer) serveListGroupsJSON(ctx context.Context, resp ht
 		s.handleRequestBodyError(ctx, resp, "the json request could not be decoded", err)
 		return
 	}
-	reqContent := new(Empty)
+	reqContent := new(ListRequest)
 	unmarshaler := protojson.UnmarshalOptions{DiscardUnknown: true}
 	if err = unmarshaler.Unmarshal(rawReqBody, reqContent); err != nil {
 		s.handleRequestBodyError(ctx, resp, "the json request could not be decoded", err)
@@ -10281,12 +10665,12 @@ func (s *apertureServiceServer) serveListGroupsJSON(ctx context.Context, resp ht
 
 	handler := s.ApertureService.ListGroups
 	if s.interceptor != nil {
-		handler = func(ctx context.Context, req *Empty) (*EntityListResponse, error) {
+		handler = func(ctx context.Context, req *ListRequest) (*EntityListResponse, error) {
 			resp, err := s.interceptor(
 				func(ctx context.Context, req interface{}) (interface{}, error) {
-					typedReq, ok := req.(*Empty)
+					typedReq, ok := req.(*ListRequest)
 					if !ok {
-						return nil, twirp.InternalError("failed type assertion req.(*Empty) when calling interceptor")
+						return nil, twirp.InternalError("failed type assertion req.(*ListRequest) when calling interceptor")
 					}
 					return s.ApertureService.ListGroups(ctx, typedReq)
 				},
@@ -10354,7 +10738,7 @@ func (s *apertureServiceServer) serveListGroupsProtobuf(ctx context.Context, res
 		s.handleRequestBodyError(ctx, resp, "failed to read request body", err)
 		return
 	}
-	reqContent := new(Empty)
+	reqContent := new(ListRequest)
 	if err = proto.Unmarshal(buf, reqContent); err != nil {
 		s.writeError(ctx, resp, malformedRequestError("the protobuf request could not be decoded"))
 		return
@@ -10362,12 +10746,12 @@ func (s *apertureServiceServer) serveListGroupsProtobuf(ctx context.Context, res
 
 	handler := s.ApertureService.ListGroups
 	if s.interceptor != nil {
-		handler = func(ctx context.Context, req *Empty) (*EntityListResponse, error) {
+		handler = func(ctx context.Context, req *ListRequest) (*EntityListResponse, error) {
 			resp, err := s.interceptor(
 				func(ctx context.Context, req interface{}) (interface{}, error) {
-					typedReq, ok := req.(*Empty)
+					typedReq, ok := req.(*ListRequest)
 					if !ok {
-						return nil, twirp.InternalError("failed type assertion req.(*Empty) when calling interceptor")
+						return nil, twirp.InternalError("failed type assertion req.(*ListRequest) when calling interceptor")
 					}
 					return s.ApertureService.ListGroups(ctx, typedReq)
 				},
@@ -10992,7 +11376,7 @@ func (s *apertureServiceServer) serveListAccountsJSON(ctx context.Context, resp 
 		s.handleRequestBodyError(ctx, resp, "the json request could not be decoded", err)
 		return
 	}
-	reqContent := new(Empty)
+	reqContent := new(ListRequest)
 	unmarshaler := protojson.UnmarshalOptions{DiscardUnknown: true}
 	if err = unmarshaler.Unmarshal(rawReqBody, reqContent); err != nil {
 		s.handleRequestBodyError(ctx, resp, "the json request could not be decoded", err)
@@ -11001,12 +11385,12 @@ func (s *apertureServiceServer) serveListAccountsJSON(ctx context.Context, resp 
 
 	handler := s.ApertureService.ListAccounts
 	if s.interceptor != nil {
-		handler = func(ctx context.Context, req *Empty) (*EntityListResponse, error) {
+		handler = func(ctx context.Context, req *ListRequest) (*EntityListResponse, error) {
 			resp, err := s.interceptor(
 				func(ctx context.Context, req interface{}) (interface{}, error) {
-					typedReq, ok := req.(*Empty)
+					typedReq, ok := req.(*ListRequest)
 					if !ok {
-						return nil, twirp.InternalError("failed type assertion req.(*Empty) when calling interceptor")
+						return nil, twirp.InternalError("failed type assertion req.(*ListRequest) when calling interceptor")
 					}
 					return s.ApertureService.ListAccounts(ctx, typedReq)
 				},
@@ -11074,7 +11458,7 @@ func (s *apertureServiceServer) serveListAccountsProtobuf(ctx context.Context, r
 		s.handleRequestBodyError(ctx, resp, "failed to read request body", err)
 		return
 	}
-	reqContent := new(Empty)
+	reqContent := new(ListRequest)
 	if err = proto.Unmarshal(buf, reqContent); err != nil {
 		s.writeError(ctx, resp, malformedRequestError("the protobuf request could not be decoded"))
 		return
@@ -11082,12 +11466,12 @@ func (s *apertureServiceServer) serveListAccountsProtobuf(ctx context.Context, r
 
 	handler := s.ApertureService.ListAccounts
 	if s.interceptor != nil {
-		handler = func(ctx context.Context, req *Empty) (*EntityListResponse, error) {
+		handler = func(ctx context.Context, req *ListRequest) (*EntityListResponse, error) {
 			resp, err := s.interceptor(
 				func(ctx context.Context, req interface{}) (interface{}, error) {
-					typedReq, ok := req.(*Empty)
+					typedReq, ok := req.(*ListRequest)
 					if !ok {
-						return nil, twirp.InternalError("failed type assertion req.(*Empty) when calling interceptor")
+						return nil, twirp.InternalError("failed type assertion req.(*ListRequest) when calling interceptor")
 					}
 					return s.ApertureService.ListAccounts(ctx, typedReq)
 				},
@@ -12556,6 +12940,186 @@ func (s *apertureServiceServer) serveSimulateExplainProtobuf(ctx context.Context
 	}
 	if respContent == nil {
 		s.writeError(ctx, resp, twirp.InternalError("received a nil *ExplainResponse and nil error while calling SimulateExplain. nil responses are not supported"))
+		return
+	}
+
+	ctx = callResponsePrepared(ctx, s.hooks)
+
+	respBytes, err := proto.Marshal(respContent)
+	if err != nil {
+		s.writeError(ctx, resp, wrapInternal(err, "failed to marshal proto response"))
+		return
+	}
+
+	ctx = ctxsetters.WithStatusCode(ctx, http.StatusOK)
+	resp.Header().Set("Content-Type", "application/protobuf")
+	resp.Header().Set("Content-Length", strconv.Itoa(len(respBytes)))
+	resp.WriteHeader(http.StatusOK)
+	if n, err := resp.Write(respBytes); err != nil {
+		msg := fmt.Sprintf("failed to write response, %d of %d bytes written: %s", n, len(respBytes), err.Error())
+		twerr := twirp.NewError(twirp.Unknown, msg)
+		ctx = callError(ctx, s.hooks, twerr)
+	}
+	callResponseSent(ctx, s.hooks)
+}
+
+func (s *apertureServiceServer) serveEvaluateRule(ctx context.Context, resp http.ResponseWriter, req *http.Request) {
+	header := req.Header.Get("Content-Type")
+	i := strings.Index(header, ";")
+	if i == -1 {
+		i = len(header)
+	}
+	switch strings.TrimSpace(strings.ToLower(header[:i])) {
+	case "application/json":
+		s.serveEvaluateRuleJSON(ctx, resp, req)
+	case "application/protobuf":
+		s.serveEvaluateRuleProtobuf(ctx, resp, req)
+	default:
+		msg := fmt.Sprintf("unexpected Content-Type: %q", req.Header.Get("Content-Type"))
+		twerr := badRouteError(msg, req.Method, req.URL.Path)
+		s.writeError(ctx, resp, twerr)
+	}
+}
+
+func (s *apertureServiceServer) serveEvaluateRuleJSON(ctx context.Context, resp http.ResponseWriter, req *http.Request) {
+	var err error
+	ctx = ctxsetters.WithMethodName(ctx, "EvaluateRule")
+	ctx, err = callRequestRouted(ctx, s.hooks)
+	if err != nil {
+		s.writeError(ctx, resp, err)
+		return
+	}
+
+	d := json.NewDecoder(req.Body)
+	rawReqBody := json.RawMessage{}
+	if err := d.Decode(&rawReqBody); err != nil {
+		s.handleRequestBodyError(ctx, resp, "the json request could not be decoded", err)
+		return
+	}
+	reqContent := new(EvaluateRuleRequest)
+	unmarshaler := protojson.UnmarshalOptions{DiscardUnknown: true}
+	if err = unmarshaler.Unmarshal(rawReqBody, reqContent); err != nil {
+		s.handleRequestBodyError(ctx, resp, "the json request could not be decoded", err)
+		return
+	}
+
+	handler := s.ApertureService.EvaluateRule
+	if s.interceptor != nil {
+		handler = func(ctx context.Context, req *EvaluateRuleRequest) (*EvaluateRuleResponse, error) {
+			resp, err := s.interceptor(
+				func(ctx context.Context, req interface{}) (interface{}, error) {
+					typedReq, ok := req.(*EvaluateRuleRequest)
+					if !ok {
+						return nil, twirp.InternalError("failed type assertion req.(*EvaluateRuleRequest) when calling interceptor")
+					}
+					return s.ApertureService.EvaluateRule(ctx, typedReq)
+				},
+			)(ctx, req)
+			if resp != nil {
+				typedResp, ok := resp.(*EvaluateRuleResponse)
+				if !ok {
+					return nil, twirp.InternalError("failed type assertion resp.(*EvaluateRuleResponse) when calling interceptor")
+				}
+				return typedResp, err
+			}
+			return nil, err
+		}
+	}
+
+	// Call service method
+	var respContent *EvaluateRuleResponse
+	func() {
+		defer ensurePanicResponses(ctx, resp, s.hooks)
+		respContent, err = handler(ctx, reqContent)
+	}()
+
+	if err != nil {
+		s.writeError(ctx, resp, err)
+		return
+	}
+	if respContent == nil {
+		s.writeError(ctx, resp, twirp.InternalError("received a nil *EvaluateRuleResponse and nil error while calling EvaluateRule. nil responses are not supported"))
+		return
+	}
+
+	ctx = callResponsePrepared(ctx, s.hooks)
+
+	marshaler := &protojson.MarshalOptions{UseProtoNames: !s.jsonCamelCase, EmitUnpopulated: !s.jsonSkipDefaults}
+	respBytes, err := marshaler.Marshal(respContent)
+	if err != nil {
+		s.writeError(ctx, resp, wrapInternal(err, "failed to marshal json response"))
+		return
+	}
+
+	ctx = ctxsetters.WithStatusCode(ctx, http.StatusOK)
+	resp.Header().Set("Content-Type", "application/json")
+	resp.Header().Set("Content-Length", strconv.Itoa(len(respBytes)))
+	resp.WriteHeader(http.StatusOK)
+
+	if n, err := resp.Write(respBytes); err != nil {
+		msg := fmt.Sprintf("failed to write response, %d of %d bytes written: %s", n, len(respBytes), err.Error())
+		twerr := twirp.NewError(twirp.Unknown, msg)
+		ctx = callError(ctx, s.hooks, twerr)
+	}
+	callResponseSent(ctx, s.hooks)
+}
+
+func (s *apertureServiceServer) serveEvaluateRuleProtobuf(ctx context.Context, resp http.ResponseWriter, req *http.Request) {
+	var err error
+	ctx = ctxsetters.WithMethodName(ctx, "EvaluateRule")
+	ctx, err = callRequestRouted(ctx, s.hooks)
+	if err != nil {
+		s.writeError(ctx, resp, err)
+		return
+	}
+
+	buf, err := io.ReadAll(req.Body)
+	if err != nil {
+		s.handleRequestBodyError(ctx, resp, "failed to read request body", err)
+		return
+	}
+	reqContent := new(EvaluateRuleRequest)
+	if err = proto.Unmarshal(buf, reqContent); err != nil {
+		s.writeError(ctx, resp, malformedRequestError("the protobuf request could not be decoded"))
+		return
+	}
+
+	handler := s.ApertureService.EvaluateRule
+	if s.interceptor != nil {
+		handler = func(ctx context.Context, req *EvaluateRuleRequest) (*EvaluateRuleResponse, error) {
+			resp, err := s.interceptor(
+				func(ctx context.Context, req interface{}) (interface{}, error) {
+					typedReq, ok := req.(*EvaluateRuleRequest)
+					if !ok {
+						return nil, twirp.InternalError("failed type assertion req.(*EvaluateRuleRequest) when calling interceptor")
+					}
+					return s.ApertureService.EvaluateRule(ctx, typedReq)
+				},
+			)(ctx, req)
+			if resp != nil {
+				typedResp, ok := resp.(*EvaluateRuleResponse)
+				if !ok {
+					return nil, twirp.InternalError("failed type assertion resp.(*EvaluateRuleResponse) when calling interceptor")
+				}
+				return typedResp, err
+			}
+			return nil, err
+		}
+	}
+
+	// Call service method
+	var respContent *EvaluateRuleResponse
+	func() {
+		defer ensurePanicResponses(ctx, resp, s.hooks)
+		respContent, err = handler(ctx, reqContent)
+	}()
+
+	if err != nil {
+		s.writeError(ctx, resp, err)
+		return
+	}
+	if respContent == nil {
+		s.writeError(ctx, resp, twirp.InternalError("received a nil *EvaluateRuleResponse and nil error while calling EvaluateRule. nil responses are not supported"))
 		return
 	}
 
@@ -14052,7 +14616,7 @@ func (s *apertureServiceServer) serveListTemplatesJSON(ctx context.Context, resp
 		s.handleRequestBodyError(ctx, resp, "the json request could not be decoded", err)
 		return
 	}
-	reqContent := new(Empty)
+	reqContent := new(ListRequest)
 	unmarshaler := protojson.UnmarshalOptions{DiscardUnknown: true}
 	if err = unmarshaler.Unmarshal(rawReqBody, reqContent); err != nil {
 		s.handleRequestBodyError(ctx, resp, "the json request could not be decoded", err)
@@ -14061,12 +14625,12 @@ func (s *apertureServiceServer) serveListTemplatesJSON(ctx context.Context, resp
 
 	handler := s.ApertureService.ListTemplates
 	if s.interceptor != nil {
-		handler = func(ctx context.Context, req *Empty) (*EntityListResponse, error) {
+		handler = func(ctx context.Context, req *ListRequest) (*EntityListResponse, error) {
 			resp, err := s.interceptor(
 				func(ctx context.Context, req interface{}) (interface{}, error) {
-					typedReq, ok := req.(*Empty)
+					typedReq, ok := req.(*ListRequest)
 					if !ok {
-						return nil, twirp.InternalError("failed type assertion req.(*Empty) when calling interceptor")
+						return nil, twirp.InternalError("failed type assertion req.(*ListRequest) when calling interceptor")
 					}
 					return s.ApertureService.ListTemplates(ctx, typedReq)
 				},
@@ -14134,7 +14698,7 @@ func (s *apertureServiceServer) serveListTemplatesProtobuf(ctx context.Context, 
 		s.handleRequestBodyError(ctx, resp, "failed to read request body", err)
 		return
 	}
-	reqContent := new(Empty)
+	reqContent := new(ListRequest)
 	if err = proto.Unmarshal(buf, reqContent); err != nil {
 		s.writeError(ctx, resp, malformedRequestError("the protobuf request could not be decoded"))
 		return
@@ -14142,12 +14706,12 @@ func (s *apertureServiceServer) serveListTemplatesProtobuf(ctx context.Context, 
 
 	handler := s.ApertureService.ListTemplates
 	if s.interceptor != nil {
-		handler = func(ctx context.Context, req *Empty) (*EntityListResponse, error) {
+		handler = func(ctx context.Context, req *ListRequest) (*EntityListResponse, error) {
 			resp, err := s.interceptor(
 				func(ctx context.Context, req interface{}) (interface{}, error) {
-					typedReq, ok := req.(*Empty)
+					typedReq, ok := req.(*ListRequest)
 					if !ok {
-						return nil, twirp.InternalError("failed type assertion req.(*Empty) when calling interceptor")
+						return nil, twirp.InternalError("failed type assertion req.(*ListRequest) when calling interceptor")
 					}
 					return s.ApertureService.ListTemplates(ctx, typedReq)
 				},
@@ -16760,130 +17324,144 @@ func callClientError(ctx context.Context, h *twirp.ClientHooks, err twirp.Error)
 }
 
 var twirpFileDescriptor0 = []byte{
-	// 1993 bytes of a gzipped FileDescriptorProto
-	0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0xb4, 0x59, 0x4b, 0x73, 0xdc, 0xc6,
-	0x11, 0xae, 0x25, 0xb9, 0xaf, 0xde, 0x5d, 0x2e, 0x39, 0x45, 0x4b, 0xab, 0x95, 0x64, 0xd3, 0x70,
-	0x25, 0x51, 0x12, 0x17, 0x69, 0x52, 0xb2, 0x24, 0x4a, 0xb2, 0x15, 0x52, 0xa2, 0xd6, 0x8c, 0xad,
-	0x84, 0x86, 0x54, 0x49, 0x39, 0xae, 0xd4, 0xd6, 0x10, 0x18, 0x51, 0x30, 0xb1, 0x00, 0x3c, 0x18,
-	0x50, 0xe2, 0x21, 0x95, 0x43, 0xce, 0xb9, 0xe4, 0x77, 0xe4, 0x1f, 0xe4, 0x5f, 0xe5, 0x98, 0x53,
-	0x6a, 0x5e, 0xc0, 0xe0, 0xb1, 0x24, 0xc1, 0xb2, 0x6f, 0x3b, 0x8d, 0x7e, 0x7d, 0xd3, 0x3d, 0x33,
-	0xdd, 0xbd, 0x30, 0x88, 0x09, 0x3d, 0xf5, 0x1c, 0xb2, 0x11, 0xd1, 0x90, 0x85, 0xa8, 0x83, 0x23,
-	0x42, 0x59, 0x42, 0x89, 0xd5, 0x86, 0xe6, 0xfe, 0x2c, 0x62, 0x67, 0xd6, 0x53, 0x68, 0xee, 0x3a,
-	0x2c, 0xa4, 0xe8, 0x16, 0x74, 0x23, 0xea, 0x05, 0x8e, 0x17, 0x61, 0x7f, 0xd4, 0x58, 0x6f, 0xdc,
-	0xe9, 0xda, 0x19, 0x01, 0x8d, 0xa0, 0x8d, 0x1d, 0x27, 0x4c, 0x02, 0x36, 0x5a, 0x10, 0xdf, 0xf4,
-	0xd2, 0x3a, 0x85, 0xfe, 0xb3, 0xb7, 0xc4, 0x39, 0xb1, 0xc9, 0x8f, 0x09, 0x89, 0x99, 0xc9, 0xd9,
-	0xc8, 0x71, 0xe6, 0x2d, 0x2c, 0x14, 0x2d, 0x5c, 0x83, 0x16, 0x76, 0x98, 0x17, 0x06, 0xa3, 0x45,
-	0xf1, 0x49, 0xad, 0x38, 0x3d, 0x3c, 0xfa, 0x81, 0x38, 0x6c, 0xb4, 0x24, 0xe9, 0x72, 0x65, 0xbd,
-	0x81, 0xce, 0x73, 0xe2, 0x78, 0x31, 0xe7, 0x59, 0x83, 0x26, 0xf6, 0xfd, 0xf0, 0x9d, 0xb0, 0xd8,
-	0xb1, 0xe5, 0x82, 0x4b, 0x52, 0x82, 0xe3, 0x30, 0x50, 0xc6, 0xd4, 0x0a, 0x7d, 0x0a, 0xc8, 0x25,
-	0x8e, 0xe7, 0x7a, 0xc1, 0xf1, 0xf4, 0x98, 0xe2, 0x80, 0x4d, 0x3d, 0x37, 0x1e, 0x2d, 0xae, 0x2f,
-	0xde, 0xe9, 0xda, 0x2b, 0xfa, 0xcb, 0x84, 0x7f, 0x38, 0x70, 0x63, 0x6b, 0x1f, 0x56, 0x05, 0xbe,
-	0x3d, 0xcc, 0x9c, 0xb7, 0x1a, 0xe4, 0x67, 0xd0, 0xfe, 0x31, 0x21, 0xd4, 0x23, 0xf1, 0xa8, 0xb1,
-	0xbe, 0x78, 0xa7, 0xb7, 0x7d, 0x6d, 0x43, 0x6f, 0xed, 0x86, 0xb9, 0x1b, 0xb6, 0x66, 0xb3, 0xfe,
-	0xd1, 0x80, 0x81, 0x50, 0x91, 0x3a, 0xbd, 0x01, 0x1d, 0x57, 0xfd, 0x16, 0x7e, 0xf7, 0xb6, 0x51,
-	0xa6, 0x44, 0x73, 0xd9, 0x29, 0x0f, 0xba, 0x0d, 0x40, 0x28, 0x0d, 0xe9, 0xd4, 0x09, 0x5d, 0xa2,
-	0xf7, 0x4f, 0x50, 0x9e, 0x85, 0x2e, 0x41, 0x9f, 0xc0, 0x40, 0x7e, 0x9e, 0x91, 0x38, 0xc6, 0xc7,
-	0x44, 0x6d, 0x63, 0x5f, 0x10, 0x5f, 0x4a, 0x9a, 0x35, 0x01, 0x64, 0x82, 0x89, 0xa3, 0x30, 0x88,
-	0x09, 0xda, 0x82, 0x36, 0x25, 0x71, 0xe2, 0x33, 0x8d, 0xe6, 0x7a, 0xe6, 0x48, 0xce, 0x67, 0x5b,
-	0xf3, 0x59, 0xff, 0x6a, 0xc0, 0xca, 0x7e, 0x90, 0xcc, 0x08, 0xc5, 0x8c, 0xfc, 0x5c, 0xa1, 0x1f,
-	0x41, 0x3b, 0xc2, 0x8c, 0x11, 0x1a, 0xa8, 0xd8, 0xeb, 0x25, 0x0f, 0xb8, 0xef, 0xcd, 0x3c, 0x36,
-	0x6a, 0xae, 0x37, 0xee, 0x34, 0x6d, 0xb9, 0xb0, 0xb6, 0x61, 0xd5, 0xf0, 0x49, 0x81, 0xbb, 0x0d,
-	0x20, 0x33, 0x46, 0x44, 0xb9, 0x21, 0xa2, 0xdc, 0x95, 0x14, 0x1e, 0xde, 0x97, 0xf0, 0x41, 0x2a,
-	0x93, 0x0b, 0xf1, 0xbd, 0x62, 0x88, 0xc7, 0xd9, 0xa6, 0x14, 0x91, 0x67, 0x61, 0x4e, 0x60, 0x45,
-	0x68, 0xd1, 0x1c, 0x2a, 0x70, 0xe7, 0x78, 0xf0, 0x93, 0xc4, 0xf5, 0x0f, 0x70, 0xad, 0x88, 0x42,
-	0xc1, 0xbf, 0x57, 0x8c, 0xed, 0xb8, 0x10, 0x5b, 0xc3, 0xd3, 0x2c, 0xbc, 0x9f, 0xc1, 0x70, 0xff,
-	0x7d, 0xe4, 0x63, 0x2f, 0x30, 0xf7, 0x91, 0x51, 0xec, 0x90, 0xe9, 0x0f, 0xb1, 0x4a, 0xd8, 0xae,
-	0xdd, 0x15, 0x94, 0xdf, 0xc7, 0x61, 0x60, 0x85, 0x00, 0x42, 0xdd, 0x6b, 0x4e, 0xb9, 0x80, 0xf9,
-	0x27, 0x81, 0xfc, 0x02, 0xd6, 0x94, 0x8b, 0x79, 0xc0, 0x1b, 0x45, 0xc0, 0x6b, 0x05, 0xc0, 0xc2,
-	0xc3, 0x0c, 0xea, 0x9f, 0x61, 0xb0, 0x1f, 0x30, 0x8f, 0x9d, 0xe9, 0xc0, 0xff, 0x02, 0x9a, 0x98,
-	0xdf, 0x88, 0xea, 0x50, 0x0e, 0x33, 0x71, 0x71, 0x51, 0xda, 0xf2, 0x2b, 0xfa, 0x08, 0x7a, 0x44,
-	0xc8, 0x49, 0x8c, 0x12, 0x04, 0x48, 0x92, 0xd8, 0x91, 0x67, 0x00, 0x13, 0xc2, 0x6a, 0x6a, 0x5d,
-	0x86, 0x05, 0xcf, 0x55, 0xca, 0x16, 0x3c, 0xd7, 0x7a, 0x01, 0x83, 0xe7, 0xc4, 0x27, 0xd9, 0x19,
-	0xbb, 0xa2, 0x9e, 0x2d, 0x58, 0xd6, 0x28, 0xd5, 0x3e, 0x15, 0xfc, 0x6f, 0x94, 0xfc, 0xdf, 0x01,
-	0x24, 0x45, 0xbe, 0xf1, 0x62, 0x96, 0x8a, 0xf1, 0xd8, 0x70, 0xaa, 0x47, 0x62, 0x2d, 0xb8, 0x28,
-	0x62, 0xa3, 0x88, 0x42, 0xf4, 0x5b, 0xe8, 0xd9, 0x89, 0x5f, 0xd7, 0xe7, 0x9b, 0xd0, 0xa5, 0x89,
-	0x4f, 0xcc, 0xfd, 0xec, 0x70, 0x82, 0x50, 0xf9, 0x5b, 0xe8, 0x4b, 0x95, 0xca, 0x8f, 0x1c, 0x73,
-	0xa3, 0xc0, 0xbc, 0x05, 0x2b, 0x9c, 0x39, 0xe7, 0xf8, 0x6d, 0x00, 0xfe, 0x3d, 0xe7, 0xb5, 0x50,
-	0x21, 0x5d, 0xfe, 0x5f, 0x03, 0x86, 0xaf, 0xbc, 0x59, 0xe2, 0xe3, 0xda, 0x7b, 0xfd, 0x29, 0x34,
-	0xf9, 0xf1, 0x3f, 0x13, 0x3e, 0xcf, 0x7f, 0x0a, 0x24, 0x53, 0xc1, 0x8f, 0xc5, 0x82, 0x1f, 0x3c,
-	0x2c, 0xe2, 0x4d, 0x52, 0xdf, 0x97, 0xc4, 0x77, 0x90, 0x24, 0xc1, 0xf0, 0x6b, 0x58, 0x89, 0x08,
-	0x9d, 0x79, 0x31, 0xbf, 0x90, 0x15, 0x57, 0x53, 0x70, 0x0d, 0x0d, 0xba, 0x60, 0xfd, 0x15, 0x0c,
-	0xd3, 0x4b, 0x56, 0x71, 0xb6, 0x04, 0xe7, 0x72, 0x46, 0x16, 0xe0, 0xff, 0x0e, 0x6b, 0x2f, 0xc9,
-	0xec, 0x88, 0xd0, 0xf8, 0xad, 0x17, 0x7d, 0x4d, 0xea, 0x1e, 0x85, 0x8f, 0xa1, 0x9f, 0x2a, 0x9c,
-	0xa6, 0x69, 0xd7, 0x4b, 0x69, 0x07, 0x2e, 0x47, 0xad, 0xde, 0x02, 0xce, 0x20, 0xcf, 0x73, 0x57,
-	0x51, 0x0e, 0x5c, 0xeb, 0x3b, 0x58, 0xe5, 0xc1, 0x12, 0x8f, 0x6e, 0x5c, 0xd3, 0x7a, 0x5e, 0xf5,
-	0x42, 0x51, 0xb5, 0x07, 0xe8, 0x35, 0x99, 0x45, 0x3c, 0xae, 0xf5, 0x91, 0x21, 0x58, 0x0a, 0xf0,
-	0x4c, 0x5f, 0x51, 0xe2, 0x37, 0x7f, 0x95, 0x4e, 0x09, 0x8d, 0xf5, 0x73, 0xd5, 0xb4, 0xf5, 0xd2,
-	0xfa, 0xf7, 0x02, 0xac, 0xed, 0x46, 0x91, 0x7f, 0xa6, 0x0d, 0xfe, 0x9c, 0xd6, 0xcc, 0xd7, 0x76,
-	0x29, 0xff, 0xda, 0xee, 0x41, 0x2b, 0xc2, 0x14, 0xcf, 0x62, 0x91, 0x18, 0xbd, 0xed, 0xdf, 0x18,
-	0xf6, 0x2a, 0xdc, 0xdb, 0x38, 0x14, 0xcc, 0xfb, 0x01, 0xa3, 0x67, 0xb6, 0x92, 0x44, 0xbf, 0x84,
-	0xa1, 0xae, 0x8d, 0xa6, 0x11, 0x25, 0x6f, 0xbc, 0xf7, 0xa3, 0x96, 0xb0, 0x32, 0x38, 0x96, 0x95,
-	0xd1, 0xa1, 0x20, 0x8e, 0x77, 0xa0, 0x67, 0x88, 0xa3, 0x15, 0x58, 0x3c, 0x21, 0x67, 0xea, 0x40,
-	0xf2, 0x9f, 0xfc, 0xa9, 0x3e, 0xc5, 0x7e, 0xa2, 0x51, 0xc9, 0xc5, 0xa3, 0x85, 0x87, 0x0d, 0xeb,
-	0x7b, 0x58, 0xdd, 0x4b, 0xfc, 0x93, 0x2b, 0x05, 0xbd, 0x70, 0x4c, 0x16, 0x8a, 0xc7, 0xc4, 0xfa,
-	0x2b, 0x5c, 0xe7, 0xca, 0xe5, 0xe5, 0x79, 0x25, 0x13, 0x37, 0xa1, 0x9b, 0x55, 0x87, 0xd2, 0x40,
-	0xe7, 0x58, 0x57, 0x85, 0xf7, 0x61, 0xb0, 0xff, 0x3e, 0x0a, 0x69, 0xcd, 0xfb, 0xdd, 0xfa, 0x1c,
-	0x96, 0xb5, 0x5c, 0x76, 0xa1, 0xba, 0xa1, 0x93, 0xcc, 0x48, 0xc0, 0xcc, 0xcb, 0xac, 0xaf, 0x89,
-	0x02, 0xcd, 0xf7, 0x30, 0x38, 0x98, 0xd5, 0x37, 0x57, 0x56, 0xbe, 0x50, 0xa1, 0xfc, 0xbf, 0x0d,
-	0x58, 0xfd, 0x96, 0xdf, 0x4d, 0xbb, 0x89, 0xeb, 0xb1, 0xfa, 0x67, 0xff, 0x8d, 0xe7, 0x33, 0x42,
-	0xa7, 0x92, 0x5b, 0x9d, 0x7d, 0x49, 0x93, 0x9d, 0x85, 0x91, 0xa8, 0x8b, 0xf9, 0x44, 0xe5, 0x75,
-	0xc0, 0x29, 0xf7, 0x8d, 0x9d, 0x45, 0x44, 0x65, 0x71, 0x57, 0x50, 0x5e, 0x9f, 0x45, 0x22, 0xf7,
-	0xc3, 0x84, 0x39, 0xe1, 0x8c, 0x88, 0x3a, 0xaf, 0x6b, 0xeb, 0x25, 0x4f, 0xaa, 0xd8, 0x0b, 0x1c,
-	0xa2, 0x72, 0x52, 0x2e, 0x38, 0x35, 0x09, 0x98, 0xe7, 0x8f, 0xda, 0x92, 0x2a, 0x16, 0x59, 0xad,
-	0xd8, 0x31, 0x6b, 0xc5, 0xcf, 0x01, 0x99, 0x98, 0x8d, 0x47, 0x91, 0x9b, 0xcf, 0xbd, 0x12, 0xd2,
-	0x47, 0x99, 0x56, 0xdf, 0xc0, 0x60, 0x8f, 0xc4, 0x2c, 0x7c, 0xa7, 0xb7, 0xe9, 0x16, 0x74, 0x5d,
-	0xe2, 0x93, 0x63, 0xac, 0xb7, 0xaa, 0x6b, 0x67, 0x04, 0x0e, 0x50, 0xe6, 0x90, 0xb1, 0xf9, 0x32,
-	0xab, 0x84, 0xb6, 0xaf, 0x60, 0x60, 0x93, 0xd3, 0xf0, 0x84, 0x5c, 0x4e, 0xdb, 0x0d, 0xe8, 0xe8,
-	0x8c, 0xd4, 0x5d, 0x98, 0x4a, 0x48, 0xeb, 0x6f, 0x70, 0xe3, 0x60, 0x16, 0x11, 0x1a, 0x87, 0x81,
-	0x28, 0xe5, 0x5e, 0x31, 0x9c, 0x25, 0xcb, 0x18, 0x3a, 0x61, 0xc4, 0x6b, 0xbc, 0x54, 0x69, 0xba,
-	0xe6, 0xb5, 0x37, 0xc3, 0xf4, 0x98, 0xe8, 0xbe, 0x4e, 0xad, 0xce, 0x09, 0x1a, 0x82, 0xa5, 0x19,
-	0x2f, 0xdb, 0x64, 0xb8, 0xc4, 0x6f, 0xeb, 0x3f, 0x0d, 0x58, 0xcb, 0xdb, 0x27, 0xb1, 0x6e, 0x5a,
-	0x28, 0xc1, 0xfe, 0x34, 0x4b, 0x25, 0xfe, 0xda, 0x11, 0xec, 0xa7, 0xa9, 0x11, 0x27, 0xb2, 0xbb,
-	0x53, 0x80, 0xd4, 0xb2, 0x9e, 0x7d, 0x6e, 0x26, 0xe6, 0x88, 0x89, 0x3b, 0xc5, 0x4c, 0x25, 0x4b,
-	0x57, 0x51, 0x76, 0x65, 0x9e, 0xbd, 0x8f, 0x3c, 0x4a, 0x62, 0xfe, 0xb9, 0xa5, 0xf2, 0x4c, 0x52,
-	0x76, 0x99, 0x15, 0xc1, 0xa8, 0xb0, 0x79, 0x61, 0x74, 0x99, 0xbd, 0x7b, 0x08, 0xed, 0x58, 0xe2,
-	0x54, 0x4f, 0xff, 0x87, 0xd9, 0x21, 0xa9, 0xda, 0x0d, 0x5b, 0xb3, 0x6f, 0xff, 0xf3, 0x16, 0x0c,
-	0x77, 0x15, 0xeb, 0x2b, 0xd9, 0xa2, 0xa3, 0xbb, 0xd0, 0x14, 0xf5, 0x02, 0x9a, 0x53, 0x40, 0x8c,
-	0x2b, 0xda, 0x43, 0x34, 0x01, 0xc8, 0x1a, 0x3a, 0x74, 0xb3, 0x20, 0x69, 0x36, 0x34, 0xe3, 0x5b,
-	0xd5, 0x1f, 0x55, 0xe6, 0x3f, 0x87, 0x6e, 0xda, 0x41, 0xa0, 0x73, 0x5a, 0x9d, 0xf1, 0xcd, 0xca,
-	0x6f, 0x4a, 0xcb, 0x2b, 0x5e, 0x66, 0x9a, 0x7d, 0x08, 0xfa, 0xa8, 0x82, 0x3d, 0xe7, 0xd6, 0xfa,
-	0x7c, 0x06, 0xa5, 0xf4, 0x09, 0xb4, 0x55, 0xa5, 0x3f, 0x77, 0x6b, 0x6e, 0x18, 0x4a, 0x0a, 0x7d,
-	0xcb, 0xd7, 0xd0, 0x37, 0xfb, 0x84, 0xf3, 0xf7, 0xe8, 0xc3, 0x92, 0x9e, 0xbc, 0x2b, 0x3b, 0x30,
-	0x38, 0x4c, 0xd8, 0x1f, 0x45, 0x8a, 0x8a, 0x2b, 0xea, 0xba, 0xe9, 0xbd, 0xd1, 0x45, 0x8c, 0x8d,
-	0xfb, 0x52, 0x0c, 0x5a, 0xd0, 0x53, 0x18, 0x4c, 0x88, 0x29, 0x6a, 0xf4, 0x25, 0x59, 0x9f, 0x30,
-	0x1e, 0x95, 0x15, 0x2a, 0xdb, 0xbf, 0x83, 0x21, 0xaf, 0x91, 0x32, 0x0d, 0x31, 0x2a, 0x1a, 0x31,
-	0x63, 0x5c, 0x51, 0xbb, 0x3f, 0x81, 0x15, 0xf9, 0x1e, 0x56, 0x03, 0xc8, 0x35, 0x1a, 0x65, 0x00,
-	0x12, 0xfb, 0x61, 0x5a, 0x63, 0xd6, 0xc6, 0x6e, 0x88, 0x5e, 0x11, 0x7b, 0xa6, 0xe1, 0xea, 0xd8,
-	0xab, 0x01, 0x5c, 0x80, 0xfd, 0x21, 0xf4, 0x39, 0xf6, 0x74, 0x62, 0x71, 0x79, 0xe8, 0x5f, 0x42,
-	0x9f, 0x43, 0x4f, 0x25, 0xeb, 0x22, 0x7f, 0x0a, 0xcb, 0x02, 0x79, 0x5a, 0xb0, 0xd7, 0x05, 0xfe,
-	0x18, 0x86, 0x0a, 0x78, 0x95, 0xf7, 0x17, 0xe0, 0xbe, 0x0b, 0xed, 0xc3, 0x84, 0xd9, 0xa1, 0x5f,
-	0x27, 0xd3, 0x77, 0xa0, 0xcd, 0xa1, 0x71, 0xa1, 0xba, 0x68, 0x1f, 0x41, 0x57, 0x38, 0x1f, 0xfa,
-	0xf5, 0xb3, 0xfb, 0x3e, 0x80, 0x42, 0x53, 0x70, 0xf7, 0x02, 0x8c, 0xf7, 0xa0, 0x73, 0x98, 0xb0,
-	0x09, 0x0d, 0x93, 0xa8, 0x06, 0xc8, 0x47, 0xd0, 0x99, 0x10, 0x25, 0x55, 0x17, 0xe5, 0x63, 0x00,
-	0xd9, 0xed, 0x84, 0x49, 0x54, 0x1b, 0xe6, 0x03, 0xe8, 0xe9, 0xa2, 0xb6, 0xe0, 0xf1, 0x05, 0x38,
-	0xef, 0x03, 0x1c, 0x26, 0x6c, 0x57, 0xbd, 0xa2, 0x97, 0x47, 0xfa, 0x44, 0xcc, 0x31, 0xb4, 0x5c,
-	0x5d, 0xac, 0x5f, 0x40, 0x9f, 0xbb, 0xaf, 0xc4, 0x6b, 0xa3, 0xdd, 0xd1, 0xf3, 0x8f, 0x0a, 0xbf,
-	0x2f, 0xc0, 0xbb, 0x25, 0x73, 0x37, 0xf1, 0x09, 0xfa, 0x20, 0xfb, 0x66, 0xcc, 0x25, 0xca, 0x22,
-	0x0f, 0x64, 0xe6, 0x26, 0x73, 0x33, 0xf7, 0x5a, 0x51, 0x91, 0x72, 0xf3, 0xa1, 0xca, 0xdb, 0xa4,
-	0x32, 0x6f, 0xc7, 0x79, 0xa9, 0x39, 0x59, 0x9b, 0xd4, 0xca, 0xda, 0xfb, 0xd0, 0xff, 0x13, 0xf6,
-	0x3d, 0x17, 0x2b, 0xc9, 0xcb, 0x42, 0xdc, 0x81, 0x8e, 0x1e, 0x73, 0x20, 0xe3, 0xd5, 0x2c, 0x8c,
-	0x3e, 0xe6, 0xd4, 0x1a, 0xe9, 0x84, 0x44, 0xbf, 0xc7, 0xe7, 0x68, 0x38, 0xe7, 0x49, 0x96, 0x2f,
-	0x49, 0x36, 0x71, 0xa8, 0x91, 0x8c, 0xcf, 0xf4, 0x35, 0x6e, 0x48, 0x1b, 0x8f, 0x76, 0xd5, 0x14,
-	0x63, 0xfe, 0x89, 0xc7, 0xb5, 0xce, 0x81, 0x3e, 0xf1, 0xf8, 0x0a, 0xa7, 0x60, 0xa2, 0x4f, 0x3c,
-	0xef, 0x43, 0xcd, 0x12, 0xa4, 0x34, 0xf5, 0xb8, 0xfc, 0xe9, 0xc7, 0xb5, 0x4e, 0xc3, 0x03, 0xe8,
-	0x1d, 0x26, 0x4c, 0x77, 0xfe, 0x35, 0x60, 0xef, 0x43, 0x6f, 0x42, 0x32, 0x41, 0xc3, 0xbd, 0xf2,
-	0x58, 0xe5, 0x9c, 0x1d, 0xf8, 0x12, 0x06, 0x1c, 0x88, 0x96, 0xa9, 0x7d, 0x11, 0x3c, 0x85, 0x65,
-	0x89, 0xf0, 0x92, 0x9e, 0x94, 0x70, 0xbc, 0x84, 0x41, 0x6e, 0xf8, 0x61, 0xa6, 0x4d, 0xd5, 0x54,
-	0xe4, 0x02, 0x7f, 0xbe, 0x80, 0xc1, 0x5e, 0xe2, 0x9f, 0xe8, 0x3c, 0xca, 0x05, 0xb5, 0x34, 0xd5,
-	0x28, 0x7b, 0xf3, 0x02, 0x56, 0x8a, 0xe3, 0x09, 0xf4, 0x71, 0x5e, 0x43, 0xc5, 0xe8, 0xa2, 0xac,
-	0xe7, 0x31, 0xb4, 0xe4, 0x3c, 0x21, 0x17, 0x51, 0x73, 0x32, 0x91, 0x8b, 0x49, 0x7e, 0xf4, 0xb0,
-	0x0d, 0x2d, 0x39, 0x55, 0x30, 0x85, 0x73, 0x73, 0x86, 0xb2, 0xc1, 0x09, 0x40, 0xd6, 0x37, 0x9b,
-	0xa0, 0x4b, 0x13, 0x04, 0x73, 0x03, 0x2b, 0x5a, 0xed, 0x6d, 0x68, 0xc9, 0x4e, 0xda, 0x34, 0x9e,
-	0xeb, 0xad, 0xcb, 0xc6, 0xb7, 0xa1, 0x25, 0xfb, 0x65, 0x53, 0x26, 0xd7, 0x41, 0x97, 0x65, 0xbe,
-	0x03, 0x54, 0xee, 0x8c, 0xd1, 0x27, 0xf3, 0x3a, 0x35, 0xa3, 0x6f, 0x1e, 0x5f, 0xd0, 0xce, 0xa1,
-	0xaf, 0x60, 0xb5, 0xd4, 0x37, 0x22, 0x6b, 0xae, 0xe6, 0xb4, 0xa9, 0x2c, 0x39, 0xb9, 0x77, 0xf7,
-	0x2f, 0x5b, 0xc7, 0x1e, 0x7b, 0x9b, 0x1c, 0x6d, 0x38, 0xe1, 0x6c, 0xf3, 0x0d, 0xc5, 0xc1, 0xc9,
-	0x11, 0xa6, 0x6e, 0x18, 0x6c, 0x6a, 0xc6, 0x4d, 0x2f, 0x60, 0x84, 0x06, 0xd8, 0xdf, 0x7c, 0xe7,
-	0x51, 0xb2, 0x49, 0x23, 0xe7, 0xa8, 0x25, 0xfe, 0xd4, 0xbd, 0xfb, 0xff, 0x00, 0x00, 0x00, 0xff,
-	0xff, 0x0a, 0x12, 0x19, 0x48, 0xe5, 0x1d, 0x00, 0x00,
+	// 2219 bytes of a gzipped FileDescriptorProto
+	0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0xb4, 0x5a, 0xdd, 0x76, 0xdb, 0xc6,
+	0x11, 0x3e, 0xa4, 0xc4, 0xbf, 0x21, 0xa9, 0x9f, 0xad, 0x62, 0xd3, 0x94, 0x95, 0x28, 0xf0, 0x69,
+	0xab, 0xb6, 0x39, 0x52, 0x24, 0x3b, 0xb6, 0xe4, 0xb8, 0x75, 0x25, 0x99, 0x62, 0xd4, 0x58, 0xb5,
+	0x02, 0xbb, 0xbf, 0x69, 0x8f, 0x0e, 0x04, 0xae, 0x64, 0x58, 0x20, 0x80, 0x2c, 0x16, 0xb2, 0x74,
+	0xd1, 0xd3, 0x8b, 0xbe, 0x41, 0x9f, 0xa3, 0x6f, 0xd0, 0xd7, 0xe9, 0x13, 0xf4, 0xb2, 0x57, 0x3d,
+	0xfb, 0x07, 0x2c, 0x00, 0x52, 0x22, 0x98, 0xf8, 0x8e, 0x3b, 0x98, 0xbf, 0x6f, 0x76, 0x76, 0x77,
+	0x66, 0x0e, 0xa1, 0x1d, 0x62, 0x72, 0xe9, 0xd8, 0x78, 0x3d, 0x20, 0x3e, 0xf5, 0x51, 0xdd, 0x0a,
+	0x30, 0xa1, 0x11, 0xc1, 0x46, 0x0d, 0x2a, 0xbd, 0x61, 0x40, 0xaf, 0x8d, 0x97, 0x30, 0x77, 0xe0,
+	0x60, 0x77, 0x70, 0x4c, 0xf0, 0xc0, 0xb1, 0x2d, 0x8a, 0xd1, 0x12, 0x54, 0xce, 0x18, 0xa5, 0x53,
+	0x5a, 0x2d, 0xad, 0x35, 0x4c, 0xb1, 0x40, 0x73, 0x50, 0xf6, 0x83, 0x4e, 0x99, 0x93, 0xca, 0x7e,
+	0xc0, 0xb8, 0x2e, 0x2d, 0x37, 0xc2, 0x9d, 0x19, 0xc1, 0xc5, 0x17, 0xc6, 0x1f, 0xa1, 0x7a, 0xe0,
+	0xb8, 0x14, 0x13, 0xb4, 0x0d, 0x10, 0x28, 0x95, 0x61, 0xa7, 0xb4, 0x3a, 0xb3, 0xd6, 0xdc, 0xea,
+	0xac, 0x2b, 0xfb, 0xeb, 0x69, 0x9b, 0xa6, 0xc6, 0xcb, 0x34, 0x0f, 0x2d, 0x6a, 0xbf, 0x95, 0xc6,
+	0xc4, 0xc2, 0x78, 0x02, 0xcd, 0x97, 0x4e, 0x48, 0x4d, 0xfc, 0x5d, 0x84, 0x43, 0x8a, 0xd6, 0xa0,
+	0x7a, 0xc6, 0x0d, 0x71, 0x2f, 0x9b, 0x5b, 0x0b, 0xba, 0x6a, 0x46, 0x37, 0xe5, 0x77, 0xe3, 0x39,
+	0x54, 0x76, 0x6d, 0xea, 0x13, 0x74, 0x1f, 0x1a, 0x01, 0x71, 0x3c, 0xdb, 0x09, 0x2c, 0x57, 0x62,
+	0x4b, 0x08, 0xa8, 0x03, 0x35, 0xcb, 0xb6, 0xfd, 0xc8, 0xa3, 0xd2, 0xae, 0x5a, 0x1a, 0x97, 0xd0,
+	0xda, 0x7f, 0x8b, 0xed, 0x0b, 0x65, 0x5a, 0xe3, 0x2c, 0xa5, 0x38, 0xd3, 0x16, 0xca, 0x59, 0x0b,
+	0x77, 0xa0, 0x6a, 0xd9, 0xd4, 0xf1, 0x3d, 0x19, 0x32, 0xb9, 0x62, 0x74, 0xff, 0xf4, 0x1d, 0xb6,
+	0x69, 0x67, 0x56, 0xd0, 0xc5, 0xca, 0x38, 0x83, 0xfa, 0x0b, 0x6c, 0x3b, 0x21, 0xe3, 0x59, 0x82,
+	0x8a, 0xe5, 0xba, 0xfe, 0x7b, 0x6e, 0xb1, 0x6e, 0x8a, 0x05, 0x93, 0x24, 0xd8, 0x0a, 0x7d, 0x4f,
+	0x1a, 0x93, 0x2b, 0xf4, 0x19, 0xa0, 0x01, 0xb6, 0x9d, 0x81, 0xe3, 0x9d, 0x9f, 0x9c, 0x13, 0xcb,
+	0xa3, 0x27, 0xce, 0x20, 0xec, 0xcc, 0xac, 0xce, 0xac, 0x35, 0xcc, 0x05, 0xf5, 0xa5, 0xcf, 0x3e,
+	0x1c, 0x0e, 0x42, 0xa3, 0x07, 0x8b, 0x1c, 0xdf, 0x1e, 0x8b, 0xb3, 0x02, 0xf9, 0x39, 0xd4, 0xbe,
+	0x8b, 0x30, 0x71, 0xe2, 0xbd, 0xbb, 0x93, 0x04, 0x58, 0x8f, 0x86, 0xa9, 0xd8, 0x8c, 0x7f, 0x94,
+	0xa0, 0xcd, 0x55, 0xc4, 0x4e, 0xaf, 0x43, 0x7d, 0x20, 0x7f, 0xcb, 0x5d, 0x42, 0x89, 0x12, 0xc5,
+	0x65, 0xc6, 0x3c, 0x68, 0x05, 0x00, 0x13, 0xe2, 0x93, 0x13, 0xdb, 0x1f, 0x60, 0x15, 0x3f, 0x4e,
+	0xd9, 0xf7, 0x07, 0x18, 0x3d, 0x80, 0xb6, 0xf8, 0x3c, 0xc4, 0x61, 0x68, 0x9d, 0xab, 0xcc, 0x6b,
+	0x71, 0xe2, 0x91, 0xa0, 0x19, 0x7d, 0x40, 0x3a, 0x98, 0x30, 0xf0, 0xbd, 0x10, 0xa3, 0x4d, 0xa8,
+	0x11, 0x1c, 0x46, 0x2e, 0x55, 0x68, 0xee, 0x26, 0x8e, 0xa4, 0x7c, 0x36, 0x15, 0x9f, 0xf1, 0xcf,
+	0x12, 0x2c, 0xf4, 0xbc, 0x68, 0x88, 0x09, 0xcb, 0xcf, 0x0f, 0xb4, 0xf5, 0x1d, 0xa8, 0x05, 0x16,
+	0xa5, 0x98, 0x78, 0x72, 0xef, 0xd5, 0x92, 0x6d, 0xb8, 0xeb, 0x0c, 0x1d, 0xda, 0xa9, 0xac, 0x96,
+	0xd6, 0x2a, 0xa6, 0x58, 0x18, 0x5b, 0xb0, 0xa8, 0xf9, 0x24, 0xc1, 0xad, 0x00, 0x88, 0x8c, 0xe1,
+	0xbb, 0x5c, 0xe2, 0xbb, 0xdc, 0x10, 0x14, 0xb6, 0xbd, 0xbf, 0x83, 0xce, 0x2b, 0xb9, 0xc0, 0x1e,
+	0x75, 0xce, 0x1c, 0x4c, 0x42, 0x85, 0xe7, 0x13, 0x68, 0x4a, 0x51, 0x7a, 0x1d, 0x60, 0x89, 0x49,
+	0x6a, 0x7b, 0x73, 0x1d, 0x60, 0xe6, 0x20, 0xbe, 0xb2, 0xdd, 0x88, 0xef, 0x07, 0x53, 0xac, 0x96,
+	0xc6, 0x53, 0xb8, 0x37, 0x42, 0xed, 0x64, 0x2e, 0xbd, 0x82, 0x1f, 0xf5, 0xd8, 0x7d, 0xc1, 0x50,
+	0x44, 0x6e, 0x1c, 0xdd, 0x65, 0x68, 0x90, 0xc8, 0xc5, 0x27, 0xef, 0x42, 0x99, 0x30, 0x0d, 0xb3,
+	0xce, 0x08, 0xbf, 0x61, 0x39, 0xbd, 0x0c, 0x8d, 0x58, 0xa5, 0x0c, 0x70, 0x5d, 0x69, 0x34, 0x5e,
+	0xc1, 0x52, 0x5a, 0xa1, 0xf4, 0x83, 0x1f, 0x10, 0xb6, 0x9f, 0xf2, 0xdc, 0xc8, 0x95, 0x86, 0xfb,
+	0x5d, 0x72, 0x7a, 0xa4, 0xcb, 0xcc, 0x9a, 0x71, 0x04, 0x1f, 0xc5, 0x81, 0x4e, 0x9d, 0x8b, 0x47,
+	0xd9, 0x73, 0xd1, 0x4d, 0x32, 0x29, 0x9b, 0x2e, 0xc9, 0xd9, 0x88, 0x60, 0x81, 0x6b, 0x51, 0x1c,
+	0x32, 0xdb, 0x6f, 0x88, 0xd1, 0x0f, 0x72, 0x18, 0x7e, 0x0b, 0x77, 0xb2, 0x28, 0x64, 0x60, 0x1e,
+	0x65, 0x0f, 0x44, 0x37, 0x73, 0x20, 0x34, 0x4f, 0x93, 0x33, 0xf1, 0x39, 0xcc, 0xf7, 0xae, 0x02,
+	0xd7, 0x72, 0x3c, 0x7d, 0xa7, 0x29, 0xb1, 0xec, 0xd4, 0xa6, 0x35, 0x38, 0x85, 0xc7, 0xd1, 0x07,
+	0xe0, 0xea, 0xde, 0x30, 0xca, 0x2d, 0xcc, 0x3f, 0x08, 0xe4, 0x03, 0x58, 0x92, 0x2e, 0xa6, 0x01,
+	0xaf, 0x67, 0x01, 0x2f, 0x65, 0x00, 0x73, 0x0f, 0x13, 0xa8, 0x7f, 0x80, 0x76, 0xcf, 0xa3, 0x0e,
+	0xbd, 0x56, 0x1b, 0xff, 0x63, 0xa8, 0x58, 0xec, 0x19, 0x91, 0x37, 0xd9, 0x7c, 0x22, 0xce, 0x5f,
+	0x17, 0x53, 0x7c, 0x65, 0x99, 0x85, 0xb9, 0x5c, 0x2a, 0xb3, 0x04, 0x89, 0x47, 0x64, 0x1f, 0xa0,
+	0x8f, 0x69, 0x41, 0xad, 0x73, 0x50, 0x8e, 0xb3, 0xbe, 0xec, 0x0c, 0x8c, 0x03, 0x68, 0xbf, 0xc0,
+	0x2e, 0x4e, 0x2e, 0xa6, 0x29, 0xf5, 0x6c, 0xc2, 0x9c, 0x42, 0x29, 0xe3, 0x94, 0xf1, 0xbf, 0x94,
+	0xf3, 0x7f, 0x07, 0x90, 0x10, 0x11, 0xaf, 0xb1, 0x14, 0x63, 0x7b, 0xc3, 0xa8, 0x0e, 0x0e, 0x95,
+	0xe0, 0x0c, 0xdf, 0x1b, 0x49, 0xe4, 0xa2, 0xdf, 0x40, 0x53, 0x3f, 0xee, 0x13, 0xfa, 0x9c, 0xba,
+	0x15, 0xca, 0xe9, 0x5b, 0xc1, 0xf8, 0x05, 0xb4, 0x52, 0x07, 0xfe, 0xa6, 0x2b, 0xc4, 0xd8, 0x84,
+	0x05, 0xc6, 0x9c, 0x72, 0x7c, 0x05, 0x80, 0x7d, 0x4f, 0x79, 0xcd, 0x55, 0x08, 0x97, 0xff, 0x57,
+	0x82, 0xf9, 0xd7, 0xce, 0x30, 0x72, 0xad, 0xc2, 0xb1, 0xfe, 0x0c, 0x2a, 0xec, 0xf8, 0x5f, 0x73,
+	0x9f, 0xc7, 0xbf, 0x9f, 0x82, 0x29, 0xe3, 0xc7, 0x4c, 0xc6, 0x0f, 0xb6, 0x2d, 0xfc, 0x21, 0x97,
+	0xdf, 0x67, 0xf9, 0x77, 0x10, 0x24, 0xce, 0xf0, 0x33, 0x58, 0x08, 0x30, 0x19, 0x3a, 0x21, 0x7b,
+	0xc5, 0x24, 0x57, 0x85, 0x73, 0xcd, 0x6b, 0x74, 0xce, 0xfa, 0x53, 0x98, 0x8f, 0x5f, 0x26, 0xc9,
+	0x59, 0xe5, 0x9c, 0x73, 0x09, 0x99, 0x83, 0xff, 0x3b, 0x2c, 0x1d, 0xe1, 0xe1, 0x29, 0x26, 0xe1,
+	0x5b, 0x27, 0xf8, 0x1a, 0x17, 0x3d, 0x0a, 0x9f, 0x42, 0x2b, 0x56, 0x98, 0x5c, 0xda, 0xcd, 0x98,
+	0x76, 0x38, 0x60, 0xa8, 0xe5, 0x03, 0xca, 0x18, 0xc4, 0x79, 0x6e, 0x48, 0xca, 0xe1, 0x80, 0x95,
+	0x14, 0x8b, 0x6c, 0xb7, 0x78, 0xa9, 0x12, 0x16, 0x34, 0x9f, 0xd6, 0x5d, 0xce, 0xe8, 0xd6, 0x0a,
+	0xc8, 0x99, 0x5b, 0x0a, 0x48, 0x07, 0xd0, 0x1b, 0x3c, 0x0c, 0x58, 0x0a, 0x14, 0x0f, 0x02, 0x82,
+	0x59, 0xcf, 0x1a, 0xaa, 0xdb, 0x8c, 0xff, 0x66, 0x8f, 0xea, 0x25, 0x26, 0xa1, 0x2a, 0x07, 0x2a,
+	0xa6, 0x5a, 0x1a, 0xff, 0x2a, 0xc3, 0xd2, 0x6e, 0x10, 0xb8, 0xd7, 0xca, 0xe0, 0x87, 0xb4, 0xa6,
+	0x57, 0x33, 0xb3, 0xe9, 0x6a, 0x66, 0x0f, 0xaa, 0x81, 0x45, 0xac, 0x61, 0xc8, 0x73, 0xa8, 0xb9,
+	0xf5, 0x73, 0xcd, 0xde, 0x08, 0xf7, 0xd6, 0x8f, 0x39, 0x73, 0xcf, 0xa3, 0xe4, 0xda, 0x94, 0x92,
+	0xe8, 0x27, 0x30, 0xaf, 0x6a, 0xcf, 0x93, 0x80, 0xe0, 0x33, 0xe7, 0xaa, 0x53, 0xe5, 0x56, 0xda,
+	0xe7, 0xa2, 0xf2, 0x3c, 0xe6, 0xc4, 0xee, 0x0e, 0x34, 0x35, 0x71, 0xb4, 0x00, 0x33, 0x17, 0xf8,
+	0x5a, 0x9e, 0x5d, 0xf6, 0x33, 0xe9, 0x34, 0xca, 0x5a, 0xa7, 0xf1, 0xb4, 0xbc, 0x5d, 0x32, 0xbe,
+	0x85, 0xc5, 0xbd, 0xc8, 0xbd, 0x98, 0x2a, 0x3d, 0x32, 0x27, 0xaa, 0x9c, 0x3d, 0x51, 0xc6, 0x5f,
+	0xe1, 0x2e, 0x53, 0x2e, 0xee, 0xd9, 0xa9, 0x4c, 0x2c, 0x43, 0x23, 0xa9, 0xbe, 0x85, 0x81, 0xfa,
+	0xb9, 0xaa, 0xba, 0x1f, 0x43, 0xbb, 0x77, 0x15, 0xf8, 0xa4, 0xe0, 0x53, 0x60, 0x7c, 0x01, 0x73,
+	0x4a, 0x2e, 0xb9, 0x7b, 0x07, 0xbe, 0x1d, 0x0d, 0xb1, 0x47, 0xf5, 0x7b, 0xaf, 0xa5, 0x88, 0x1c,
+	0xcd, 0xb7, 0xd0, 0x3e, 0x1c, 0x16, 0x37, 0x97, 0x57, 0x5e, 0x1e, 0xa1, 0xfc, 0xbf, 0x25, 0x58,
+	0xfc, 0x86, 0x5d, 0x63, 0xbb, 0xd1, 0xc0, 0xa1, 0xc5, 0xaf, 0x09, 0x71, 0xd0, 0x4e, 0x04, 0xb7,
+	0xbc, 0x26, 0x04, 0x4d, 0x74, 0x6e, 0x5a, 0xa2, 0xce, 0xa4, 0x13, 0x95, 0x95, 0x0c, 0x97, 0xcc,
+	0x37, 0x5e, 0xbf, 0xce, 0xca, 0x92, 0x81, 0x51, 0x54, 0xf9, 0xea, 0x47, 0xd4, 0xf6, 0x87, 0x98,
+	0xd7, 0xd1, 0x0d, 0x53, 0x2d, 0x59, 0x52, 0x85, 0x8e, 0x67, 0x63, 0x99, 0x93, 0x62, 0xc1, 0xa8,
+	0x91, 0x47, 0x1d, 0xb7, 0x53, 0x13, 0x54, 0xbe, 0x48, 0x6a, 0xf1, 0xba, 0x5e, 0x8b, 0x7f, 0x01,
+	0x48, 0xc7, 0xac, 0xbd, 0x9f, 0xcc, 0x7c, 0xea, 0x41, 0x11, 0x3e, 0x8a, 0xb4, 0x7a, 0x09, 0xed,
+	0x3d, 0x1c, 0x52, 0xff, 0xbd, 0x0a, 0xd3, 0x7d, 0x68, 0x0c, 0xb0, 0x8b, 0xcf, 0x2d, 0x15, 0xaa,
+	0x86, 0x99, 0x10, 0x18, 0x40, 0x91, 0x43, 0x5a, 0xf0, 0x45, 0x56, 0x71, 0x6d, 0x5f, 0x41, 0xdb,
+	0xc4, 0x97, 0xfe, 0x05, 0x9e, 0x4c, 0xdb, 0x3d, 0xa8, 0xab, 0x8c, 0x54, 0x5d, 0xae, 0x4c, 0x48,
+	0xe3, 0x6f, 0x70, 0xef, 0x70, 0x18, 0x60, 0x12, 0xfa, 0x1e, 0xaf, 0xfa, 0x5e, 0x53, 0x2b, 0x49,
+	0x96, 0x2e, 0xd4, 0xfd, 0x80, 0x95, 0x83, 0xb1, 0xd2, 0x78, 0xcd, 0x6a, 0x6c, 0x6a, 0x91, 0x73,
+	0xac, 0xfa, 0x66, 0xb9, 0xba, 0x61, 0xd3, 0x10, 0xcc, 0x0e, 0x59, 0x85, 0x27, 0xb6, 0x8b, 0xff,
+	0x36, 0xfe, 0x5d, 0x82, 0xa5, 0xb4, 0x7d, 0x1c, 0xaa, 0xa6, 0x90, 0x60, 0xcb, 0x3d, 0x49, 0x52,
+	0x89, 0x3d, 0x8c, 0xd8, 0x72, 0xe3, 0xd4, 0x08, 0x23, 0xd1, 0x3d, 0x4b, 0x40, 0x72, 0x59, 0xcc,
+	0x3e, 0x33, 0x13, 0x32, 0xc4, 0x78, 0x70, 0x62, 0x51, 0x99, 0x2c, 0x0d, 0x49, 0xd9, 0x15, 0x79,
+	0x76, 0x15, 0x38, 0x04, 0x87, 0xec, 0x73, 0x55, 0xe6, 0x99, 0xa0, 0xec, 0x52, 0x23, 0x80, 0x4e,
+	0x26, 0x78, 0x7e, 0x30, 0x49, 0xec, 0xb6, 0xa1, 0x16, 0x0a, 0x9c, 0xb2, 0x4a, 0xf8, 0x38, 0x39,
+	0x24, 0xa3, 0xa2, 0x61, 0x2a, 0xf6, 0xad, 0xff, 0xac, 0xc0, 0xfc, 0xae, 0x64, 0x7d, 0x2d, 0x66,
+	0x3c, 0xe8, 0x21, 0x54, 0x78, 0x69, 0x81, 0xc6, 0xd4, 0x1a, 0xdd, 0x11, 0xed, 0x37, 0xea, 0x03,
+	0x24, 0x0d, 0x33, 0x5a, 0xce, 0x48, 0xea, 0xbd, 0x4f, 0xf7, 0xfe, 0xe8, 0x8f, 0x32, 0xf3, 0x5f,
+	0x40, 0x23, 0x6e, 0x36, 0xd0, 0x0d, 0x5d, 0x51, 0x77, 0x79, 0xe4, 0x37, 0xa9, 0xe5, 0x35, 0xab,
+	0x48, 0xf5, 0x96, 0x05, 0x7d, 0x32, 0x82, 0x3d, 0xe5, 0xd6, 0xea, 0x78, 0x06, 0xa9, 0xf4, 0x19,
+	0xd4, 0x64, 0x53, 0x30, 0x36, 0x34, 0xf7, 0x34, 0x25, 0x99, 0x16, 0xe7, 0x6b, 0x68, 0xe9, 0x2d,
+	0xc5, 0xcd, 0x31, 0xfa, 0x38, 0xa7, 0x27, 0xed, 0xca, 0x0e, 0xb4, 0x8f, 0x23, 0xfa, 0x2a, 0xe9,
+	0xb0, 0xef, 0xea, 0xde, 0x6b, 0x0d, 0x47, 0x57, 0xbb, 0x2f, 0xf9, 0xa4, 0x0e, 0x3d, 0x87, 0x76,
+	0x1f, 0xeb, 0xa2, 0x5a, 0x0b, 0x93, 0xb4, 0x14, 0xdd, 0x4e, 0x5e, 0xa1, 0xb4, 0x7d, 0x00, 0xf3,
+	0xac, 0x9a, 0x4a, 0x34, 0x84, 0xe8, 0xa3, 0x84, 0x59, 0x9b, 0xae, 0xe9, 0x3b, 0x3d, 0xa2, 0xd8,
+	0x7f, 0x06, 0x0b, 0xe2, 0x55, 0x1c, 0x0d, 0x23, 0xd5, 0x99, 0xe4, 0x61, 0xfc, 0x05, 0x16, 0x73,
+	0x83, 0x03, 0x64, 0x24, 0x5c, 0xe3, 0x86, 0x15, 0xdd, 0x07, 0x37, 0xf2, 0xa4, 0xe2, 0x7b, 0x1c,
+	0x97, 0xbc, 0x85, 0xe3, 0xab, 0x89, 0x4e, 0x19, 0xdf, 0x44, 0xc3, 0xf7, 0x8d, 0xef, 0x68, 0x18,
+	0xb7, 0xc4, 0x77, 0x1b, 0x5a, 0x2c, 0x02, 0xf1, 0xec, 0x69, 0xf2, 0x00, 0xfc, 0x0a, 0x5a, 0x2c,
+	0x00, 0xb1, 0x64, 0x51, 0xfc, 0x3d, 0x98, 0xe3, 0xf8, 0xe3, 0x2e, 0x62, 0x3a, 0xf8, 0x5f, 0xc2,
+	0xbc, 0x84, 0x3f, 0x0a, 0xc3, 0x2d, 0xe8, 0x1f, 0x42, 0xed, 0x38, 0xa2, 0xa6, 0xef, 0x16, 0x39,
+	0x59, 0x3b, 0x50, 0x63, 0x00, 0x99, 0x50, 0x51, 0xcc, 0xbf, 0x86, 0x06, 0x77, 0xde, 0x77, 0xa7,
+	0x3d, 0x4d, 0x8f, 0x01, 0x24, 0xa6, 0x8c, 0xd3, 0xb7, 0x20, 0x7d, 0x04, 0xf5, 0xe3, 0x88, 0xf6,
+	0x89, 0x1f, 0x05, 0x05, 0xa0, 0x3e, 0x85, 0x7a, 0x1f, 0x4b, 0xa9, 0xa2, 0x58, 0x77, 0x01, 0x44,
+	0x37, 0xe6, 0x47, 0xc1, 0x94, 0x60, 0x9f, 0x40, 0x53, 0x15, 0xd4, 0x19, 0xbf, 0x6f, 0x41, 0xfb,
+	0x18, 0xe0, 0x38, 0xa2, 0xbb, 0xf2, 0x05, 0x9f, 0x1c, 0xef, 0x33, 0x3e, 0x6e, 0x51, 0x72, 0x45,
+	0x11, 0xef, 0x43, 0x8b, 0xb9, 0x2f, 0xc5, 0xa7, 0xc4, 0xbc, 0xa3, 0x86, 0x35, 0x23, 0xbc, 0xbf,
+	0x05, 0xf5, 0xa6, 0xc8, 0xe6, 0xc8, 0xc5, 0xba, 0x69, 0x6d, 0x88, 0x92, 0x17, 0x79, 0x22, 0x72,
+	0x39, 0x1a, 0x9b, 0xcb, 0x77, 0xb2, 0x8a, 0xa4, 0x9b, 0xdb, 0x32, 0x93, 0x23, 0x96, 0xc9, 0x59,
+	0xb5, 0xdd, 0x6e, 0x5a, 0x6a, 0x4c, 0x06, 0x47, 0x85, 0x32, 0xf8, 0x31, 0xb4, 0x7e, 0x6f, 0xb9,
+	0xce, 0x40, 0x4e, 0x6d, 0x27, 0x86, 0xb8, 0x03, 0x75, 0x35, 0x93, 0x41, 0xda, 0xbb, 0x9d, 0x99,
+	0xd3, 0x8c, 0xa9, 0x76, 0xe2, 0x71, 0x8e, 0xaa, 0x08, 0x6e, 0xd0, 0x70, 0x43, 0x51, 0x70, 0x04,
+	0x2d, 0x7d, 0xe2, 0x8c, 0x56, 0x34, 0xd6, 0xfc, 0x68, 0x3b, 0x55, 0x16, 0x8c, 0x1a, 0x54, 0x8b,
+	0x67, 0x2b, 0x99, 0xb6, 0x14, 0xc8, 0xf0, 0x7d, 0xf5, 0x5a, 0x68, 0xd2, 0x9a, 0xb9, 0x51, 0x13,
+	0x9c, 0xf1, 0x97, 0x89, 0x55, 0xe8, 0x70, 0xa9, 0xcb, 0xc4, 0x9a, 0xe2, 0x68, 0xf5, 0xd5, 0x65,
+	0xc2, 0x1a, 0x6b, 0xbd, 0xa6, 0xca, 0x0d, 0x7c, 0x26, 0xbf, 0x52, 0xac, 0x42, 0x87, 0xeb, 0x09,
+	0x34, 0x8f, 0x23, 0xaa, 0x46, 0x19, 0x05, 0x60, 0xf7, 0xa0, 0xd9, 0xc7, 0x89, 0xa0, 0xe6, 0x5e,
+	0x7e, 0x4e, 0x74, 0x43, 0x04, 0x5e, 0x40, 0x9b, 0x01, 0x51, 0x32, 0x53, 0xde, 0x2e, 0xcf, 0x61,
+	0x4e, 0xe0, 0x9c, 0xd0, 0x9f, 0x1c, 0x9a, 0x23, 0x68, 0xa7, 0x66, 0x3a, 0x7a, 0xf2, 0x8c, 0x1a,
+	0xf6, 0xdc, 0xe2, 0xcf, 0x2f, 0xa1, 0xbd, 0x17, 0xb9, 0x17, 0x2a, 0x9b, 0x52, 0x5b, 0x9b, 0x1b,
+	0xd6, 0xe4, 0xbd, 0x39, 0x80, 0x85, 0xec, 0xd4, 0x05, 0x7d, 0x9a, 0xd6, 0x30, 0x62, 0x22, 0x93,
+	0xd7, 0xf3, 0x25, 0x54, 0xc5, 0x98, 0x24, 0xb5, 0xaf, 0xfa, 0xc0, 0x25, 0xb5, 0x33, 0xe9, 0x89,
+	0xca, 0x16, 0x54, 0xc5, 0xb0, 0x44, 0x17, 0x4e, 0x8d, 0x4f, 0xf2, 0x06, 0xfb, 0x00, 0xc9, 0x38,
+	0x40, 0x07, 0x9d, 0x1b, 0x8c, 0xe8, 0x01, 0x1c, 0x31, 0x41, 0xd8, 0x82, 0xaa, 0x18, 0x10, 0xe8,
+	0xc6, 0x53, 0x23, 0x83, 0xbc, 0xf1, 0x2d, 0xa8, 0x8a, 0x31, 0x80, 0x2e, 0x93, 0x1a, 0x0c, 0xe4,
+	0x65, 0xfe, 0x04, 0x28, 0xdf, 0xf0, 0xa3, 0x07, 0xe3, 0x1a, 0x50, 0x6d, 0x1c, 0xd0, 0xbd, 0xa5,
+	0x4b, 0x45, 0x5f, 0xc1, 0x62, 0xae, 0x1d, 0xd6, 0x4b, 0xfc, 0x71, 0xbd, 0x72, 0xce, 0xc9, 0xbd,
+	0x87, 0x7f, 0xde, 0x3c, 0x77, 0xe8, 0xdb, 0xe8, 0x74, 0xdd, 0xf6, 0x87, 0x1b, 0x67, 0xc4, 0xf2,
+	0x2e, 0x4e, 0x2d, 0x32, 0xf0, 0xbd, 0x0d, 0xc5, 0xb8, 0xe1, 0x78, 0x14, 0x13, 0xcf, 0x72, 0x37,
+	0xde, 0x3b, 0x04, 0x6f, 0x90, 0xc0, 0x3e, 0xad, 0xf2, 0x3f, 0x3b, 0x3c, 0xfc, 0x7f, 0x00, 0x00,
+	0x00, 0xff, 0xff, 0x93, 0xab, 0x3c, 0xd9, 0xfd, 0x20, 0x00, 0x00,
 }

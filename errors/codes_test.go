@@ -9,7 +9,7 @@ import (
 
 // TestCodesHaveFixups asserts every Code in AllCodes has a Registry entry with
 // a non-empty Message and at least one Fixup OR FixupNotApplicable=true. Mirrors
-// pulse/orbit discipline: a code with no remediation guidance is a bug.
+// the orbit discipline: a code with no remediation guidance is a bug.
 func TestCodesHaveFixups(t *testing.T) {
 	for _, code := range AllCodes {
 		meta, ok := Registry[code]

@@ -212,8 +212,8 @@ func (noLister) List(context.Context, string, identity.Pattern, int) ([]identity
 }
 
 // RuleEvaluator decides rule-backed scope membership. It is the seam the
-// rule-driven inclusive/exclusive path consults; E2-S3 supplies the Pulse-backed
-// implementation. Selected reports whether object is selected by rule for the
+// rule-driven inclusive/exclusive path consults; E2-S3 supplies the
+// expr-lang-backed implementation. Selected reports whether object is selected by rule for the
 // given principal/action context.
 type RuleEvaluator interface {
 	Selected(ctx context.Context, rule string, object identity.Identity, principal, action string) (bool, error)

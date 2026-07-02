@@ -55,6 +55,11 @@ func serveCommand() *ucli.Command {
 				Usage:   "authenticator adapter: dev|oidc|parsec (overrides APERTURE_AUTH_MODE; defaults to dev — bearer is the principal id, no external IdP)",
 				Sources: ucli.EnvVars(auth.EnvMode),
 			},
+			&ucli.BoolFlag{
+				Name:    "enforce-membership",
+				Usage:   "deny any decision whose principal is not a member of the active account, before grants are consulted (defence-in-depth; lets shared roles be reused across accounts safely)",
+				Sources: ucli.EnvVars("APERTURE_ENFORCE_MEMBERSHIP"),
+			},
 		},
 		Action: runServe,
 	}
@@ -93,9 +98,40 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 	// matching for grants with no strategy, so E1 behaviour is preserved. The
 	// storage source is also handed to the facade (WithRuleSource) so the editor's
 	// live what-if can preview an UNSAVED rule read-only.
+	// Build the object-metadata providers declared in the seed's `providers:`
+	// section (E-provider): each entry links an object-type to a real data source
+	// (a CSV file today, a database later) with no Go wiring. The same *Registry
+	// feeds BOTH the rules engine's metadata fetcher (so a rule can read
+	// object.category_id) AND the scope resolver's object lister (so implicit /
+	// exclusive scopes can enumerate a type's objects). When no providers are
+	// declared, both stay nil and the server behaves exactly as before.
+	providerDoc, err := seedDocument(cmd.String("seed"))
+	if err != nil {
+		return err
+	}
+	reg, err := providerDoc.BuildRegistry(seedBaseDir(cmd.String("seed")))
+	if err != nil {
+		return aerr.Wrap(aerr.APERTURE_BOOT, "cli: building object providers failed", err)
+	}
+	var fetcher rules.MetadataFetcher // nil => empty object metadata (unchanged default)
+	scopeDeps := engine.ScopeDeps{}
+	if len(providerDoc.Providers) > 0 {
+		fetcher = lenientFetcher{reg: reg}
+		scopeDeps.Lister = reg
+	}
+
 	ruleSource := service.NewStorageRuleSource(store)
-	ruleEngine := rules.NewEngine(ruleSource, nil)
-	eng := engine.New(store, engine.WithScopeResolution(nil, engine.ScopeDeps{Rules: ruleEngine}))
+	ruleEngine := rules.NewEngine(ruleSource, fetcher)
+	scopeDeps.Rules = ruleEngine
+	engOpts := []engine.Option{engine.WithScopeResolution(nil, scopeDeps)}
+	if cmd.Bool("enforce-membership") {
+		// Defence-in-depth: a non-member of the active account is denied before any
+		// grant is read, which is what lets a single shared role (manager,
+		// analyst, ...) be reused across customer accounts without one customer's
+		// account-scoped grants leaking to another customer's members.
+		engOpts = append(engOpts, engine.WithMembershipEnforcement())
+	}
+	eng := engine.New(store, engOpts...)
 
 	// Wire the append-only audit trail (E4-S2) through the same store so the
 	// mutation/impersonation/delegation record is durable and the E6-S4 audit
@@ -111,7 +147,8 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 		service.WithDelegation(delegation.New(store, eng)),
 		service.WithImpersonation(impersonation.New(store, eng)),
 		service.WithAudit(rec),
-		service.WithRuleSource(ruleSource, nil),
+		service.WithRuleSource(ruleSource, fetcher),
+		service.WithProviders(reg),
 	)
 
 	handler := server.Authenticate(authn, server.New(svc))

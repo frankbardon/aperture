@@ -9,8 +9,8 @@ import (
 	"testing"
 
 	"github.com/frankbardon/aperture/auth"
-	aerr "github.com/frankbardon/aperture/errors"
 	"github.com/frankbardon/aperture/engine"
+	aerr "github.com/frankbardon/aperture/errors"
 	"github.com/frankbardon/aperture/seed"
 	"github.com/frankbardon/aperture/service"
 	"github.com/frankbardon/aperture/storage/memory"

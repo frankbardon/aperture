@@ -125,7 +125,7 @@ func handleGetGroup(ctx context.Context, s *service.Service, in GetGroupIn) (Get
 }
 
 func handleListPrincipals(ctx context.Context, s *service.Service, _ emptyIn) (ListPrincipalsOut, error) {
-	ps, err := s.ListPrincipals(ctx)
+	ps, err := s.ListPrincipals(ctx, service.Actor{})
 	return ListPrincipalsOut{Principals: ps}, err
 }
 
@@ -140,7 +140,7 @@ func handleListGrants(ctx context.Context, s *service.Service, in ListGrantsIn) 
 	if in.Account == "" {
 		return ListGrantsOut{}, errMissingArg("account")
 	}
-	gs, err := s.ListGrants(ctx, in.Account)
+	gs, err := s.ListGrants(ctx, service.Actor{}, in.Account)
 	return ListGrantsOut{Grants: gs}, err
 }
 
@@ -148,7 +148,7 @@ func handleGetGrant(ctx context.Context, s *service.Service, in GetGrantIn) (Get
 	if in.ID == "" {
 		return GetGrantOut{}, errMissingArg("id")
 	}
-	return s.GetGrant(ctx, in.ID)
+	return s.GetGrant(ctx, service.Actor{}, in.ID)
 }
 
 // --- Skill docs -------------------------------------------------------------

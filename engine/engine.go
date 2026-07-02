@@ -22,6 +22,10 @@
 // Account isolation: the engine only ever asks storage for grants stamped to the
 // request's active account (model.Storage.GrantsForSubjects is account-scoped),
 // so a grant bestowed in another account can never influence a decision here.
+// The one deliberate exception is a grant stamped to model.AccountWildcard
+// ("*"), which GrantsForSubjects returns for every active account — a single
+// grant that spans all tenancies (e.g. read documents everywhere). Only a
+// system-admin can mint one, and it is the sole crack in the isolation floor.
 //
 // The "does this grant cover this object?" test is isolated behind the coverer
 // seam. In E1 it is a literal identity-pattern match; in E2 a scope resolver
@@ -156,12 +160,26 @@ func (c *patternCache) orParse(s string) (identity.Pattern, error) {
 func literalMembers(g model.Grant, query identity.Pattern) ([]identity.Identity, error) {
 	id, err := identity.Parse(g.Object)
 	if err != nil {
-		if _, perr := identity.ParsePattern(g.Object); perr != nil {
+		pat, perr := identity.ParsePattern(g.Object)
+		if perr != nil {
 			return nil, aerr.Wrapf(aerr.APERTURE_STORAGE, perr,
 				"grant %s has an unparseable object pattern %q", g.ID, g.Object)
 		}
-		// Well-formed wildcard pattern: not concretely enumerable here.
-		return nil, nil
+		// A finitely-enumerable pattern (explicit "{a,b,c}" id sets, no wildcards)
+		// expands to its concrete identities so a set-scoped grant lists its
+		// objects; a wildcard pattern is not enumerable without a provider lister
+		// and contributes nothing.
+		expanded, ok := pat.Expand()
+		if !ok {
+			return nil, nil
+		}
+		out := make([]identity.Identity, 0, len(expanded))
+		for _, e := range expanded {
+			if query.Matches(e) {
+				out = append(out, e)
+			}
+		}
+		return out, nil
 	}
 	if !query.Matches(id) {
 		return nil, nil
@@ -401,7 +419,19 @@ func (e *Engine) requireMembership(ctx context.Context, account, principal strin
 		return false, aerr.Wrap(aerr.APERTURE_STORAGE,
 			"engine: failed to check active-account membership", err)
 	}
-	return ok, nil
+	if ok {
+		return true, nil
+	}
+	// Wildcard membership mirrors the wildcard-account grant: a principal enrolled
+	// in the "*" account is treated as a member of EVERY account, so a cross-account
+	// super-admin (whose authority is carried by "*"-stamped grants) is not fenced
+	// out by enforcement it is meant to transcend.
+	wild, err := e.store.IsMember(ctx, principal, model.AccountWildcard)
+	if err != nil {
+		return false, aerr.Wrap(aerr.APERTURE_STORAGE,
+			"engine: failed to check wildcard-account membership", err)
+	}
+	return wild, nil
 }
 
 // nonMemberDeny is the fail-closed verdict for a principal that is not a member

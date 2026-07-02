@@ -19,7 +19,7 @@
 // Enumerate / Explain / Simulate / Get* / List*). No handler calls a mutator, and
 // surface_test.go asserts no registered tool name carries a mutating verb.
 //
-// Recursive-type note (Lattice/Pulse rule): jsonschema-go's reflector returns an
+// Recursive-type note (Lattice rule): jsonschema-go's reflector returns an
 // error on a Go-level type cycle. The contract types below (the decision Query /
 // Result, engine.Trace, the flat model entities) are all non-cyclic, so direct
 // reflection succeeds; schema.go records any reflection error per tool so

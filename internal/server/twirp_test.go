@@ -44,9 +44,12 @@ func newTestServer(t *testing.T) (*httptest.Server, model.Storage) {
 	// reserved "system" object type, granted to root over the all-covering **.
 	must(t, store.PutObjectType(ctx, model.ObjectType{Name: "system", Actions: []string{authz.AdminAction}}))
 	must(t, store.PutPermission(ctx, model.Permission{ID: "perm-admin", ObjectType: "system", Action: authz.AdminAction}))
+	// Stamped to the "*" wildcard account so root is a platform system-admin
+	// (resolves in every account, like bera.yaml's platform-admins), not an
+	// admin confined to one account.
 	must(t, store.PutGrant(ctx, model.Grant{
-		ID: "g-root-admin", AccountID: acct,
-		Subject: model.Subject{Kind: model.SubjectPrincipal, ID: "root"},
+		ID: "g-root-admin", AccountID: model.AccountWildcard,
+		Subject:      model.Subject{Kind: model.SubjectPrincipal, ID: "root"},
 		PermissionID: "perm-admin", Object: "**", Effect: model.EffectAllow,
 	}))
 
@@ -129,7 +132,7 @@ func TestTwirpMutationRoundTrip(t *testing.T) {
 	// Account-tier write: root holds the ** grant so is also account-admin.
 	g := model.Grant{
 		ID: "g-new", AccountID: acct,
-		Subject: model.Subject{Kind: model.SubjectPrincipal, ID: "carol"},
+		Subject:      model.Subject{Kind: model.SubjectPrincipal, ID: "carol"},
 		PermissionID: "perm-admin", Object: "account:acme/document:1", Effect: model.EffectAllow,
 	}
 	if _, err := c.PutGrant(ctx, &rpc.EntityRequest{

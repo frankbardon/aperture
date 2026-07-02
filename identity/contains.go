@@ -82,10 +82,42 @@ func segSubsumes(o, i patSeg) bool {
 		// A bare "*" matches any type and id; only a fully-wild literal covers that.
 		return o.typeWild && o.idWild
 	}
-	// Both literals: o subsumes i component-wise. A wild outer component covers
-	// anything; a fixed outer component covers only an equal, non-wild inner
-	// component (a wild inner component is broader and is not subsumed).
-	typeOK := o.typeWild || (!i.typeWild && o.typ == i.typ)
-	idOK := o.idWild || (!i.idWild && o.id == i.id)
-	return typeOK && idOK
+	// Both literals: o subsumes i component-wise.
+	return compSubsumes(o.typeWild, o.typeSet, o.typ, i.typeWild, i.typeSet, i.typ) &&
+		compSubsumes(o.idWild, o.idSet, o.id, i.idWild, i.idSet, i.id)
+}
+
+// compSubsumes reports whether an outer component's value language is a superset
+// of an inner component's. A wild outer covers anything; a wild inner is broader
+// than any fixed outer and is never subsumed. Otherwise both sides reduce to a
+// finite value set (a plain literal is a singleton), and outer subsumes inner iff
+// every inner value is an outer value — so "{1,5,23}" subsumes "5" and "{1,5}",
+// but not "3" or "{5,9}".
+func compSubsumes(oWild bool, oSet []string, oLit string, iWild bool, iSet []string, iLit string) bool {
+	if oWild {
+		return true
+	}
+	if iWild {
+		return false
+	}
+	outer := make(map[string]struct{}, len(oSet)+1)
+	for _, v := range compValues(oSet, oLit) {
+		outer[v] = struct{}{}
+	}
+	for _, v := range compValues(iSet, iLit) {
+		if _, ok := outer[v]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// compValues returns a component's allowed values: the set members when it is a
+// "{a,b,c}" set, or the single literal otherwise. Not valid for a wildcard
+// component (callers check wild first).
+func compValues(set []string, lit string) []string {
+	if set != nil {
+		return set
+	}
+	return []string{lit}
 }

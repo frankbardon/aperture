@@ -233,7 +233,7 @@ func runGet(ctx context.Context, cmd *ucli.Command) error {
 	case "account":
 		v, err = svc.GetAccount(ctx, id)
 	case "grant":
-		v, err = svc.GetGrant(ctx, id)
+		v, err = svc.GetGrant(ctx, service.Actor{}, id)
 	default:
 		return aerr.Newf(aerr.APERTURE_INVALID_INPUT, "unknown kind %q", kind)
 	}
@@ -276,19 +276,19 @@ func runList(ctx context.Context, cmd *ucli.Command) error {
 	case "permissions", "permission":
 		v, err = svc.ListPermissions(ctx)
 	case "principals", "principal":
-		v, err = svc.ListPrincipals(ctx)
+		v, err = svc.ListPrincipals(ctx, service.Actor{})
 	case "roles", "role":
 		v, err = svc.ListRoles(ctx)
 	case "groups", "group":
 		v, err = svc.ListGroups(ctx)
 	case "accounts", "account":
-		v, err = svc.ListAccounts(ctx)
+		v, err = svc.ListAccounts(ctx, service.Actor{})
 	case "grants", "grant":
 		account := cmd.String("account")
 		if account == "" {
 			return aerr.New(aerr.APERTURE_INVALID_INPUT, "listing grants requires --account")
 		}
-		v, err = svc.ListGrants(ctx, account)
+		v, err = svc.ListGrants(ctx, service.Actor{}, account)
 	default:
 		return aerr.Newf(aerr.APERTURE_INVALID_INPUT, "unknown kind %q", kind)
 	}

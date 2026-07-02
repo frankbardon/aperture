@@ -69,6 +69,7 @@ type Document struct {
 	Grants      []Grant      `yaml:"grants" json:"grants"`
 	Templates   []Template   `yaml:"templates" json:"templates"`
 	Rules       []Rule       `yaml:"rules" json:"rules"`
+	Providers   []Provider   `yaml:"providers,omitempty" json:"providers,omitempty"`
 }
 
 // Account mirrors model.Account in declarative form.

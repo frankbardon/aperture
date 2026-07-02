@@ -61,9 +61,9 @@ enumerates unboundedly:
 
 - Candidates come from each ALLOW grant's covered objects — a scope resolver's
   bounded `Members` (implicit/exclusive enumerate "all of type" through the
-  provider `ObjectLister`; inclusive uses its id-list; literal yields only a
-  concrete-identity grant, never a wildcard), intersected with the query
-  pattern.
+  provider `ObjectLister`; inclusive uses its id-list; literal yields a
+  concrete-identity grant or an explicit "{a,b,c}" id-set expanded to its
+  members, but never a wildcard), intersected with the query pattern.
 - Each candidate is then run through the SAME deny-overrides/specificity
   decision as Check, so a candidate carved out by a more-specific or
   equal-specificity deny is dropped. A denied object is **never** returned.

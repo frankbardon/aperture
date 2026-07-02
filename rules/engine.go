@@ -81,8 +81,8 @@ type engineConfig struct {
 	principal    PrincipalResolver
 }
 
-// WithFunction registers a pure host function callable from rules (Pulse's
-// ExprFunctions seam). See Function.
+// WithFunction registers a pure host function callable from rules (expr-lang's
+// Function seam). See Function.
 func WithFunction(name string, fn func(args ...any) (any, error)) Option {
 	return func(c *engineConfig) { c.compilerOpts = append(c.compilerOpts, Function(name, fn)) }
 }

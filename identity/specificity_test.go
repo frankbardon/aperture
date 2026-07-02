@@ -81,3 +81,17 @@ func TestCompareAsSortKeyIsDeterministic(t *testing.T) {
 		}
 	}
 }
+
+func TestSpecificity_SetCountsAsLiteral(t *testing.T) {
+	set := MustParsePattern("brand:{1,5,23}")
+	wild := MustParsePattern("brand:*")
+	lit := MustParsePattern("brand:5")
+	// A set is a fixed (non-wild) component, so it outranks a wildcard...
+	if !MoreSpecific(set, wild) {
+		t.Error("brand:{1,5,23} should be more specific than brand:*")
+	}
+	// ...and ranks equal to a single literal id (both pin type+id components).
+	if Compare(set, lit) != 0 {
+		t.Errorf("set vs literal specificity = %d, want 0", Compare(set, lit))
+	}
+}

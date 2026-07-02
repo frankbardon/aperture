@@ -195,11 +195,42 @@ func (s *Service) GetPrincipal(ctx context.Context, id string) (model.Principal,
 	return s.store.GetPrincipal(ctx, id)
 }
 
-func (s *Service) ListPrincipals(ctx context.Context) ([]model.Principal, error) {
+// ListPrincipals returns the principals the actor may see: every principal for a
+// system-admin; for an account-admin, only principals who are members of an
+// account it administers, plus itself. This keeps one customer's admin from
+// enumerating another customer's users.
+func (s *Service) ListPrincipals(ctx context.Context, actor Actor) ([]model.Principal, error) {
 	if err := s.requireStore(); err != nil {
 		return nil, err
 	}
-	return s.store.ListPrincipals(ctx)
+	sys, accts, err := s.readScope(ctx, actor)
+	if err != nil {
+		return nil, err
+	}
+	all, err := s.store.ListPrincipals(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if sys {
+		return all, nil
+	}
+	visible := map[string]struct{}{actor.Principal: {}}
+	for acct := range accts {
+		ms, err := s.store.MembershipsForAccount(ctx, acct)
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range ms {
+			visible[m.PrincipalID] = struct{}{}
+		}
+	}
+	out := make([]model.Principal, 0, len(visible))
+	for _, p := range all {
+		if _, ok := visible[p.ID]; ok {
+			out = append(out, p)
+		}
+	}
+	return out, nil
 }
 
 func (s *Service) DeletePrincipal(ctx context.Context, actor Actor, id string) (err error) {
@@ -312,11 +343,30 @@ func (s *Service) GetAccount(ctx context.Context, id string) (model.Account, err
 	return s.store.GetAccount(ctx, id)
 }
 
-func (s *Service) ListAccounts(ctx context.Context) ([]model.Account, error) {
+// ListAccounts returns the accounts the actor may see: all of them for a
+// system-admin; for an account-admin, only the accounts it administers.
+func (s *Service) ListAccounts(ctx context.Context, actor Actor) ([]model.Account, error) {
 	if err := s.requireStore(); err != nil {
 		return nil, err
 	}
-	return s.store.ListAccounts(ctx)
+	sys, accts, err := s.readScope(ctx, actor)
+	if err != nil {
+		return nil, err
+	}
+	all, err := s.store.ListAccounts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if sys {
+		return all, nil
+	}
+	out := make([]model.Account, 0, len(accts))
+	for _, a := range all {
+		if _, ok := accts[a.ID]; ok {
+			out = append(out, a)
+		}
+	}
+	return out, nil
 }
 
 func (s *Service) DeleteAccount(ctx context.Context, actor Actor, id string) (err error) {
@@ -373,15 +423,39 @@ func (s *Service) PutGrant(ctx context.Context, actor Actor, g model.Grant) (err
 	return s.store.PutGrant(ctx, g)
 }
 
-func (s *Service) GetGrant(ctx context.Context, id string) (model.Grant, error) {
+// GetGrant returns a grant only when the actor may read the grant's account: a
+// system-admin any grant, an account-admin only grants in an account it
+// administers. Platform ("*") grants are system-admin-only.
+func (s *Service) GetGrant(ctx context.Context, actor Actor, id string) (model.Grant, error) {
 	if err := s.requireStore(); err != nil {
 		return model.Grant{}, err
 	}
-	return s.store.GetGrant(ctx, id)
+	g, err := s.store.GetGrant(ctx, id)
+	if err != nil {
+		return model.Grant{}, err
+	}
+	sys, accts, err := s.readScope(ctx, actor)
+	if err != nil {
+		return model.Grant{}, err
+	}
+	if err := s.authorizeAccountRead(sys, accts, g.AccountID); err != nil {
+		return model.Grant{}, err
+	}
+	return g, nil
 }
 
-func (s *Service) ListGrants(ctx context.Context, accountID string) ([]model.Grant, error) {
+// ListGrants returns the grants for accountID, but only when the actor may read
+// that account: a system-admin any account, an account-admin only its own.
+// Platform ("*") grants are system-admin-only.
+func (s *Service) ListGrants(ctx context.Context, actor Actor, accountID string) ([]model.Grant, error) {
 	if err := s.requireStore(); err != nil {
+		return nil, err
+	}
+	sys, accts, err := s.readScope(ctx, actor)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.authorizeAccountRead(sys, accts, accountID); err != nil {
 		return nil, err
 	}
 	return s.store.ListGrants(ctx, accountID)

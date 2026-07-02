@@ -130,6 +130,56 @@ func runEnumerate(ctx context.Context, cmd *ucli.Command) error {
 	return nil
 }
 
+// identifiersCommand is `aperture identifiers <object_type>`: it lists every
+// valid instance id of an object type, enumerated from its provider (declared in
+// the seed's `providers:` section). --exclude drops ids, yielding the positive
+// allow-list an exclusive ("all except these") allowance expands to.
+func identifiersCommand() *ucli.Command {
+	return &ucli.Command{
+		Name:      "identifiers",
+		Usage:     "List all valid instance ids of an object type from its provider",
+		ArgsUsage: "<object_type>",
+		Flags: []ucli.Flag{
+			&ucli.StringFlag{Name: "seed", Usage: "path to a JSON/YAML seed model (defaults to the embedded example)"},
+			&ucli.StringFlag{Name: "store", Usage: "sqlite DSN for the backing store (defaults to in-memory)"},
+			&ucli.StringSliceFlag{Name: "exclude", Usage: "id to omit from the result (repeatable); expands an exclusive allowance"},
+		},
+		Action: runIdentifiers,
+	}
+}
+
+func runIdentifiers(ctx context.Context, cmd *ucli.Command) error {
+	args := cmd.Args()
+	if args.Len() != 1 {
+		return aerr.Newf(aerr.APERTURE_INVALID_INPUT,
+			"identifiers takes exactly 1 argument (<object_type>), got %d", args.Len())
+	}
+	store, err := buildStore(ctx, cmd.String("store"), cmd.String("seed"))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = store.Close() }()
+
+	doc, err := seedDocument(cmd.String("seed"))
+	if err != nil {
+		return err
+	}
+	reg, err := doc.BuildRegistry(seedBaseDir(cmd.String("seed")))
+	if err != nil {
+		return aerr.Wrap(aerr.APERTURE_BOOT, "cli: building object providers failed", err)
+	}
+
+	svc := service.New(engine.New(store), service.WithProviders(reg))
+	ids, err := svc.ObjectIdentifiers(ctx, args.Get(0), cmd.StringSlice("exclude")...)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		fmt.Fprintln(cmd.Writer, id)
+	}
+	return nil
+}
+
 // explainCommand is `aperture explain <principal> <action> <object>`: it prints
 // the full decision trace.
 func explainCommand() *ucli.Command {

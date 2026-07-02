@@ -5,6 +5,7 @@ import (
 
 	"github.com/frankbardon/aperture/engine"
 	aerr "github.com/frankbardon/aperture/errors"
+	"github.com/frankbardon/aperture/identity"
 	"github.com/frankbardon/aperture/model"
 	"github.com/frankbardon/aperture/rules"
 )
@@ -342,3 +343,43 @@ func (o *overlayStore) Atomic(context.Context, func(tx model.Storage) error) err
 
 // overlayStore must satisfy model.Storage in full.
 var _ model.Storage = (*overlayStore)(nil)
+
+// ObjectMetadata returns the metadata a provider holds for a single object id,
+// the sample the rule-builder preview evaluates a rule against. It requires
+// WithProviders (else APERTURE_UNIMPLEMENTED); an id whose type has no provider
+// yields APERTURE_PROVIDER_UNREGISTERED and an absent object APERTURE_NOT_FOUND.
+func (s *Service) ObjectMetadata(ctx context.Context, objectID string) (map[string]any, error) {
+	if s.providers == nil {
+		return nil, aerr.New(aerr.APERTURE_UNIMPLEMENTED, "service: object providers are not wired")
+	}
+	id, err := identity.Parse(objectID)
+	if err != nil {
+		return nil, err // APERTURE_IDENTITY_INVALID
+	}
+	return s.providers.Fetch(ctx, id)
+}
+
+// EvaluateRule compiles an UNSAVED rule AST and evaluates it against a single
+// object's provider metadata, returning the rule's boolean result plus the
+// metadata snapshot it saw. It is the rule-builder's what-if: no account,
+// principal, action, or grant is involved — the rule reads only object.* — so an
+// author can select an object and see the rule fire (or not) directly.
+//
+// The AST is validated + compiled per call (this is not the hot path), so a
+// structurally invalid or non-boolean rule surfaces its APERTURE_RULE_* code.
+// Requires WithProviders for the metadata fetch.
+func (s *Service) EvaluateRule(ctx context.Context, ast *rules.Node, objectID string) (bool, map[string]any, error) {
+	md, err := s.ObjectMetadata(ctx, objectID)
+	if err != nil {
+		return false, nil, err
+	}
+	compiled, err := rules.NewCompiler().Compile(ast)
+	if err != nil {
+		return false, nil, err
+	}
+	result, err := compiled.Eval(ctx, rules.Input{Object: md})
+	if err != nil {
+		return false, md, err
+	}
+	return result, md, nil
+}

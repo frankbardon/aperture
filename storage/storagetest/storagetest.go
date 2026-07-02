@@ -42,6 +42,7 @@ func Run(t *testing.T, newStore Factory) {
 	t.Run("GrantValidation", func(t *testing.T) { testGrantValidation(t, newStore(t)) })
 	t.Run("ListGrantsAccountScoped", func(t *testing.T) { testListGrantsAccountScoped(t, newStore(t)) })
 	t.Run("GrantsForSubjects", func(t *testing.T) { testGrantsForSubjects(t, newStore(t)) })
+	t.Run("GrantsForSubjectsWildcardAccount", func(t *testing.T) { testGrantsForSubjectsWildcardAccount(t, newStore(t)) })
 	t.Run("GroupsForPrincipal", func(t *testing.T) { testGroupsForPrincipal(t, newStore(t)) })
 	t.Run("NotFoundSemantics", func(t *testing.T) { testNotFoundSemantics(t, newStore(t)) })
 	t.Run("TimestampsRoundTrip", func(t *testing.T) { testTimestampsRoundTrip(t, newStore(t)) })
@@ -118,6 +119,8 @@ func testAccountCRUD(t *testing.T, s model.Storage) {
 	mustCode(t, s.PutAccount(ctx(), model.Account{ID: "noname"}), aerr.APERTURE_INVALID_INPUT)
 	// An account with no id is rejected.
 	mustCode(t, s.PutAccount(ctx(), model.Account{Name: "noid"}), aerr.APERTURE_INVALID_INPUT)
+	// The reserved "*" id (the all-accounts grant wildcard) cannot be a real account.
+	mustCode(t, s.PutAccount(ctx(), model.Account{ID: model.AccountWildcard, Name: "star"}), aerr.APERTURE_INVALID_INPUT)
 }
 
 func testMembershipCRUDAndQueries(t *testing.T, s model.Storage) {
@@ -536,6 +539,53 @@ func testGrantsForSubjects(t *testing.T, s model.Storage) {
 	}
 }
 
+// testGrantsForSubjectsWildcardAccount pins the one deliberate hole in account
+// isolation: a grant stamped to model.AccountWildcard ("*") is loaded for every
+// active account, alongside that account's own grants, while account-specific
+// grants stay confined.
+func testGrantsForSubjectsWildcardAccount(t *testing.T, s model.Storage) {
+	alice := model.Subject{Kind: model.SubjectPrincipal, ID: "alice"}
+	put := func(id, account, object string) {
+		g := model.Grant{
+			ID: id, AccountID: account, Subject: alice,
+			PermissionID: "p-read", Object: object, Effect: model.EffectAllow,
+		}
+		if err := s.PutGrant(ctx(), g); err != nil {
+			t.Fatalf("put grant %s: %v", id, err)
+		}
+	}
+	put("g-acme", "acme", "account:acme/**")   // account-specific
+	put("g-star", model.AccountWildcard, "**") // spans every account
+
+	subjects := []model.Subject{alice}
+	ids := func(account string) map[string]bool {
+		got, err := s.GrantsForSubjects(ctx(), account, subjects)
+		if err != nil {
+			t.Fatalf("query %s: %v", account, err)
+		}
+		out := map[string]bool{}
+		for _, g := range got {
+			out[g.ID] = true
+		}
+		return out
+	}
+
+	// In acme: both the account's own grant and the wildcard are returned.
+	acme := ids("acme")
+	if !acme["g-acme"] || !acme["g-star"] {
+		t.Fatalf("acme grants = %v, want g-acme and g-star", acme)
+	}
+	// In an account with NO grants of its own: only the wildcard is returned, and
+	// acme's account-specific grant never leaks.
+	fresh := ids("brand-new-account")
+	if !fresh["g-star"] {
+		t.Fatalf("wildcard grant not applied to fresh account; got %v", fresh)
+	}
+	if fresh["g-acme"] {
+		t.Fatalf("account-specific grant leaked across accounts; got %v", fresh)
+	}
+}
+
 func testGroupsForPrincipal(t *testing.T, s model.Storage) {
 	put := func(id string, members ...string) {
 		if err := s.PutGroup(ctx(), model.Group{ID: id, Name: id, MemberPrincipalIDs: members}); err != nil {
@@ -920,7 +970,7 @@ func testTemplateValidation(t *testing.T, s model.Storage) {
 	undeclared := model.Template{
 		Name: "undeclared", Version: 1,
 		Grants: []model.TemplateGrant{{
-			Subject: model.Subject{Kind: model.SubjectPrincipal, ID: "u"},
+			Subject:      model.Subject{Kind: model.SubjectPrincipal, ID: "u"},
 			PermissionID: "p", Object: "account:${missing}/**", Effect: model.EffectAllow,
 		}},
 	}

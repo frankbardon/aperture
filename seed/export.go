@@ -47,9 +47,19 @@ func Export(ctx context.Context, store model.Storage) (*Document, error) {
 	}
 
 	// Memberships are enumerated per account (the account-scoped query the model
-	// exposes), then sorted by (account, principal) for a stable order.
+	// exposes), then sorted by (account, principal) for a stable order. The
+	// wildcard account "*" is not a real Account (ValidateAccount rejects it), so
+	// it is not in `accounts` — but a principal can be enrolled there to become a
+	// member of EVERY account (the cross-account super-admin escape hatch the
+	// engine honors). Query it explicitly so those edges round-trip; omitting them
+	// would silently drop a super-admin's reach on export/import.
+	acctIDs := make([]string, 0, len(accounts)+1)
 	for _, a := range accounts {
-		ms, err := store.MembershipsForAccount(ctx, a.ID)
+		acctIDs = append(acctIDs, a.ID)
+	}
+	acctIDs = append(acctIDs, model.AccountWildcard)
+	for _, id := range acctIDs {
+		ms, err := store.MembershipsForAccount(ctx, id)
 		if err != nil {
 			return nil, aerr.Wrap(aerr.APERTURE_STORAGE, "export: memberships for account", err)
 		}
@@ -122,9 +132,13 @@ func Export(ctx context.Context, store model.Storage) (*Document, error) {
 	}
 
 	// Grants are account-scoped in the model, so they are gathered per account
-	// (accounts already sorted) and each account's grants sorted by id.
-	for _, a := range accounts {
-		gs, err := store.ListGrants(ctx, a.ID)
+	// (accounts already sorted) and each account's grants sorted by id. The
+	// wildcard account "*" carries cross-account grants (e.g. a super-admin group's
+	// reach) and is not among `accounts`, so it is queried explicitly here — same
+	// reasoning as the wildcard memberships above; dropping it would lose every
+	// "*"-stamped grant on export.
+	for _, id := range acctIDs {
+		gs, err := store.ListGrants(ctx, id)
 		if err != nil {
 			return nil, aerr.Wrap(aerr.APERTURE_STORAGE, "export: list grants", err)
 		}

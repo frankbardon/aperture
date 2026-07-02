@@ -90,9 +90,9 @@ type Compiler struct {
 // CompilerOption configures a Compiler at construction.
 type CompilerOption func(*Compiler)
 
-// Function registers a pure function callable from rules under name. It mirrors
-// Pulse's Options.Extensions.ExprFunctions seam: the function joins the
-// expression environment and is type-checked at the call site. Hosts should only
+// Function registers a pure function callable from rules under name. It uses
+// expr-lang's Function option: the function joins the expression environment and
+// is type-checked at the call site. Hosts should only
 // register deterministic, side-effect-free functions so rule evaluation stays
 // pure.
 func Function(name string, fn func(args ...any) (any, error)) CompilerOption {
@@ -123,8 +123,8 @@ func NewCompiler(opts ...CompilerOption) *Compiler {
 	return c
 }
 
-// Compile validates the AST, renders it to a Pulse expression, and compiles that
-// to a reusable program. Validation failures surface APERTURE_RULE_INVALID /
+// Compile validates the AST, renders it to an expr-lang expression, and compiles
+// that to a reusable program. Validation failures surface APERTURE_RULE_INVALID /
 // APERTURE_RULE_UNKNOWN_VARIABLE; type-check failures surface
 // APERTURE_RULE_TYPE_ERROR — all before any evaluation.
 func (c *Compiler) Compile(n *Node) (*Compiled, error) {

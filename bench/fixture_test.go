@@ -14,9 +14,9 @@ import (
 // several accounts with hundreds of principals — so a single Check resolves a
 // non-trivial subject set and candidate set rather than a toy three-grant model.
 const (
-	numAccounts  = 8
-	numRoles     = 60
-	numGroups    = 60
+	numAccounts   = 8
+	numRoles      = 60
+	numGroups     = 60
 	numPrincipals = 480
 	// concreteDocs are the concrete (wildcard-free) document grants attached to
 	// role0 in every account, so Enumerate has a real, bounded candidate set to
@@ -111,17 +111,17 @@ func buildModel(tb testing.TB) benchModel {
 			proj := fmt.Sprintf("project:proj%d", i)
 			must(store.PutGrant(ctx, model.Grant{
 				ID: gid(ac, "role-read", i), AccountID: ac,
-				Subject: model.Subject{Kind: model.SubjectRole, ID: role(i)},
+				Subject:      model.Subject{Kind: model.SubjectRole, ID: role(i)},
 				PermissionID: permRead, Object: base + "/" + proj + "/**", Effect: model.EffectAllow,
 			}))
 			must(store.PutGrant(ctx, model.Grant{
 				ID: gid(ac, "role-write", i), AccountID: ac,
-				Subject: model.Subject{Kind: model.SubjectRole, ID: role(i)},
+				Subject:      model.Subject{Kind: model.SubjectRole, ID: role(i)},
 				PermissionID: permWrite, Object: base + "/" + proj + "/**", Effect: model.EffectAllow,
 			}))
 			must(store.PutGrant(ctx, model.Grant{
 				ID: gid(ac, "role-deny-secret", i), AccountID: ac,
-				Subject: model.Subject{Kind: model.SubjectRole, ID: role(i)},
+				Subject:      model.Subject{Kind: model.SubjectRole, ID: role(i)},
 				PermissionID: permRead, Object: base + "/" + proj + "/document:secret", Effect: model.EffectDeny,
 			}))
 		}
@@ -129,26 +129,26 @@ func buildModel(tb testing.TB) benchModel {
 			proj := fmt.Sprintf("project:proj%d", i)
 			must(store.PutGrant(ctx, model.Grant{
 				ID: gid(ac, "group-read", i), AccountID: ac,
-				Subject: model.Subject{Kind: model.SubjectGroup, ID: group(i)},
+				Subject:      model.Subject{Kind: model.SubjectGroup, ID: group(i)},
 				PermissionID: permRead, Object: base + "/" + proj + "/document:*", Effect: model.EffectAllow,
 			}))
 		}
 		// group0 broad grants (overlapping candidates of differing specificity).
 		must(store.PutGrant(ctx, model.Grant{
 			ID: gid(ac, "group0-broad-read", 0), AccountID: ac,
-			Subject: model.Subject{Kind: model.SubjectGroup, ID: group(0)},
+			Subject:      model.Subject{Kind: model.SubjectGroup, ID: group(0)},
 			PermissionID: permRead, Object: base + "/**", Effect: model.EffectAllow,
 		}))
 		must(store.PutGrant(ctx, model.Grant{
 			ID: gid(ac, "group0-broad-deny-delete", 0), AccountID: ac,
-			Subject: model.Subject{Kind: model.SubjectGroup, ID: group(0)},
+			Subject:      model.Subject{Kind: model.SubjectGroup, ID: group(0)},
 			PermissionID: permDelete, Object: base + "/project:proj0/**", Effect: model.EffectDeny,
 		}))
 		// Concrete document grants on role0 so Enumerate has a bounded, real set.
 		for d := 0; d < concreteDocs; d++ {
 			must(store.PutGrant(ctx, model.Grant{
 				ID: gid(ac, "role0-doc", d), AccountID: ac,
-				Subject: model.Subject{Kind: model.SubjectRole, ID: role(0)},
+				Subject:      model.Subject{Kind: model.SubjectRole, ID: role(0)},
 				PermissionID: permRead,
 				Object:       fmt.Sprintf("%s/project:proj0/document:doc%d", base, d),
 				Effect:       model.EffectAllow,

@@ -123,6 +123,11 @@ func ValidateAccount(a Account) error {
 	if a.ID == "" {
 		return aerr.New(aerr.APERTURE_INVALID_INPUT, "account id is empty")
 	}
+	if a.ID == AccountWildcard {
+		return aerr.WithContext(aerr.APERTURE_INVALID_INPUT,
+			`account id "*" is reserved for the all-accounts grant wildcard`,
+			map[string]any{"account": a.ID})
+	}
 	if a.Name == "" {
 		return aerr.WithContext(aerr.APERTURE_INVALID_INPUT,
 			"account has no name",

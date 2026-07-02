@@ -425,13 +425,15 @@ function rules() {
     saving: false,
     validating: false,
     status: null, // { kind: "ok" | "err", code, msg }
-    // Live what-if preview (READ-ONLY): a hypothetical decision + Explain trace for
-    // the rule CURRENTLY on the canvas, previewed WITHOUT saving it.
-    preview: { principal: "", action: "", object: "" },
+    // Object-based what-if preview (READ-ONLY): pick an object type + a sample
+    // object, evaluate the rule CURRENTLY on the canvas against that object's
+    // provider metadata, and show the boolean result — no account/principal/grant.
+    objectTypes: [],
+    preview: { objectType: "", objectId: "", objects: [] },
     previewing: false,
     previewError: null,
-    previewDecision: null,
-    previewTrace: null,
+    previewResult: null, // true | false | null (not yet run)
+    previewObject: null, // the object metadata snapshot the rule saw
     // The node palette, grouped by category. Covers the whole AST: logical
     // combinators, comparisons over variables/literals, and the Pulse building
     // blocks (list/call) from E2-S3.
@@ -457,19 +459,24 @@ function rules() {
 
     init() {
       this.principal = localStorage.getItem("aperture.devToken") || "";
-      this.preview.principal = this.principal;
       document.addEventListener("aperture:authenticated", (e) => {
         this.principal = (e.detail && e.detail.principal) || localStorage.getItem("aperture.devToken") || "";
-        if (!this.preview.principal) this.preview.principal = this.principal;
         this.bootstrap();
       });
       const clear = () => {
         this.principal = "";
+        this.account = ""; // don't carry a prior session's account across sign-in
+        this.accounts = [];
         this.canEdit = false;
         this.tierChecked = false;
       };
       document.addEventListener("aperture:unauthenticated", clear);
       document.addEventListener("aperture:signout", clear);
+      // The account switcher is global (owned by the shell); re-probe on change.
+      document.addEventListener("aperture:account", (e) => {
+        this.account = (e.detail && e.detail.account) || "";
+        if (this.principal) this.probeTier();
+      });
       this.mount();
     },
 
@@ -505,20 +512,51 @@ function rules() {
     // bootstrap resolves the active account, probes system-admin authority (rule
     // editing is SYSTEM tier), and lists the stored rules to load from.
     async bootstrap() {
-      await this.loadAccounts();
+      // The account is owned by the shell (global switcher); mirror its value.
+      this.account = window.apertureAccount();
       await this.probeTier();
       await this.loadRules();
+      await this.loadObjectTypes();
     },
 
-    async loadAccounts() {
+    // loadObjectTypes fills the preview's object-type picker. A rule is not tied
+    // to a type (a scope strategy references it by name), so the author chooses
+    // which type to sample an object from.
+    async loadObjectTypes() {
       try {
-        const resp = await ruleRpc("ListAccounts", {});
-        this.accounts = (resp.entities_json || []).map((s) => JSON.parse(s));
-        if (!this.account && this.accounts.length > 0) this.account = this.accounts[0].ID;
+        const resp = await ruleRpc("ListObjectTypes", {});
+        this.objectTypes = (resp.entities_json || [])
+          .map((s) => JSON.parse(s).Name)
+          .filter(Boolean);
       } catch (e) {
         if (e.status !== 401) this.status = { kind: "err", code: e.code, msg: e.message };
       }
     },
+
+    // loadPreviewObjects samples the chosen object type's instance ids from its
+    // provider into the object picker. A type with no provider yields
+    // APERTURE_PROVIDER_UNREGISTERED, surfaced as a preview error.
+    async loadPreviewObjects() {
+      this.preview.objectId = "";
+      this.preview.objects = [];
+      this.previewResult = null;
+      this.previewObject = null;
+      this.previewError = null;
+      if (!this.preview.objectType) return;
+      try {
+        const resp = await ruleRpc("ObjectIdentifiers", { object_type: this.preview.objectType });
+        this.preview.objects = resp.object_ids || [];
+        if (this.preview.objects.length === 0) {
+          this.previewError = {
+            code: "APERTURE_NOT_FOUND",
+            msg: 'No objects available for type "' + this.preview.objectType + '".',
+          };
+        }
+      } catch (e) {
+        this.previewError = { code: e.code || "APERTURE_ERROR", msg: e.message };
+      }
+    },
+
 
     // probeTier asks the OPEN Check RPC whether the signed-in principal holds
     // system-admin authority, gating the Save affordance (E6-S2 pattern). It
@@ -626,41 +664,27 @@ function rules() {
       }
     },
 
-    // runPreview renders the READ-ONLY what-if for the rule CURRENTLY on the canvas:
-    // the decision + Explain trace a rule-backed grant would produce, WITHOUT
-    // saving. The unsaved rule is layered over the live model as a Simulate overlay
-    // (rules_json), shadowing any stored rule of the same name — so it previews the
-    // edit against grants that reference this rule name. Nothing is persisted.
+    // runPreview evaluates the rule CURRENTLY on the canvas against the selected
+    // object's provider metadata and shows the boolean result, WITHOUT saving. No
+    // account/principal/grant is involved — the rule reads only object.*, so the
+    // author sees it fire (or not) directly. The rule need not even be named yet.
     async runPreview() {
       this.previewError = null;
-      this.previewDecision = null;
-      this.previewTrace = null;
-      if (!this.ruleName.trim()) {
-        this.previewError = { code: "APERTURE_RULE_INVALID", msg: "Name the rule so the preview can overlay it." };
-        return;
-      }
-      if (!this.preview.principal || !this.preview.action || !this.preview.object) {
-        this.previewError = { code: "APERTURE_INVALID_INPUT", msg: "Principal, action and object are required." };
+      this.previewResult = null;
+      this.previewObject = null;
+      if (!this.preview.objectId) {
+        this.previewError = { code: "APERTURE_INVALID_INPUT", msg: "Select an object to evaluate the rule against." };
         return;
       }
       this.previewing = true;
       try {
         const rule = this.currentRule();
-        const req = {
-          query: {
-            account: this.account,
-            principal: this.preview.principal,
-            action: this.preview.action,
-            object: this.preview.object,
-          },
-          rules_json: [JSON.stringify(rule)],
-        };
-        const [dec, exp] = await Promise.all([
-          ruleRpc("Simulate", req),
-          ruleRpc("SimulateExplain", req),
-        ]);
-        this.previewDecision = dec;
-        this.previewTrace = exp.trace_json ? JSON.parse(exp.trace_json) : null;
+        const resp = await ruleRpc("EvaluateRule", {
+          rule_json: JSON.stringify(rule),
+          object_id: this.preview.objectId,
+        });
+        this.previewResult = !!resp.result;
+        this.previewObject = resp.object_json ? JSON.parse(resp.object_json) : null;
       } catch (e) {
         this.previewError = { code: e.code || "APERTURE_ERROR", msg: e.message };
       } finally {

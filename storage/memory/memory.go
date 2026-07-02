@@ -470,7 +470,9 @@ func (s *Store) GrantsForSubjects(_ context.Context, accountID string, subjects 
 	defer s.mu.RUnlock()
 	out := make([]model.Grant, 0)
 	for _, g := range s.grants {
-		if g.AccountID != accountID {
+		// A grant matches when stamped to the active account OR to the all-accounts
+		// wildcard; the wildcard is the one grant that crosses the account boundary.
+		if g.AccountID != accountID && g.AccountID != model.AccountWildcard {
 			continue
 		}
 		if _, ok := want[g.Subject]; ok {
