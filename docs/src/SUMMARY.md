@@ -30,6 +30,7 @@
 
 - [RPC / HTTP overview](surfaces/rpc-overview.md)
   - [RPC reference](surfaces/rpc-reference.md)
+- [MCP surface](surfaces/mcp.md)
 
 # Concepts
 
