@@ -12,6 +12,14 @@
 
 # CLI & Library
 
+- [CLI overview](cli/overview.md)
+  - [Global options](cli/global-options.md)
+  - [Decisions](cli/decisions.md)
+  - [Mutations](cli/mutations.md)
+  - [Provisioning](cli/provisioning.md)
+  - [Portability](cli/portability.md)
+  - [serve](cli/serve.md)
+  - [mcp](cli/mcp.md)
 - [Library overview](library/overview.md)
   - [Decision API](library/decision-api.md)
   - [Batch operations](library/batch.md)
