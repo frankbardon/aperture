@@ -63,4 +63,9 @@
 
 # Internals
 
+- [Architecture](internals/architecture.md)
+- [Package layout](internals/package-layout.md)
+- [Extending Aperture](internals/extending.md)
+- [The Update-Demand rule](internals/update-demand.md)
+
 # Contributing
