@@ -882,9 +882,11 @@ func (s *Store) GrantsForSubjects(ctx context.Context, accountID string, subject
 	// Build a parameterized predicate: account_id = ? AND (subject matches any).
 	var b strings.Builder
 	b.WriteString(grantSelect)
-	b.WriteString(` WHERE account_id = ? AND (`)
-	args := make([]any, 0, 1+2*len(subjects))
-	args = append(args, accountID)
+	// Match grants stamped to the active account OR to the all-accounts wildcard;
+	// the wildcard is the one grant that crosses the account boundary.
+	b.WriteString(` WHERE (account_id = ? OR account_id = ?) AND (`)
+	args := make([]any, 0, 2+2*len(subjects))
+	args = append(args, accountID, model.AccountWildcard)
 	for i, sub := range subjects {
 		if i > 0 {
 			b.WriteString(" OR ")

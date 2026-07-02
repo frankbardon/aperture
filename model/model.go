@@ -197,11 +197,23 @@ type Group struct {
 	UpdatedAt          time.Time
 }
 
+// AccountWildcard is the reserved account id that stamps a grant onto EVERY
+// account. A grant whose AccountID equals AccountWildcard is loaded for
+// decisions in any active account, so a single grant can span all tenancies —
+// e.g. one grant that reads documents in every account. It is the sole,
+// deliberate exception to the (principal, active-account) isolation invariant,
+// and only a system-admin can mint one (PutGrant on a wildcard-stamped grant is
+// authorized at the system tier via account-admin supersession). It is NOT a
+// real account: ValidateAccount rejects it as an account id, so no Account row
+// can ever shadow the wildcard.
+const AccountWildcard = "*"
+
 // Account is a first-class tenancy boundary: the unit a grant is stamped to and
 // the active context a decision is scoped to. Accounts are global entities; a
 // single principal can be a member of more than one (via Membership), but the
 // grants it holds in one account never apply in another — the (principal,
-// active-account) isolation invariant this story locks down.
+// active-account) isolation invariant this story locks down. The lone exception
+// is a grant stamped to AccountWildcard, which applies in every account.
 type Account struct {
 	// ID is the account's stable identifier (caller-assigned). It is the value
 	// Grant.AccountID stamps and Request.Account scopes a decision to.
@@ -240,9 +252,11 @@ type Membership struct {
 // surface in another (enforced end-to-end in E3-S1).
 //
 // Object is an identity PATTERN in string form (e.g.
-// "account:acme/project:atlas/**"), so wildcard grants are first-class. The
-// engine parses it with identity.ParsePattern; later a scope resolver (E2-S1)
-// can produce the grant's object set instead of a literal pattern.
+// "account:acme/project:atlas/**"), so wildcard grants are first-class. A
+// component may also be an explicit set — "brand:{1,5,23}" — so one grant can
+// scope to several ids without a wildcard or many grants. The engine parses it
+// with identity.ParsePattern; later a scope resolver (E2-S1) can produce the
+// grant's object set instead of a literal pattern.
 type Grant struct {
 	// ID is the grant's stable identifier (caller-assigned), globally unique.
 	ID string

@@ -4,9 +4,10 @@
 // human-readable messages.
 //
 // Codes are SCREAMING_SNAKE, namespaced with the APERTURE_ prefix, and each one
-// carries a Message + Fixup metadata entry in Registry (the pulse/orbit
-// pattern). Pulse's own *CodedError values pass through verbatim and keep their
-// upstream codes; Aperture never re-stamps them.
+// carries a Message + Fixup metadata entry in Registry (the orbit pattern). An
+// error that already carries an APERTURE_* code passes through Aperture's
+// wrapping verbatim — CodeOf recovers the existing code and it is never
+// re-stamped.
 package errors
 
 // Code is a typed identifier for an Aperture-domain error.
@@ -76,7 +77,7 @@ const (
 	APERTURE_PROVIDER_UNREGISTERED Code = "APERTURE_PROVIDER_UNREGISTERED"
 	// APERTURE_PROVIDER_FETCH — a host ObjectProvider's Fetch/List/Query returned
 	// a plain (uncoded) error. The cause is wrapped verbatim; provider errors that
-	// already carry an Aperture or pulse code (e.g. APERTURE_NOT_FOUND for an
+	// already carry an APERTURE_* code (e.g. APERTURE_NOT_FOUND for an
 	// absent object) pass through unwrapped instead.
 	APERTURE_PROVIDER_FETCH Code = "APERTURE_PROVIDER_FETCH"
 	// APERTURE_RULE_INVALID — a rule AST is structurally malformed: an unknown

@@ -156,7 +156,7 @@ func TestCRUDSmokeNonAdminDenied(t *testing.T) {
 
 func listRoles(t *testing.T, ctx context.Context, c rpc.ApertureService) []model.Role {
 	t.Helper()
-	resp, err := c.ListRoles(ctx, &rpc.Empty{})
+	resp, err := c.ListRoles(ctx, &rpc.ListRequest{})
 	if err != nil {
 		t.Fatalf("ListRoles: %v", err)
 	}
@@ -194,7 +194,7 @@ func roleInList(t *testing.T, ctx context.Context, c rpc.ApertureService, id str
 
 func listPrincipals(t *testing.T, ctx context.Context, c rpc.ApertureService) []model.Principal {
 	t.Helper()
-	resp, err := c.ListPrincipals(ctx, &rpc.Empty{})
+	resp, err := c.ListPrincipals(ctx, &rpc.ListRequest{})
 	if err != nil {
 		t.Fatalf("ListPrincipals: %v", err)
 	}

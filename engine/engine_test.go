@@ -267,6 +267,31 @@ func TestCheck_AccountIsolation(t *testing.T) {
 	}
 }
 
+// A grant stamped to the all-accounts wildcard reads documents in EVERY account,
+// including accounts that hold no grants of their own — the reported "see
+// documents in all accounts with a single grant" case.
+func TestCheck_WildcardAccountGrantSpansAllAccounts(t *testing.T) {
+	f := newFixture(t)
+	f.principal("alice")
+	f.grant("g-star", model.AccountWildcard, subjPrincipal("alice"), model.EffectAllow, permRead, "**")
+
+	for _, account := range []string{acctAcme, acctOther, "brand-new"} {
+		d := f.check(account, "alice", "read", "document:42")
+		if !d.Allow {
+			t.Fatalf("wildcard grant should allow read in %q, got deny (%s)", account, d.Reason)
+		}
+		if len(d.DecidingGrantIDs) != 1 || d.DecidingGrantIDs[0] != "g-star" {
+			t.Fatalf("deciding grants in %q = %v, want [g-star]", account, d.DecidingGrantIDs)
+		}
+	}
+
+	// A different principal is unaffected — the wildcard widens accounts, not subjects.
+	f.principal("bob")
+	if d := f.check(acctAcme, "bob", "read", "document:42"); d.Allow {
+		t.Fatalf("wildcard grant for alice must not allow bob")
+	}
+}
+
 // --- Subject-set expansion: roles and groups ---
 
 func TestCheck_RoleExpansion(t *testing.T) {

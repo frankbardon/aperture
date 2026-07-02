@@ -30,8 +30,6 @@ github.com/expr-lang/expr v1.17.8 h1:W1loDTT+0PQf5YteHSTpju2qfUfNoBt4yw9+wOEU9VM
 github.com/expr-lang/expr v1.17.8/go.mod h1:8/vRC7+7HBzESEqt5kKpYXxrxkr31SaO8r40VO/1IT4=
 github.com/frankbardon/parsec v0.4.0 h1:sWmHYZWAvKi+IplLl1m7N/XUPWgdHd/2uD/t44V98mE=
 github.com/frankbardon/parsec v0.4.0/go.mod h1:FZFOSiuJHrIKrX2z+NnBUQwUW+qX3csa0FsMm0VcUBU=
-github.com/frankbardon/pulse v0.24.0 h1:NRstZu9lK8CC0V5n0wJbGiREP4C9uiIMr1WZCDzz+U0=
-github.com/frankbardon/pulse v0.24.0/go.mod h1:tFPfu7twHerVJjydlySPiiCG6uOIbRw+PUyv/6d1zWo=
 github.com/gammazero/deque v0.2.1 h1:qSdsbG6pgp6nL7A0+K/B7s12mcCY/5l5SIUpMOl+dC0=
 github.com/gammazero/deque v0.2.1/go.mod h1:LFroj8x4cMYCukHJDbxFCkT+r9AndaJnFMuZDV34tuU=
 github.com/go-jose/go-jose/v4 v4.1.4 h1:moDMcTHmvE6Groj34emNPLs/qtYXRVcd6S7NHbHz3kA=

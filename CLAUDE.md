@@ -22,9 +22,9 @@ bulk-batched.
   `github.com/frankbardon/aperture`.
 - **CLI** is `urfave/cli/v3`; `cmd/aperture/main.go` only assembles the command
   tree (no business logic).
-- **Rules** depend on the **published** `github.com/frankbardon/pulse`
-  expression evaluator (tags ≥ v0.11.0). No `replace` directive — consume from
-  the Go proxy. Keep `CGO_ENABLED=0` by avoiding pulse's geo/h3 packages.
+- **Rules** use the `github.com/expr-lang/expr` evaluator **directly** (pure-Go,
+  the same engine Pulse wraps) — Aperture has no dependency on Pulse. The rules
+  package renders its AST to an expr-lang expression and compiles it in-process.
 - **Storage** (later): hand-written SQL, `modernc.org/sqlite` (pure-Go) + an
   in-memory impl behind one `Storage` interface. No ORM / sqlc / migration tool.
 - **RPC/HTTP** (later): `net/http` ServeMux + Twirp.
@@ -49,7 +49,8 @@ make lint    # vet + staticcheck (degrades to vet-only when not installed)
 - Each code has a `Registry` entry with a `Message` and either at least one
   `Fixup` or `FixupNotApplicable=true`. Gated by `TestCodesHaveFixups`.
 - Construct via `errors.New` / `Newf` / `Wrap` / `Wrapf`; recover the code with
-  `errors.CodeOf`. Pulse `*CodedError` values pass through verbatim.
+  `errors.CodeOf`. Any error already carrying an `APERTURE_*` code passes through
+  verbatim — the wrappers never re-stamp it.
 
 ### Library-first
 
@@ -94,8 +95,8 @@ here.
 ## What NOT to do
 
 - Don't put business logic in `cmd/aperture/`.
-- Don't add a `replace` directive for Pulse — consume the published module.
-- Don't pull pulse's geo/h3 packages; they require CGO and Aperture is CGO-off.
+- Don't add a dependency on Pulse — the rules engine uses `expr-lang/expr`
+  directly; keep `CGO_ENABLED=0` (no geo/h3 or other CGO packages).
 - Don't return bare `errors.New`/`fmt.Errorf` across package boundaries — wrap in
   an `APERTURE_*` coded error.
 - Don't commit `.planning/`.

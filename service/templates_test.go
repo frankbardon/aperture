@@ -114,7 +114,7 @@ func TestApplyTemplate_VersionSelection(t *testing.T) {
 	ctx := context.Background()
 	v1 := memberTemplate(1)
 	v1.Grants = v1.Grants[:1] // v1 expands to ONE grant
-	v2 := memberTemplate(2)    // v2 expands to TWO grants
+	v2 := memberTemplate(2)   // v2 expands to TWO grants
 	seedTemplate(t, store, v1)
 	seedTemplate(t, store, v2)
 	alice := Actor{Principal: "alice", Account: "acme"}

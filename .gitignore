@@ -37,3 +37,5 @@ Thumbs.db
 .claude/settings.local.json
 .planning/
 .worktrees/
+
+tmp/

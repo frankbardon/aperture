@@ -284,6 +284,34 @@ func TestMembershipEnforcement_MemberAllowed(t *testing.T) {
 	}
 }
 
+// TestMembershipEnforcement_WildcardMembershipSpansAllAccounts proves the
+// wildcard-membership escape hatch: a principal enrolled in the "*" account is
+// treated as a member of EVERY account, so a cross-account super-admin whose
+// authority rides on "*"-stamped grants is not fenced out by the very
+// enforcement it is meant to transcend. root holds NO membership in other, only
+// in "*"; a "*"-stamped grant must still admit it there.
+func TestMembershipEnforcement_WildcardMembershipSpansAllAccounts(t *testing.T) {
+	const object = "account:other/document:42"
+	f := newIsoFixture(t)
+	f.principal("root")
+	f.member("root", model.AccountWildcard)
+	f.grant("g-wild-acct", model.AccountWildcard, subjPrincipal("root"), model.EffectAllow, permRead, object)
+
+	enforcing := New(f.store, WithMembershipEnforcement())
+
+	// root is not a direct member of other, but "*"-membership admits it and the
+	// "*"-stamped grant matches.
+	if !allowed(t, enforcing, acctOther, "root", "read", object) {
+		t.Fatal("wildcard member root should be admitted to account other")
+	}
+	// A principal WITHOUT "*"-membership is still fenced out of other.
+	f.principal("carol")
+	f.grant("g-carol", model.AccountWildcard, subjPrincipal("carol"), model.EffectAllow, permRead, object)
+	if allowed(t, enforcing, acctOther, "carol", "read", object) {
+		t.Fatal("carol lacks wildcard membership; must be denied in other despite a * grant")
+	}
+}
+
 // TestMembershipEnforcement_EnumerateAndExplainFailClosed asserts the enforcement
 // verdict is uniform across the whole decision API, not just Check: a non-member
 // enumerates nothing and explains to a deny that names no grant.

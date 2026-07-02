@@ -23,6 +23,7 @@
   const ADMIN_ACTION = "aperture.admin";
   const SYSTEM_ANCHOR = "system:schema"; // system-tier authority anchor (authz.go)
   const accountAnchor = (a) => "account:" + a + "/admin:all"; // account-tier anchor
+  const ACCOUNT_WILDCARD = "*"; // the all-accounts grant stamp (model.AccountWildcard)
 
   // rpcCall POSTs a Twirp JSON call through the shell's bearer wrapper and
   // normalises a non-2xx Twirp error body into an Error with .code (the canonical
@@ -98,6 +99,24 @@
       grantModal: { open: false, mode: "create", form: {}, strategyFilter: "", saving: false, error: null },
       confirm: { open: false, grant: null, saving: false, error: null },
 
+      // ---- server-side filters (grants + templates tabs) ----
+      grantFilters: [],
+      grantFilterMatch: "all",
+      grantCols: [
+        { key: "ID", label: "Id" },
+        { key: "AccountID", label: "Account" },
+        { key: "PermissionID", label: "Permission" },
+        { key: "Object", label: "Object" },
+        { key: "Effect", label: "Effect" },
+      ],
+      tmplFilters: [],
+      tmplFilterMatch: "all",
+      tmplCols: [
+        { key: "Name", label: "Name" },
+        { key: "Version", label: "Version" },
+        { key: "Description", label: "Description" },
+      ],
+
       // ---- templates tab ----
       templates: [],
       tmplModal: { open: false, mode: "create", form: {}, saving: false, error: null },
@@ -130,6 +149,8 @@
         });
         const clear = () => {
           this.principal = "";
+          this.account = ""; // don't carry a prior session's account across sign-in
+          this.accounts = [];
           this.rows = [];
           this.templates = [];
           this.canGrant = false;
@@ -138,24 +159,20 @@
         };
         document.addEventListener("aperture:unauthenticated", clear);
         document.addEventListener("aperture:signout", clear);
+        // The account switcher is global (owned by the shell); react when it changes.
+        document.addEventListener("aperture:account", (e) => {
+          this.account = (e.detail && e.detail.account) || "";
+          if (this.principal) this.onAccountChange();
+        });
         if (this.principal) this.bootstrap();
       },
 
       async bootstrap() {
-        await this.loadAccounts();
+        // The account is owned by the shell (global switcher); mirror its value.
+        this.account = window.apertureAccount();
         await this.probeTier();
         await this.loadRefs();
         await this.loadTab();
-      },
-
-      async loadAccounts() {
-        try {
-          const resp = await rpcCall("ListAccounts", {});
-          this.accounts = parseList(resp);
-          if (!this.account && this.accounts.length > 0) this.account = this.accounts[0].ID;
-        } catch (e) {
-          if (e.status !== 401) this.error = { code: e.code, msg: e.message };
-        }
       },
 
       // probeTier resolves BOTH tiers via the open Check RPC: account-admin (in
@@ -163,8 +180,11 @@
       // template definition. A non-admin still gets an answer (Check is open).
       async probeTier() {
         this.tierChecked = false;
-        this.canGrant = await this.check(accountAnchor(this.account));
-        this.canDefineTemplate = await this.check(SYSTEM_ANCHOR);
+        this.canDefineTemplate = await this.check(SYSTEM_ANCHOR); // system-admin
+        const accountAdmin = await this.check(accountAnchor(this.account));
+        // System-admin supersedes account-admin (mirrors the authz gate), so a
+        // system-admin can manage grants in the active account too.
+        this.canGrant = accountAdmin || this.canDefineTemplate;
         this.tierChecked = true;
       },
 
@@ -222,12 +242,46 @@
 
       // ================= GRANTS TAB =================
 
+      // ---- server-side filter helpers (shared by both tabs) ----
+      _buildFilter(list, match) {
+        const preds = list
+          .filter((f) => f.field && (f.op === "empty" || f.value !== ""))
+          .map((f) => ({ field: f.field, op: f.op, value: f.op === "empty" ? "" : f.value }));
+        return preds.length ? { filter: { match, predicates: preds } } : {};
+      },
+      filterNeedsValue(op) { return op !== "empty"; },
+      addGrantFilter() { this.grantFilters.push({ field: this.grantCols[0].key, op: "contains", value: "" }); },
+      removeGrantFilter(i) { this.grantFilters.splice(i, 1); this.loadGrants(); },
+      clearGrantFilters() { this.grantFilters = []; this.grantFilterMatch = "all"; this.loadGrants(); },
+      addTmplFilter() { this.tmplFilters.push({ field: this.tmplCols[0].key, op: "contains", value: "" }); },
+      removeTmplFilter(i) { this.tmplFilters.splice(i, 1); this.loadTemplates(); },
+      clearTmplFilters() { this.tmplFilters = []; this.tmplFilterMatch = "all"; this.loadTemplates(); },
+
       async loadGrants() {
+        // No visible account (the principal administers none): nothing to list.
+        if (!this.account) {
+          this.rows = [];
+          return;
+        }
         this.loading = true;
         this.error = null;
+        const flt = this._buildFilter(this.grantFilters, this.grantFilterMatch);
         try {
-          const resp = await rpcCall("ListGrants", { actor: this.actor(), account_id: this.account });
-          this.rows = parseList(resp);
+          const resp = await rpcCall("ListGrants", { actor: this.actor(), account_id: this.account, ...flt });
+          let rows = parseList(resp);
+          // Also surface all-accounts ("*") grants. They apply in this account
+          // (and every other), but are stored under the wildcard stamp, so a
+          // per-account list never returns them. Skip when the active account is
+          // already "*" to avoid duplicates. Non-fatal if it fails.
+          if (this.account !== ACCOUNT_WILDCARD) {
+            try {
+              const starResp = await rpcCall("ListGrants", { actor: this.actor(), account_id: ACCOUNT_WILDCARD, ...flt });
+              rows = rows.concat(parseList(starResp));
+            } catch (_) {
+              /* keep the account's own grants */
+            }
+          }
+          this.rows = rows;
         } catch (e) {
           this.rows = [];
           if (e.status !== 401) this.error = { code: e.code, msg: e.message };
@@ -236,16 +290,29 @@
         }
       },
 
+      // isWildcardGrant reports whether a grant spans all accounts (stamped "*").
+      isWildcardGrant(g) {
+        return g && g.AccountID === ACCOUNT_WILDCARD;
+      },
+
+      // strategyName reduces an opaque ScopeStrategy reference ("inclusive;ids=…")
+      // to just its strategy name ("inclusive") for compact display. An empty ref
+      // means the literal default.
+      strategyName(ref) {
+        const name = String(ref || "").split(";")[0].trim();
+        return name || "literal";
+      },
+
       permLabel(id) {
         const p = (this.refs.permissions || []).find((x) => x.ID === id);
         if (!p) return id;
-        const scope = p.ScopeStrategy ? " · " + p.ScopeStrategy : "";
+        const scope = p.ScopeStrategy ? " · " + this.strategyName(p.ScopeStrategy) : "";
         return p.ID + " (" + p.Action + scope + ")";
       },
 
       permScope(id) {
         const p = (this.refs.permissions || []).find((x) => x.ID === id);
-        return (p && p.ScopeStrategy) || "";
+        return p && p.ScopeStrategy ? this.strategyName(p.ScopeStrategy) : "";
       },
 
       subjectText(g) {
@@ -309,11 +376,10 @@
       async saveGrant() {
         const f = this.grantModal.form;
         this.grantModal.error = null;
-        if (!f.ID || !f.Subject.ID || !f.PermissionID || !f.Object) {
-          this.grantModal.error = { code: "APERTURE_INVALID_INPUT", msg: "Id, subject, permission and object are required." };
+        if (!f.ID || !f.AccountID || !f.Subject.ID || !f.PermissionID || !f.Object) {
+          this.grantModal.error = { code: "APERTURE_INVALID_INPUT", msg: "Account, id, subject, permission and object are required." };
           return;
         }
-        f.AccountID = this.account; // grants are always scoped to the active account
         this.grantModal.saving = true;
         try {
           await rpcCall("PutGrant", { actor: this.actor(), entity_json: JSON.stringify(f) });
@@ -350,7 +416,7 @@
         this.loading = true;
         this.error = null;
         try {
-          this.templates = parseList(await rpcCall("ListTemplates", {}));
+          this.templates = parseList(await rpcCall("ListTemplates", this._buildFilter(this.tmplFilters, this.tmplFilterMatch)));
         } catch (e) {
           this.templates = [];
           if (e.status !== 401) this.error = { code: e.code, msg: e.message };

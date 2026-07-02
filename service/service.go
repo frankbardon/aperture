@@ -49,8 +49,10 @@ import (
 	"github.com/frankbardon/aperture/delegation"
 	"github.com/frankbardon/aperture/engine"
 	aerr "github.com/frankbardon/aperture/errors"
+	"github.com/frankbardon/aperture/identity"
 	"github.com/frankbardon/aperture/impersonation"
 	"github.com/frankbardon/aperture/model"
+	"github.com/frankbardon/aperture/provider"
 	"github.com/frankbardon/aperture/rules"
 )
 
@@ -110,6 +112,11 @@ type Service struct {
 	// own rule evaluator. Wired with WithRuleSource.
 	ruleSource  rules.RuleSource
 	ruleFetcher rules.MetadataFetcher
+	// providers, when non-nil, is the object-metadata provider registry the
+	// ObjectIdentifiers read enumerates a type's instances through. Nil (the
+	// default) makes ObjectIdentifiers report APERTURE_UNIMPLEMENTED. Wired with
+	// WithProviders.
+	providers *provider.Registry
 }
 
 // Option configures a Service at construction. Options compose; the mutation
@@ -152,6 +159,13 @@ func WithRuleSource(base rules.RuleSource, fetcher rules.MetadataFetcher) Option
 		s.ruleSource = base
 		s.ruleFetcher = fetcher
 	}
+}
+
+// WithProviders gives the facade the object-metadata provider registry its
+// ObjectIdentifiers read enumerates a type's instances through. Without it,
+// ObjectIdentifiers reports APERTURE_UNIMPLEMENTED.
+func WithProviders(reg *provider.Registry) Option {
+	return func(s *Service) { s.providers = reg }
 }
 
 // WithClock overrides the facade clock used to stamp entity timestamps on
@@ -308,6 +322,36 @@ func (s *Service) EnumerateBatch(ctx context.Context, qs []EnumerateQuery) []eng
 		reqs[i] = q.request()
 	}
 	return s.eng.EnumerateBatch(ctx, reqs)
+}
+
+// ObjectIdentifiers returns every valid identifier of objectType, enumerated
+// from the type's provider (the complete, unbounded set). When exclude is
+// non-empty the excluded ids are removed, so the result is the positive
+// allow-list an EXCLUSIVE allowance ("all objects of this type except these
+// ids") materialises to. An object-type with no declared provider yields
+// APERTURE_PROVIDER_UNREGISTERED; a facade built without WithProviders yields
+// APERTURE_UNIMPLEMENTED. The ids are returned as canonical strings, sorted.
+func (s *Service) ObjectIdentifiers(ctx context.Context, objectType string, exclude ...string) ([]string, error) {
+	if s.providers == nil {
+		return nil, aerr.New(aerr.APERTURE_UNIMPLEMENTED, "service: object providers are not wired")
+	}
+	excluded := make([]identity.Identity, 0, len(exclude))
+	for _, raw := range exclude {
+		id, err := identity.Parse(raw)
+		if err != nil {
+			return nil, err // APERTURE_IDENTITY_INVALID
+		}
+		excluded = append(excluded, id)
+	}
+	ids, err := s.providers.IdentifiersExcept(ctx, objectType, excluded...)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, len(ids))
+	for i, id := range ids {
+		out[i] = id.String()
+	}
+	return out, nil
 }
 
 // ExplainBatch answers many explain queries in one call, aligned with qs. A

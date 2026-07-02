@@ -186,6 +186,53 @@ func TestEmptyStoreRoundTrips(t *testing.T) {
 	}
 }
 
+// TestWildcardAccountEntitiesRoundTrip proves the "*" (all-accounts) wildcard —
+// which is NOT a real Account — is not silently dropped on export. A super-admin
+// group's "*"-stamped grant and a principal's "*" membership are the cross-account
+// escape hatch the engine honors; if Export enumerated only real accounts they
+// would vanish on export/import, quietly stripping a super-admin's reach.
+func TestWildcardAccountEntitiesRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	doc := &Document{
+		Accounts:    []Account{{ID: "acme", Name: "Acme"}},
+		ObjectTypes: []ObjectType{{Name: "system", Actions: []string{"aperture.admin"}}},
+		Permissions: []Permission{{ID: "admin", ObjectType: "system", Action: "aperture.admin"}},
+		Principals:  []Principal{{ID: "root", Kind: "user", Identity: "user:root"}},
+		Groups:      []Group{{ID: "supers", Name: "Supers", Members: []string{"root"}}},
+		Memberships: []Membership{{Principal: "root", Account: model.AccountWildcard}},
+		Grants: []Grant{{
+			ID: "g-super", Account: model.AccountWildcard,
+			Subject: Subject{Kind: "group", ID: "supers"}, Permission: "admin",
+			Object: "**", Effect: "allow",
+		}},
+	}
+	s := freshStore(t)
+	if err := doc.Apply(ctx, s); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	exp, err := Export(ctx, s)
+	if err != nil {
+		t.Fatalf("export: %v", err)
+	}
+	var gotGrant, gotMember bool
+	for _, g := range exp.Grants {
+		if g.Account == model.AccountWildcard && g.ID == "g-super" {
+			gotGrant = true
+		}
+	}
+	for _, m := range exp.Memberships {
+		if m.Account == model.AccountWildcard && m.Principal == "root" {
+			gotMember = true
+		}
+	}
+	if !gotGrant {
+		t.Error("wildcard-account grant was dropped on export")
+	}
+	if !gotMember {
+		t.Error("wildcard-account membership was dropped on export")
+	}
+}
+
 // TestInvalidRuleRejected proves a state file carrying a structurally broken rule
 // AST is rejected with the rules engine's coded error at apply.
 func TestInvalidRuleRejected(t *testing.T) {

@@ -10,6 +10,10 @@
 # then sign in to the shell as principal "admin" to exercise the CRUD screens'
 # authenticated create/edit/delete path. It also backs E6-S3/S4 (grants, audit).
 
+providers:
+  - {object_type: brand, kind: csv, path: tmp/data/brands.csv, ttl: "0"}
+  - {object_type: app,   kind: csv, path: tmp/data/apps.csv,   ttl: "0"}
+
 accounts:
   - id: demo
     name: Demo tenant
@@ -25,20 +29,23 @@ object_types:
   - name: system
     description: Reserved object type carrying administrative authority.
     actions: [aperture.admin]
+  - name: application
+    description: A protected application.
+    actions: [access, configure]
   - name: document
     description: A protected document.
     actions: [read, write, delete, share]
 
 permissions:
-  - id: perm-admin
+  - id: admin
     object_type: system
     action: aperture.admin
     description: Full administrative authority (system and account tiers).
-  - id: perm-doc-read
+  - id: doc-read
     object_type: document
     action: read
     description: Read a document.
-  - id: perm-doc-write
+  - id: doc-write
     object_type: document
     action: write
     description: Write a document.
@@ -51,22 +58,22 @@ principals:
   - id: sam
     kind: user
     identity: user:sam
-    display_name: Sam (editor)
-    roles: [editor]
+    display_name: Sam
+    roles: [doc-editor]
 
 roles:
-  - id: editor
-    name: Editor
+  - id: doc-editor
+    name: Document Editor
     description: May read and write documents.
-    permissions: [perm-doc-read, perm-doc-write]
-  - id: viewer
-    name: Viewer
+    permissions: [doc-read, doc-write]
+  - id: doc-viewer
+    name: Document Viewer
     description: May read documents.
-    permissions: [perm-doc-read]
+    permissions: [doc-read]
 
 groups:
-  - id: engineering
-    name: Engineering
+  - id: engineers
+    name: Engineers
     description: Everyone on the engineering team.
     members: [admin, sam]
 
@@ -76,13 +83,13 @@ grants:
   - id: g-admin
     account: demo
     subject: {kind: principal, id: admin}
-    permission: perm-admin
+    permission: admin
     object: "**"
     effect: allow
   # A sample data grant so the grants/audit screens have something to show.
-  - id: g-editor-write
+  - id: g-doc-editor-write
     account: demo
-    subject: {kind: role, id: editor}
-    permission: perm-doc-write
+    subject: {kind: role, id: doc-editor}
+    permission: doc-write
     object: "account:demo/document:*"
     effect: allow

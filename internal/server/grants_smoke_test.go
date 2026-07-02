@@ -71,7 +71,7 @@ func TestGrantsSmokeTemplateProvision(t *testing.T) {
 	}
 
 	// The list the templates tab renders from must show it.
-	tl, err := c.ListTemplates(ctx, &rpc.Empty{})
+	tl, err := c.ListTemplates(ctx, &rpc.ListRequest{})
 	if err != nil {
 		t.Fatalf("ListTemplates: %v", err)
 	}
@@ -144,6 +144,9 @@ func TestGrantsSmokeDelegation(t *testing.T) {
 	must(t, store.PutGrant(ctx, model.Grant{ID: "g-alice-read", AccountID: acct, Subject: model.Subject{Kind: model.SubjectPrincipal, ID: "alice"}, PermissionID: "perm-read", Object: "account:acme/project:atlas/**", Effect: model.EffectAllow}))
 
 	aliceCtx := asPrincipal(context.Background(), t, "alice")
+	// alice is a delegator, not an admin, so she cannot read the grants list under
+	// the read-visibility policy; verify what landed through an admin (root) view.
+	rootCtx := asPrincipal(context.Background(), t, "root")
 
 	// Valid bestow: a more-specific subset of alice's read authority.
 	good := model.Grant{
@@ -156,7 +159,7 @@ func TestGrantsSmokeDelegation(t *testing.T) {
 	if _, err := c.Bestow(aliceCtx, &rpc.BestowRequest{GrantJson: mustJSON(t, good)}); err != nil {
 		t.Fatalf("valid Bestow rejected: %v", err)
 	}
-	if !grantInList(t, aliceCtx, c, acct, "g-bob-atlas") {
+	if !grantInList(t, rootCtx, c, acct, "g-bob-atlas") {
 		t.Fatal("bestowed grant did not land in the grants list")
 	}
 
@@ -179,7 +182,7 @@ func TestGrantsSmokeDelegation(t *testing.T) {
 	if code := te.Meta("code"); code != string(aerr.APERTURE_DELEGATION_DENIED) {
 		t.Fatalf("want meta code %s, got %q", aerr.APERTURE_DELEGATION_DENIED, code)
 	}
-	if grantInList(t, aliceCtx, c, acct, "g-bob-escalate") {
+	if grantInList(t, rootCtx, c, acct, "g-bob-escalate") {
 		t.Fatal("escalating grant must not have landed")
 	}
 }

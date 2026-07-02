@@ -32,6 +32,16 @@
 //     authority is never even loaded for B, and account:A/admin:* does not cover
 //     account:B/admin:*): account-admin authority is confined to its own account.
 //
+// SYSTEM SUPERSEDES ACCOUNT. The account-tier confinement above binds
+// account-admins to each other. A SYSTEM-admin, however, may drive any
+// account-tier mutation in any account — including a freshly-created account
+// that holds no admin grants of its own yet. Authorize checks system-admin
+// first for account-tier mutations and only falls back to the per-account
+// check for non-system actors (RequireAccountAdmin itself stays confined, so
+// the "is this principal an account-admin of X" question keeps its narrow
+// answer; only the mutation gate treats system as the super-tier). This mirrors
+// the system-or-account precedent in service/audit.go's authorizeAuditRead.
+//
 // A note on the address spelling. The brief addresses the tiers as `system:**`
 // and `account:<acct>/admin:**`. The identity grammar only accepts `**` as a
 // standalone path SEGMENT (e.g. account:acme/**), not inside an id component, so
@@ -248,6 +258,14 @@ func (g *Gate) Authorize(ctx context.Context, actor Actor, m Mutation, account s
 			return aerr.WithContext(aerr.APERTURE_INVALID_INPUT,
 				"authz: account-tier mutation requires a target account",
 				map[string]any{"mutation": string(m)})
+		}
+		// System-admin supersedes account-admin: a system-admin may drive every
+		// account-tier mutation, including in a freshly-created account that has
+		// no admin grants of its own yet. Fall back to the account-admin check so
+		// its richer denial context surfaces for non-system actors. Mirrors the
+		// system-or-account precedent in service/audit.go's authorizeAuditRead.
+		if err := g.RequireSystemAdmin(ctx, actor); err == nil {
+			return nil
 		}
 		return g.RequireAccountAdmin(ctx, actor, account)
 	default:

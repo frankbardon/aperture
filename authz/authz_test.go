@@ -211,6 +211,38 @@ func TestAccountAdminConfinedToOwnAccount(t *testing.T) {
 	mustCode(t, f.gate.RequireAccountAdmin(ctx, gAdmin, acctAcme), aerr.APERTURE_AUTHZ_DENIED)
 }
 
+// --- Acceptance: system-admin supersedes account-admin at the mutation gate. ---
+
+// TestSystemAdminSupersedesAccountAdmin: a system-admin (system:*, stamped to
+// its own account acme) may drive account-tier mutations in ANOTHER account —
+// including one where it holds no account-admin grant, the reported "created an
+// account, now can't administer it" case. RequireAccountAdmin stays confined;
+// only Authorize treats system as the super-tier.
+func TestSystemAdminSupersedesAccountAdmin(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	f.grant("g-root-system", acctAcme, "root", "system:*")
+
+	root := Actor{Principal: "root", Account: acctAcme}
+
+	// Account-tier mutations in globex (root has no globex admin grant) now pass.
+	for _, m := range []Mutation{
+		MutationPutGrant, MutationDeleteGrant, MutationPutMembership,
+		MutationDeleteMembership, MutationBestow, MutationRevoke,
+	} {
+		if err := f.gate.Authorize(ctx, root, m, acctGlobex); err != nil {
+			t.Fatalf("system admin denied account-tier mutation %s in globex: %v", m, err)
+		}
+	}
+
+	// The narrow question is unchanged: root is still NOT an account-admin of globex.
+	mustCode(t, f.gate.RequireAccountAdmin(ctx, root, acctGlobex), aerr.APERTURE_AUTHZ_DENIED)
+
+	// A non-admin gains nothing: no system authority, no account grant -> denied.
+	nobody := Actor{Principal: "nobody", Account: acctAcme}
+	mustCode(t, f.gate.Authorize(ctx, nobody, MutationPutGrant, acctGlobex), aerr.APERTURE_AUTHZ_DENIED)
+}
+
 // --- Acceptance: explain works on admin identities. ---
 
 // TestExplainOnAdminIdentities: the admin authority decision is resolved by the

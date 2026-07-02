@@ -29,32 +29,36 @@ service ApertureService {
   // ---- Schema entities (reads require auth; writes require system-admin) ----
   rpc PutObjectType(EntityRequest) returns (Empty);
   rpc GetObjectType(GetRequest) returns (EntityResponse);
-  rpc ListObjectTypes(Empty) returns (EntityListResponse);
+  rpc ListObjectTypes(ListRequest) returns (EntityListResponse);
   rpc DeleteObjectType(DeleteRequest) returns (Empty);
+  // ObjectIdentifiers enumerates all instance ids of an object type from its
+  // provider (the complete set); exclude removes ids for the exclusive
+  // "all except these" allow-list expansion.
+  rpc ObjectIdentifiers(ObjectIdentifiersRequest) returns (ObjectIdentifiersResponse);
 
   rpc PutPermission(EntityRequest) returns (Empty);
   rpc GetPermission(GetRequest) returns (EntityResponse);
-  rpc ListPermissions(Empty) returns (EntityListResponse);
+  rpc ListPermissions(ListRequest) returns (EntityListResponse);
   rpc DeletePermission(DeleteRequest) returns (Empty);
 
   rpc PutPrincipal(EntityRequest) returns (Empty);
   rpc GetPrincipal(GetRequest) returns (EntityResponse);
-  rpc ListPrincipals(Empty) returns (EntityListResponse);
+  rpc ListPrincipals(ListRequest) returns (EntityListResponse);
   rpc DeletePrincipal(DeleteRequest) returns (Empty);
 
   rpc PutRole(EntityRequest) returns (Empty);
   rpc GetRole(GetRequest) returns (EntityResponse);
-  rpc ListRoles(Empty) returns (EntityListResponse);
+  rpc ListRoles(ListRequest) returns (EntityListResponse);
   rpc DeleteRole(DeleteRequest) returns (Empty);
 
   rpc PutGroup(EntityRequest) returns (Empty);
   rpc GetGroup(GetRequest) returns (EntityResponse);
-  rpc ListGroups(Empty) returns (EntityListResponse);
+  rpc ListGroups(ListRequest) returns (EntityListResponse);
   rpc DeleteGroup(DeleteRequest) returns (Empty);
 
   rpc PutAccount(EntityRequest) returns (Empty);
   rpc GetAccount(GetRequest) returns (EntityResponse);
-  rpc ListAccounts(Empty) returns (EntityListResponse);
+  rpc ListAccounts(ListRequest) returns (EntityListResponse);
   rpc DeleteAccount(DeleteRequest) returns (Empty);
 
   // ---- Rules (definition writes require system-admin; reads require auth) ----
@@ -82,6 +86,10 @@ service ApertureService {
   // the edit before saving. Nothing is written and nothing is audited.
   rpc Simulate(SimulateRequest) returns (Decision);
   rpc SimulateExplain(SimulateRequest) returns (ExplainResponse);
+  // EvaluateRule runs an UNSAVED rule AST directly against one object's provider
+  // metadata (no account/principal/grant), returning the boolean result — the
+  // rule builder's object-based what-if.
+  rpc EvaluateRule(EvaluateRuleRequest) returns (EvaluateRuleResponse);
 
   // ---- Account-scoped entities (writes require account-admin) ----
   rpc PutMembership(EntityRequest) returns (Empty);
@@ -95,7 +103,7 @@ service ApertureService {
   // ---- Templates (definition writes require system-admin; apply is account-tier) ----
   rpc PutTemplate(EntityRequest) returns (Empty);
   rpc GetTemplate(TemplateKeyRequest) returns (EntityResponse);
-  rpc ListTemplates(Empty) returns (EntityListResponse);
+  rpc ListTemplates(ListRequest) returns (EntityListResponse);
   rpc DeleteTemplate(TemplateKeyRequest) returns (Empty);
   // ApplyTemplate expands a template transactionally into the target account and
   // returns the applied grants (each as canonical JSON).
@@ -129,6 +137,29 @@ service ApertureService {
 }
 
 message Empty {}
+
+// ---- Server-side list filtering ----
+//
+// A Filter is a set of field predicates applied server-side to a List response
+// before it is returned, so the client never receives rows it filtered out. Each
+// predicate names an entity JSON field, an operator, and a comparison value. The
+// `match` field combines predicates: "all" (AND, the default) or "any" (OR).
+message FieldPredicate {
+  string field = 1; // entity JSON key, e.g. "ID", "Kind", "Roles"
+  string op = 2;    // eq | contains | starts | empty  (unknown op => predicate ignored)
+  string value = 3; // comparison value (ignored for "empty")
+}
+
+message Filter {
+  repeated FieldPredicate predicates = 1;
+  string match = 2; // "all" (AND, default) | "any" (OR)
+}
+
+// ListRequest is the request for the entity List RPCs: an optional server-side
+// filter. Absent/empty filter => return everything (previous behaviour).
+message ListRequest {
+  Filter filter = 1;
+}
 
 // Actor carries the authenticated caller a mutation is attributed to: the
 // principal id and the active account. On the Twirp surface the principal is
@@ -180,6 +211,25 @@ message EnumerateRequest {
 
 message EnumerateResponse {
   repeated string object_ids = 1;
+}
+
+message ObjectIdentifiersRequest {
+  string object_type = 1;
+  repeated string exclude = 2;
+}
+
+message ObjectIdentifiersResponse {
+  repeated string object_ids = 1;
+}
+
+message EvaluateRuleRequest {
+  string rule_json = 1;   // a model.Rule ({Name,Description,AST}); only AST is used
+  string object_id = 2;   // the object to sample metadata for and evaluate against
+}
+
+message EvaluateRuleResponse {
+  bool result = 1;        // the rule's boolean verdict for the object
+  string object_json = 2; // the object's metadata snapshot the rule saw (for display)
 }
 
 message EnumerateBatchRequest {
@@ -287,6 +337,7 @@ message MembershipKeyRequest {
 message ListGrantsRequest {
   Actor actor = 1;
   string account_id = 2;
+  Filter filter = 3;
 }
 
 // ---- Template messages ----

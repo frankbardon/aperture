@@ -3,13 +3,16 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/frankbardon/aperture/auth"
 	"github.com/frankbardon/aperture/engine"
 	aerr "github.com/frankbardon/aperture/errors"
+	"github.com/frankbardon/aperture/filter"
 	"github.com/frankbardon/aperture/internal/wire/rpc"
 	"github.com/frankbardon/aperture/model"
+	"github.com/frankbardon/aperture/rules"
 	"github.com/frankbardon/aperture/seed"
 	"github.com/frankbardon/aperture/service"
 
@@ -65,6 +68,18 @@ func actorAccount(a *rpc.Actor) string {
 		return ""
 	}
 	return a.Account
+}
+
+// readActor builds the actor an account-scoped READ authorizes against: the
+// authenticated principal from context. Reads carry no wire account, so the
+// gate resolves system-admin via the platform ("*") grant and account-admin
+// against the target account named by the read itself.
+func (h *twirpHandler) readActor(ctx context.Context) (service.Actor, error) {
+	id, err := h.principal(ctx)
+	if err != nil {
+		return service.Actor{}, err
+	}
+	return service.Actor{Principal: id}, nil
 }
 
 // ---- Decision API (open) ----
@@ -186,7 +201,10 @@ func entityResponse(v any) (*rpc.EntityResponse, error) {
 	return &rpc.EntityResponse{EntityJson: string(js)}, nil
 }
 
-func entityListResponse[T any](items []T) (*rpc.EntityListResponse, error) {
+// entityListResponse marshals a slice of entities to canonical JSON, then applies
+// the (optional) server-side filter so filtered-out rows never reach the client.
+// A nil/empty spec returns everything, preserving the pre-filter behaviour.
+func entityListResponse[T any](items []T, spec filter.Spec) (*rpc.EntityListResponse, error) {
 	out := make([]string, len(items))
 	for i := range items {
 		js, err := json.Marshal(items[i])
@@ -195,7 +213,21 @@ func entityListResponse[T any](items []T) (*rpc.EntityListResponse, error) {
 		}
 		out[i] = string(js)
 	}
+	out = filter.Apply(out, spec)
 	return &rpc.EntityListResponse{EntitiesJson: out}, nil
+}
+
+// filterSpec adapts the wire Filter message into the domain filter.Spec. A nil
+// filter (older clients / unfiltered calls) yields the zero spec (match-all).
+func filterSpec(f *rpc.Filter) filter.Spec {
+	if f == nil {
+		return filter.Spec{}
+	}
+	preds := make([]filter.Predicate, 0, len(f.Predicates))
+	for _, p := range f.Predicates {
+		preds = append(preds, filter.Predicate{Field: p.Field, Op: p.Op, Value: p.Value})
+	}
+	return filter.Spec{Predicates: preds, MatchAny: strings.EqualFold(f.Match, "any")}
 }
 
 // ---- ObjectType ----
@@ -223,7 +255,7 @@ func (h *twirpHandler) GetObjectType(ctx context.Context, req *rpc.GetRequest) (
 	return entityResponse(ot)
 }
 
-func (h *twirpHandler) ListObjectTypes(ctx context.Context, _ *rpc.Empty) (*rpc.EntityListResponse, error) {
+func (h *twirpHandler) ListObjectTypes(ctx context.Context, req *rpc.ListRequest) (*rpc.EntityListResponse, error) {
 	if _, err := h.principal(ctx); err != nil {
 		return nil, mapErr(err)
 	}
@@ -231,7 +263,22 @@ func (h *twirpHandler) ListObjectTypes(ctx context.Context, _ *rpc.Empty) (*rpc.
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return entityListResponse(items)
+	return entityListResponse(items, filterSpec(req.GetFilter()))
+}
+
+// ObjectIdentifiers enumerates a type's instance ids from its provider. It
+// returns the complete set (optionally minus req.Exclude) — an admin/config read
+// over all objects, so it requires auth like the entity reads, not the open
+// decision path.
+func (h *twirpHandler) ObjectIdentifiers(ctx context.Context, req *rpc.ObjectIdentifiersRequest) (*rpc.ObjectIdentifiersResponse, error) {
+	if _, err := h.principal(ctx); err != nil {
+		return nil, mapErr(err)
+	}
+	ids, err := h.svc.ObjectIdentifiers(ctx, req.ObjectType, req.Exclude...)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return &rpc.ObjectIdentifiersResponse{ObjectIds: ids}, nil
 }
 
 func (h *twirpHandler) DeleteObjectType(ctx context.Context, req *rpc.DeleteRequest) (*rpc.Empty, error) {
@@ -267,7 +314,7 @@ func (h *twirpHandler) GetPermission(ctx context.Context, req *rpc.GetRequest) (
 	return entityResponse(p)
 }
 
-func (h *twirpHandler) ListPermissions(ctx context.Context, _ *rpc.Empty) (*rpc.EntityListResponse, error) {
+func (h *twirpHandler) ListPermissions(ctx context.Context, req *rpc.ListRequest) (*rpc.EntityListResponse, error) {
 	if _, err := h.principal(ctx); err != nil {
 		return nil, mapErr(err)
 	}
@@ -275,7 +322,7 @@ func (h *twirpHandler) ListPermissions(ctx context.Context, _ *rpc.Empty) (*rpc.
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return entityListResponse(items)
+	return entityListResponse(items, filterSpec(req.GetFilter()))
 }
 
 func (h *twirpHandler) DeletePermission(ctx context.Context, req *rpc.DeleteRequest) (*rpc.Empty, error) {
@@ -311,15 +358,16 @@ func (h *twirpHandler) GetPrincipal(ctx context.Context, req *rpc.GetRequest) (*
 	return entityResponse(p)
 }
 
-func (h *twirpHandler) ListPrincipals(ctx context.Context, _ *rpc.Empty) (*rpc.EntityListResponse, error) {
-	if _, err := h.principal(ctx); err != nil {
-		return nil, mapErr(err)
-	}
-	items, err := h.svc.ListPrincipals(ctx)
+func (h *twirpHandler) ListPrincipals(ctx context.Context, req *rpc.ListRequest) (*rpc.EntityListResponse, error) {
+	actor, err := h.readActor(ctx)
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return entityListResponse(items)
+	items, err := h.svc.ListPrincipals(ctx, actor)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return entityListResponse(items, filterSpec(req.GetFilter()))
 }
 
 func (h *twirpHandler) DeletePrincipal(ctx context.Context, req *rpc.DeleteRequest) (*rpc.Empty, error) {
@@ -355,7 +403,7 @@ func (h *twirpHandler) GetRole(ctx context.Context, req *rpc.GetRequest) (*rpc.E
 	return entityResponse(r)
 }
 
-func (h *twirpHandler) ListRoles(ctx context.Context, _ *rpc.Empty) (*rpc.EntityListResponse, error) {
+func (h *twirpHandler) ListRoles(ctx context.Context, req *rpc.ListRequest) (*rpc.EntityListResponse, error) {
 	if _, err := h.principal(ctx); err != nil {
 		return nil, mapErr(err)
 	}
@@ -363,7 +411,7 @@ func (h *twirpHandler) ListRoles(ctx context.Context, _ *rpc.Empty) (*rpc.Entity
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return entityListResponse(items)
+	return entityListResponse(items, filterSpec(req.GetFilter()))
 }
 
 func (h *twirpHandler) DeleteRole(ctx context.Context, req *rpc.DeleteRequest) (*rpc.Empty, error) {
@@ -399,7 +447,7 @@ func (h *twirpHandler) GetGroup(ctx context.Context, req *rpc.GetRequest) (*rpc.
 	return entityResponse(g)
 }
 
-func (h *twirpHandler) ListGroups(ctx context.Context, _ *rpc.Empty) (*rpc.EntityListResponse, error) {
+func (h *twirpHandler) ListGroups(ctx context.Context, req *rpc.ListRequest) (*rpc.EntityListResponse, error) {
 	if _, err := h.principal(ctx); err != nil {
 		return nil, mapErr(err)
 	}
@@ -407,7 +455,7 @@ func (h *twirpHandler) ListGroups(ctx context.Context, _ *rpc.Empty) (*rpc.Entit
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return entityListResponse(items)
+	return entityListResponse(items, filterSpec(req.GetFilter()))
 }
 
 func (h *twirpHandler) DeleteGroup(ctx context.Context, req *rpc.DeleteRequest) (*rpc.Empty, error) {
@@ -443,15 +491,16 @@ func (h *twirpHandler) GetAccount(ctx context.Context, req *rpc.GetRequest) (*rp
 	return entityResponse(a)
 }
 
-func (h *twirpHandler) ListAccounts(ctx context.Context, _ *rpc.Empty) (*rpc.EntityListResponse, error) {
-	if _, err := h.principal(ctx); err != nil {
-		return nil, mapErr(err)
-	}
-	items, err := h.svc.ListAccounts(ctx)
+func (h *twirpHandler) ListAccounts(ctx context.Context, req *rpc.ListRequest) (*rpc.EntityListResponse, error) {
+	actor, err := h.readActor(ctx)
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return entityListResponse(items)
+	items, err := h.svc.ListAccounts(ctx, actor)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return entityListResponse(items, filterSpec(req.GetFilter()))
 }
 
 func (h *twirpHandler) DeleteAccount(ctx context.Context, req *rpc.DeleteRequest) (*rpc.Empty, error) {
@@ -499,10 +548,11 @@ func (h *twirpHandler) PutGrant(ctx context.Context, req *rpc.EntityRequest) (*r
 }
 
 func (h *twirpHandler) GetGrant(ctx context.Context, req *rpc.GetRequest) (*rpc.EntityResponse, error) {
-	if _, err := h.principal(ctx); err != nil {
+	actor, err := h.readActor(ctx)
+	if err != nil {
 		return nil, mapErr(err)
 	}
-	g, err := h.svc.GetGrant(ctx, req.Id)
+	g, err := h.svc.GetGrant(ctx, actor, req.Id)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -510,14 +560,15 @@ func (h *twirpHandler) GetGrant(ctx context.Context, req *rpc.GetRequest) (*rpc.
 }
 
 func (h *twirpHandler) ListGrants(ctx context.Context, req *rpc.ListGrantsRequest) (*rpc.EntityListResponse, error) {
-	if _, err := h.principal(ctx); err != nil {
-		return nil, mapErr(err)
-	}
-	items, err := h.svc.ListGrants(ctx, req.AccountId)
+	actor, err := h.readActor(ctx)
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return entityListResponse(items)
+	items, err := h.svc.ListGrants(ctx, actor, req.AccountId)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return entityListResponse(items, filterSpec(req.GetFilter()))
 }
 
 func (h *twirpHandler) DeleteGrant(ctx context.Context, req *rpc.DeleteRequest) (*rpc.Empty, error) {
@@ -553,7 +604,7 @@ func (h *twirpHandler) GetTemplate(ctx context.Context, req *rpc.TemplateKeyRequ
 	return entityResponse(t)
 }
 
-func (h *twirpHandler) ListTemplates(ctx context.Context, _ *rpc.Empty) (*rpc.EntityListResponse, error) {
+func (h *twirpHandler) ListTemplates(ctx context.Context, req *rpc.ListRequest) (*rpc.EntityListResponse, error) {
 	if _, err := h.principal(ctx); err != nil {
 		return nil, mapErr(err)
 	}
@@ -561,7 +612,7 @@ func (h *twirpHandler) ListTemplates(ctx context.Context, _ *rpc.Empty) (*rpc.En
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return entityListResponse(items)
+	return entityListResponse(items, filterSpec(req.GetFilter()))
 }
 
 func (h *twirpHandler) DeleteTemplate(ctx context.Context, req *rpc.TemplateKeyRequest) (*rpc.Empty, error) {
@@ -587,7 +638,7 @@ func (h *twirpHandler) ApplyTemplate(ctx context.Context, req *rpc.ApplyTemplate
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return entityListResponse(applied)
+	return entityListResponse(applied, filter.Spec{})
 }
 
 // ---- Bulk grant / revoke (account-tier, transactional) ----
@@ -866,6 +917,35 @@ func (h *twirpHandler) SimulateExplain(ctx context.Context, req *rpc.SimulateReq
 		return nil, mapErr(aerr.Wrap(aerr.APERTURE_STORAGE, "twirp: marshalling trace", err))
 	}
 	return &rpc.ExplainResponse{TraceJson: string(js)}, nil
+}
+
+// EvaluateRule runs an unsaved rule AST against one object's provider metadata
+// and returns the boolean result — the rule builder's object-based what-if. It
+// requires an authenticated principal (like the entity reads); no account,
+// principal, or grant is consulted.
+func (h *twirpHandler) EvaluateRule(ctx context.Context, req *rpc.EvaluateRuleRequest) (*rpc.EvaluateRuleResponse, error) {
+	if _, err := h.principal(ctx); err != nil {
+		return nil, mapErr(err)
+	}
+	var r model.Rule
+	if err := json.Unmarshal([]byte(req.GetRuleJson()), &r); err != nil {
+		return nil, mapErr(aerr.Wrap(aerr.APERTURE_INVALID_INPUT, "twirp: rule_json is not valid JSON", err))
+	}
+	var node rules.Node
+	if err := json.Unmarshal(r.AST, &node); err != nil {
+		return nil, mapErr(aerr.Wrap(aerr.APERTURE_RULE_INVALID, "twirp: rule AST is not valid JSON", err))
+	}
+	result, md, err := h.svc.EvaluateRule(ctx, &node, req.GetObjectId())
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	var objectJSON string
+	if md != nil {
+		if b, mErr := json.Marshal(md); mErr == nil {
+			objectJSON = string(b)
+		}
+	}
+	return &rpc.EvaluateRuleResponse{Result: result, ObjectJson: objectJSON}, nil
 }
 
 // decodeSimulate builds the read-only Overlay and Query a Simulate call layers

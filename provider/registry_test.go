@@ -319,3 +319,82 @@ func TestRegistryConcurrentFetch(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestRegistryIdentifiers(t *testing.T) {
+	p := newFakeProvider()
+	p.put("brand:1", Metadata{"category_id": "category:1"})
+	p.put("brand:2", Metadata{"category_id": "category:1"})
+	p.put("brand:3", Metadata{"category_id": "category:2"})
+	reg := NewRegistry()
+	reg.MustRegister("brand", p)
+
+	ids, err := reg.Identifiers(context.Background(), "brand")
+	if err != nil {
+		t.Fatalf("Identifiers: %v", err)
+	}
+	// Uncapped and sorted by canonical id.
+	got := make([]string, len(ids))
+	for i, id := range ids {
+		got[i] = id.String()
+	}
+	want := []string{"brand:1", "brand:2", "brand:3"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("ids = %v, want %v", got, want)
+		}
+	}
+
+	// Enumeration warms the cache, so a following Fetch is a hit (no new fetch).
+	if _, err := reg.Fetch(context.Background(), identity.MustParse("brand:2")); err != nil {
+		t.Fatalf("Fetch after Identifiers: %v", err)
+	}
+	if p.fetchCount() != 0 {
+		t.Errorf("provider fetches = %d, want 0 (served from warmed cache)", p.fetchCount())
+	}
+
+	// Unregistered type is a coded error.
+	if _, err := reg.Identifiers(context.Background(), "nope"); aerr.CodeOf(err) != aerr.APERTURE_PROVIDER_UNREGISTERED {
+		t.Errorf("code = %s, want APERTURE_PROVIDER_UNREGISTERED", aerr.CodeOf(err))
+	}
+}
+
+func TestRegistryIdentifiersExcept(t *testing.T) {
+	p := newFakeProvider()
+	for _, id := range []string{"brand:1", "brand:2", "brand:3", "brand:4"} {
+		p.put(id, Metadata{})
+	}
+	reg := NewRegistry()
+	reg.MustRegister("brand", p)
+
+	// Exclusive allowance: all brands EXCEPT brand:2 and brand:4.
+	allowed, err := reg.IdentifiersExcept(context.Background(), "brand",
+		identity.MustParse("brand:2"),
+		identity.MustParse("brand:4"),
+		identity.MustParse("brand:99"), // not a real id: ignored, not an error
+	)
+	if err != nil {
+		t.Fatalf("IdentifiersExcept: %v", err)
+	}
+	got := make([]string, len(allowed))
+	for i, id := range allowed {
+		got[i] = id.String()
+	}
+	want := []string{"brand:1", "brand:3"}
+	if len(got) != len(want) {
+		t.Fatalf("allowed = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("allowed = %v, want %v", got, want)
+		}
+	}
+
+	// No exclusions returns the full set.
+	full, err := reg.IdentifiersExcept(context.Background(), "brand")
+	if err != nil {
+		t.Fatalf("IdentifiersExcept (none): %v", err)
+	}
+	if len(full) != 4 {
+		t.Errorf("full = %d, want 4", len(full))
+	}
+}

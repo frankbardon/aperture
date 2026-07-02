@@ -2,6 +2,8 @@ package provider
 
 import (
 	"context"
+	"slices"
+	"strings"
 	"sync"
 
 	aerr "github.com/frankbardon/aperture/errors"
@@ -201,6 +203,68 @@ func (r *Registry) List(ctx context.Context, objectType string, pattern identity
 	return out, nil
 }
 
+// Identifiers returns every object identity of objectType by calling the type's
+// provider unfiltered List — the COMPLETE, UNBOUNDED enumeration. It differs from
+// List, which is the scope-lister seam and clamps to DefaultListLimit: use
+// Identifiers when you need the whole set (e.g. to expand an exclusive allowance
+// into a positive allow-list) and can afford to materialise it, and List when a
+// bounded, pattern-scoped page is enough. An unregistered type yields
+// APERTURE_PROVIDER_UNREGISTERED.
+//
+// It warms the per-type cache with each object's metadata (the provider call
+// already paid to produce it) and returns the ids sorted by canonical string so
+// the result is stable and diffable. Because it is unbounded, prefer List for a
+// provider whose domain is too large to hold in memory.
+func (r *Registry) Identifiers(ctx context.Context, objectType string) ([]identity.Identity, error) {
+	e, err := r.entry(objectType)
+	if err != nil {
+		return nil, err
+	}
+	objs, err := e.provider.List(ctx)
+	if err != nil {
+		return nil, providerError(err)
+	}
+	out := make([]identity.Identity, 0, len(objs))
+	for _, obj := range objs {
+		if obj.Metadata != nil {
+			e.cache.Set(obj.ID.String(), obj.Metadata)
+		}
+		out = append(out, obj.ID)
+	}
+	slices.SortFunc(out, func(a, b identity.Identity) int {
+		return strings.Compare(a.String(), b.String())
+	})
+	return out, nil
+}
+
+// IdentifiersExcept returns every identifier of objectType except those in
+// exclude: the positive allow-list an exclusive allowance ("all objects of this
+// type EXCEPT these ids") materialises to. It is Identifiers minus the excluded
+// set, compared by canonical id; an excluded id that is not a valid identifier of
+// the type is simply ignored. The result stays sorted. An unregistered type
+// yields APERTURE_PROVIDER_UNREGISTERED.
+func (r *Registry) IdentifiersExcept(ctx context.Context, objectType string, exclude ...identity.Identity) ([]identity.Identity, error) {
+	all, err := r.Identifiers(ctx, objectType)
+	if err != nil {
+		return nil, err
+	}
+	if len(exclude) == 0 {
+		return all, nil
+	}
+	excluded := make(map[string]struct{}, len(exclude))
+	for _, id := range exclude {
+		excluded[id.String()] = struct{}{}
+	}
+	out := make([]identity.Identity, 0, len(all))
+	for _, id := range all {
+		if _, skip := excluded[id.String()]; skip {
+			continue
+		}
+		out = append(out, id)
+	}
+	return out, nil
+}
+
 // Invalidate drops id's cached metadata so the next Fetch re-pulls it from the
 // provider. It reports whether an entry was present. The object-type is id's
 // terminal segment type; an unregistered type yields
@@ -257,7 +321,7 @@ func boundLimit(limit int) int {
 }
 
 // providerError normalises an error returned by a host provider. An error
-// already carrying an Aperture (or pulse) code passes through verbatim — so a
+// already carrying an APERTURE_* code passes through verbatim — so a
 // provider's APERTURE_NOT_FOUND for an absent object reaches the caller intact —
 // while a plain error is wrapped as APERTURE_PROVIDER_FETCH.
 func providerError(err error) error {

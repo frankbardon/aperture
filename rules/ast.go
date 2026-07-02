@@ -1,6 +1,6 @@
 // Package rules is Aperture's rules engine: it decides allow/deny — and, on the
 // scope seam, object-membership selection — from a domain object's metadata plus
-// the principal/action context, using Pulse's expression evaluator.
+// the principal/action context, using the expr-lang/expr expression evaluator.
 //
 // The package has three layers:
 //
@@ -13,10 +13,9 @@
 //     editor maps its nodes one-to-one onto these AST nodes; there is no second
 //     rule format.
 //   - The compiler + cache (compiler.go, cache.go). An AST is validated, rendered
-//     to a Pulse expression, and compiled once to a reusable program by
-//     expr-lang/expr — the same pure-Go evaluator Pulse uses for its
-//     FILTER_EXPRESSION predicate. Compiled programs are cached by the rule's
-//     canonical hash so per-Check cost is bounded (the NFR lever E4-S4 tunes).
+//     to an expr-lang expression, and compiled once to a reusable program by
+//     expr-lang/expr (a pure-Go evaluator). Compiled programs are cached by the
+//     rule's canonical hash so per-Check cost is bounded (the NFR lever E4-S4 tunes).
 //   - The engine (engine.go). It resolves a rule reference through a RuleSource,
 //     compiles-and-caches it, builds the evaluation context from the object's
 //     metadata (fetched through the provider registry) and the principal/action,
@@ -275,7 +274,7 @@ func indexByte(s string, b byte) int {
 	return -1
 }
 
-// Expr renders the validated AST to an expr-lang expression string — the Pulse
+// Expr renders the validated AST to an expr-lang expression string — the
 // predicate the compiler feeds to the evaluator. Expr assumes the node is valid;
 // callers reach it through the compiler, which validates first.
 func (n *Node) Expr() (string, error) {
