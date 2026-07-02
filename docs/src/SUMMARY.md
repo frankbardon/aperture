@@ -39,6 +39,10 @@
 - [Rules engine](concepts/rules.md)
 - [Scopes & scope strategies](concepts/scopes.md)
 - [Providers](concepts/providers.md)
+- [RBAC domain model](concepts/model.md)
+- [Delegation ("bestow")](concepts/delegation.md)
+- [Impersonation](concepts/impersonation.md)
+- [Filtering entity lists](concepts/filter.md)
 
 # Reference
 
