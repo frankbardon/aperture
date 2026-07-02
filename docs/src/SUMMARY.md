@@ -12,6 +12,12 @@
 
 # CLI & Library
 
+- [Library overview](library/overview.md)
+  - [Decision API](library/decision-api.md)
+  - [Batch operations](library/batch.md)
+  - [Impersonation](library/impersonation.md)
+  - [The service facade](library/service-facade.md)
+
 # Service Surfaces
 
 # Concepts
