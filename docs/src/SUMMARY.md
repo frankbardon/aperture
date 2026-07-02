@@ -43,6 +43,12 @@
 - [Delegation ("bestow")](concepts/delegation.md)
 - [Impersonation](concepts/impersonation.md)
 - [Filtering entity lists](concepts/filter.md)
+- [Authentication](concepts/auth.md)
+- [Audit trail](concepts/audit.md)
+- [The authz gate](concepts/authz.md)
+- [Seed & portability](concepts/seed.md)
+- [Error taxonomy](concepts/errors.md)
+- [Storage](concepts/storage.md)
 
 # Reference
 
