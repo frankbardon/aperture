@@ -18,6 +18,8 @@
 
 # Reference
 
+- [Error Codes](reference/error-codes.md)
+
 # Operations
 
 # Internals

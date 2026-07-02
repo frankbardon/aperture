@@ -1,4 +1,4 @@
-.PHONY: build run clean test bench fmt vet lint proto vendor-rete docs docs-serve docs-clean
+.PHONY: build run clean test bench fmt vet lint proto vendor-rete docs docs-serve docs-clean docs-gen
 
 BINARY_NAME=aperture
 BUILD_DIR=bin
@@ -96,5 +96,13 @@ docs-serve:
 # docs-clean removes the built book output.
 docs-clean:
 	rm -rf docs/book
+
+# docs-gen regenerates the committed generated reference pages under docs/src
+# from the Go source (on demand — there is no CI drift gate). Today it emits the
+# error-code table from errors.Registry; later stories extend it with more
+# generated pages. The output is committed; run this after changing a generated
+# source (e.g. the error Registry in errors/codes.go).
+docs-gen:
+	$(GO) run ./internal/docsgen/errcodes -o docs/src/reference/error-codes.md
 
 .DEFAULT_GOAL := build
