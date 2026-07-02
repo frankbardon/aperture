@@ -19,6 +19,7 @@
 # Reference
 
 - [Error Codes](reference/error-codes.md)
+- [Command-Line Reference](reference/cli.md)
 
 # Operations
 

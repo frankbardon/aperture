@@ -104,5 +104,6 @@ docs-clean:
 # source (e.g. the error Registry in errors/codes.go).
 docs-gen:
 	$(GO) run ./internal/docsgen/errcodes -o docs/src/reference/error-codes.md
+	$(GO) run ./internal/docsgen/cliref -o docs/src/reference/cli.md
 
 .DEFAULT_GOAL := build
