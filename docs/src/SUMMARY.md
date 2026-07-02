@@ -35,6 +35,11 @@
 
 # Concepts
 
+- [Identity patterns & specificity](concepts/identity.md)
+- [Rules engine](concepts/rules.md)
+- [Scopes & scope strategies](concepts/scopes.md)
+- [Providers](concepts/providers.md)
+
 # Reference
 
 - [Error Codes](reference/error-codes.md)
