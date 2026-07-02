@@ -57,6 +57,10 @@
 
 # Operations
 
+- [Deployment](operations/deployment.md)
+- [Performance & NFR](operations/performance.md)
+- [Troubleshooting](operations/troubleshooting.md)
+
 # Internals
 
 # Contributing
