@@ -25,11 +25,13 @@ bulk-batched.
 - **Rules** use the `github.com/expr-lang/expr` evaluator **directly** (pure-Go,
   the same engine Pulse wraps) — Aperture has no dependency on Pulse. The rules
   package renders its AST to an expr-lang expression and compiles it in-process.
-- **Storage** (later): hand-written SQL, `modernc.org/sqlite` (pure-Go) + an
+- **Storage**: hand-written SQL, `modernc.org/sqlite` (pure-Go) + an
   in-memory impl behind one `Storage` interface. No ORM / sqlc / migration tool.
-- **RPC/HTTP** (later): `net/http` ServeMux + Twirp.
-- **MCP** (later): SDK-free core; one adapter package may import the protocol
-  SDK, enforced by a firewall test.
+- **RPC/HTTP**: `net/http` ServeMux + Twirp (`internal/server/`, proto at
+  `internal/wire/rpc/service.proto`), with an admin UI shell served from
+  `internal/server/static/`.
+- **MCP**: SDK-free core (`mcp/`, surfaced as `aperture mcp` over stdio); one
+  adapter package may import the protocol SDK, enforced by a firewall test.
 
 ```bash
 make build   # produce bin/aperture (-ldflags="-s -w" -trimpath, CGO off)

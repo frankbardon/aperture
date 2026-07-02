@@ -1,0 +1,22 @@
+[book]
+authors = ["Frank Bardon"]
+language = "en"
+src = "src"
+title = "Aperture Documentation"
+description = "Fine-grained access-control engine for the frankbardon/* family"
+
+[build]
+build-dir = "book"
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/frankbardon/aperture"
+edit-url-template = "https://github.com/frankbardon/aperture/edit/main/docs/src/{path}"
+no-section-label = false
+additional-js = ["mermaid.min.js", "mermaid-init.js"]
+
+[output.html.search]
+enable = true
+limit-results = 30
+boost-hierarchy = 2

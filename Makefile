@@ -1,4 +1,4 @@
-.PHONY: build run clean test bench fmt vet lint proto vendor-rete
+.PHONY: build run clean test bench fmt vet lint proto vendor-rete docs docs-serve docs-clean docs-gen
 
 BINARY_NAME=aperture
 BUILD_DIR=bin
@@ -81,5 +81,29 @@ lint: vet
 	else \
 		echo "lint: no staticcheck/golangci-lint on PATH; ran go vet only (skipping static analysis)"; \
 	fi
+
+# docs builds the mdBook documentation site from docs/src into docs/book
+# (gitignored output). Mermaid renders client-side via the vendored additional-js
+# files (docs/mermaid.min.js + mermaid-init.js) — there are no preprocessor
+# plugins. Requires mdbook on PATH.
+docs:
+	mdbook build docs
+
+# docs-serve serves the book locally with live reload and opens a browser.
+docs-serve:
+	mdbook serve docs --open
+
+# docs-clean removes the built book output.
+docs-clean:
+	rm -rf docs/book
+
+# docs-gen regenerates the committed generated reference pages under docs/src
+# from the Go source (on demand — there is no CI drift gate). Today it emits the
+# error-code table from errors.Registry; later stories extend it with more
+# generated pages. The output is committed; run this after changing a generated
+# source (e.g. the error Registry in errors/codes.go).
+docs-gen:
+	$(GO) run ./internal/docsgen/errcodes -o docs/src/reference/error-codes.md
+	$(GO) run ./internal/docsgen/cliref -o docs/src/reference/cli.md
 
 .DEFAULT_GOAL := build

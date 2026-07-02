@@ -1,0 +1,37 @@
+<!-- DO NOT EDIT — regenerate with `make docs-gen` -->
+
+# Error Codes
+
+Every failure surfaced by Aperture is an `APERTURE_*` coded error. Each code carries a canonical message and, where operator action is meaningful, one or more fixup hints. This page is generated from the error `Registry` in `errors/codes.go`.
+
+| Code | Message | Fixups |
+| --- | --- | --- |
+| `APERTURE_ACTION_UNDECLARED` | action is not declared on the object type | Add the action verb to the object type's declared action set, or grant a verb the type already declares.<br>List the object type's actions to see the validated verb set. |
+| `APERTURE_AUTHZ_DENIED` | the actor lacks the admin authority tier required for this mutation | Schema mutations (permission types, roles, object-types, providers, templates, rules) require system-admin authority: an allow grant on the admin action whose object covers system:*.<br>Grant and delegation mutations require account-admin authority in the TARGET account: an allow grant on the admin action whose object covers account:&lt;acct&gt;/admin:*.<br>Account-admin authority is confined to its own account; obtain authority in the account the mutation targets, or hold a broader (e.g. **) grant. |
+| `APERTURE_BOOT` | aperture failed to start | Check the APERTURE_* environment variables and any --config file.<br>Confirm the storage backend (memory or sqlite) is reachable. |
+| `APERTURE_CONFIG_INVALID` | configuration is invalid | Validate the YAML config and APERTURE_* env vars against the docs. |
+| `APERTURE_DELEGATION_DENIED` | the delegator may not bestow this grant | Bestow only grants that are a subset of your own effective allow grants in the account (same action and scope strategy, an equal-or-more-specific object pattern).<br>Confirm you hold a 'may delegate' right whose object pattern covers the grant's object.<br>Bestow grants only within an account you are a member of; cross-account bestowal is rejected. |
+| `APERTURE_DELEGATION_NOT_DELEGATABLE` | the permission is not flagged delegatable | Set Delegatable on the permission definition to allow it to be bestowed. |
+| `APERTURE_IDENTITY_INVALID` | object identity is malformed | Use type:id segments joined by '/', e.g. account:acme/project:atlas/document:42.<br>Ensure no segment is empty and every segment carries a ':' with a non-empty type and id.<br>Remove illegal characters; types and ids allow letters, digits, and -._~@+ only ('*' marks a wildcard in patterns). |
+| `APERTURE_IMPERSONATION_DENIED` | the operator may not impersonate this target | Impersonate only within an account both the operator and the target are members of; cross-account impersonation is refused.<br>Confirm the operator holds an impersonation right (augment or become) whose object pattern covers the target's identity.<br>Become mode requires the stronger become right; an augment right alone cannot become a target. |
+| `APERTURE_IMPERSONATION_EXPIRED` | the impersonation session has expired | Start a fresh impersonation session; sessions are time-boxed and expire automatically. |
+| `APERTURE_INVALID_INPUT` | input failed validation | Re-check the request shape against the command or API contract. |
+| `APERTURE_INVALID_TOKEN` | the presented bearer credential failed verification | Confirm the token is a well-formed JWT signed by the configured issuer's keys.<br>Check the token issuer and audience match APERTURE_OIDC_ISSUER and APERTURE_OIDC_AUDIENCE, and that it has not expired.<br>For a parsec adapter, confirm the token was minted by the broker sharing the configured keyring/secret. |
+| `APERTURE_NOT_FOUND` | the referenced entity was not found | Confirm the identifier exists in the current account scope. |
+| `APERTURE_PROVIDER_FETCH` | object provider returned an error | Inspect the wrapped cause for the underlying provider failure.<br>Return APERTURE_NOT_FOUND from the provider for an object that does not exist. |
+| `APERTURE_PROVIDER_INVALID` | object provider registration is invalid | Register a non-nil provider under a non-empty object-type key.<br>Register each object type at most once; check for a duplicate registration. |
+| `APERTURE_PROVIDER_UNREGISTERED` | no object provider is registered for the object type | Register an ObjectProvider for the object type before fetching its metadata.<br>Confirm the object identity's terminal segment type matches a registered provider key. |
+| `APERTURE_RULE_EVAL` | rule evaluation failed | Inspect the wrapped cause for the underlying evaluation failure.<br>Ensure the rule expression yields a boolean for the supplied context. |
+| `APERTURE_RULE_INVALID` | rule AST is malformed | Give each logical node the right child count: and/or take two or more, not takes exactly one.<br>Give every comparison a left and right operand, and every literal a scalar value.<br>Write variable references as dotted identifier paths, e.g. object.classification. |
+| `APERTURE_RULE_NOT_FOUND` | the referenced rule was not found | Confirm the rule reference exists in the configured rule source. |
+| `APERTURE_RULE_TYPE_ERROR` | rule failed expression type checking | Compare compatible types and make the rule evaluate to a boolean.<br>Call only functions registered with the rules engine. |
+| `APERTURE_RULE_UNKNOWN_VARIABLE` | rule references an unknown variable | Reference variables under a known context root: object, principal, account, or action.<br>Check for a typo in the variable's root segment. |
+| `APERTURE_SCOPE_INVALID` | scope strategy reference is malformed | Use 'strategy' or 'strategy;param=value' form, e.g. inclusive;ids=account:acme/document:42.<br>Give an inclusive/exclusive strategy an 'ids' list or a 'rule' reference; implicit takes no configuration. |
+| `APERTURE_SCOPE_LISTER_UNCONFIGURED` | scope enumeration requires an object lister that is not configured | — _not applicable_ |
+| `APERTURE_SCOPE_RULE_UNCONFIGURED` | scope rule path requires a rule evaluator that is not configured | — _not applicable_ |
+| `APERTURE_SCOPE_UNKNOWN_STRATEGY` | scope strategy is not registered | Use a built-in strategy (literal, implicit, inclusive, exclusive) or register the custom key with the scope registry. |
+| `APERTURE_STORAGE` | the storage backend returned an error | Inspect the wrapped cause for the underlying storage failure. |
+| `APERTURE_TEMPLATE_INVALID` | the provisioning template is malformed | Give the template a non-empty name, a version of at least 1, and at least one grant.<br>Declare every parameter a grant references; write references as ${name} with a declared parameter.<br>Give each template grant a valid subject, a permission id, an allow/deny effect, and a non-empty object pattern. |
+| `APERTURE_TEMPLATE_PARAM` | the template apply supplied invalid parameters | Supply a value for every parameter the template declares, and no parameters it does not.<br>A segment-typed parameter value must be a legal identity component: letters, digits, and -._~@+ only. |
+| `APERTURE_UNAUTHENTICATED` | the request could not be resolved to a known principal | Present a credential: send an Authorization: Bearer &lt;token&gt; header.<br>With the dev/static authenticator the bearer IS the principal id; send a non-empty value.<br>Confirm the verified token carries the configured principal claim (APERTURE_AUTH_PRINCIPAL_CLAIM, default 'sub'). |
+| `APERTURE_UNIMPLEMENTED` | this surface is not yet implemented | — _not applicable_ |

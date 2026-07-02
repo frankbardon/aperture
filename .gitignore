@@ -10,6 +10,9 @@ bin/*
 # Local dev binary dropped at repo root
 /aperture
 
+# Built mdBook documentation output
+docs/book/
+
 # Go
 *.exe
 *.exe~
