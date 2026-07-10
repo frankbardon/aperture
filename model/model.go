@@ -208,6 +208,45 @@ type Group struct {
 // can ever shadow the wildcard.
 const AccountWildcard = "*"
 
+// AllAccounts is the reserved accountID sentinel that asks a paginated grant
+// listing (Storage.ListGrantsPage) to span EVERY account rather than a single
+// one. It is the empty string, so an all-accounts page is requested by passing
+// "" as the accountID; any other value scopes the page to that one account. The
+// wildcard-stamped ("*") grants are ordinary rows and are returned inline in an
+// all-accounts page — they are not filtered out. This is a query-scope sentinel
+// only; it is NOT a valid account id (ValidateAccount rejects the empty string).
+const AllAccounts = ""
+
+// MaxGrantPageSize is the server-enforced ceiling on a single paginated grant
+// page (Storage.ListGrantsPage). A caller requesting a larger limit gets a page
+// clamped to this size; the total count returned alongside the page is the full
+// pre-pagination match count, so a caller can page through everything. It bounds
+// the work a single all-accounts listing does regardless of the requested limit.
+const MaxGrantPageSize = 500
+
+// DefaultGrantPageSize is the page size applied when a paginated grant listing
+// is asked for a non-positive limit (limit <= 0). It gives callers that do not
+// specify a page size a sane, bounded default rather than an unbounded scan.
+const DefaultGrantPageSize = 100
+
+// ClampGrantPage normalizes a requested (offset, limit) pair against the grant
+// pagination policy, returning the values both Storage backends actually use.
+// A non-positive limit falls back to DefaultGrantPageSize; any limit above
+// MaxGrantPageSize is clamped down to the cap; a negative offset is floored at
+// zero. Both backends call this so the clamp is identical across impls.
+func ClampGrantPage(offset, limit int) (normOffset, normLimit int) {
+	if offset < 0 {
+		offset = 0
+	}
+	switch {
+	case limit <= 0:
+		limit = DefaultGrantPageSize
+	case limit > MaxGrantPageSize:
+		limit = MaxGrantPageSize
+	}
+	return offset, limit
+}
+
 // Account is a first-class tenancy boundary: the unit a grant is stamped to and
 // the active context a decision is scoped to. Accounts are global entities; a
 // single principal can be a member of more than one (via Membership), but the

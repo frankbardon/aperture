@@ -282,6 +282,9 @@ func (o *overlayStore) GetGrant(ctx context.Context, id string) (model.Grant, er
 func (o *overlayStore) ListGrants(ctx context.Context, accountID string) ([]model.Grant, error) {
 	return o.base.ListGrants(ctx, accountID)
 }
+func (o *overlayStore) ListGrantsPage(ctx context.Context, accountID string, offset, limit int) ([]model.Grant, int, error) {
+	return o.base.ListGrantsPage(ctx, accountID, offset, limit)
+}
 func (o *overlayStore) QueryAudit(ctx context.Context, filter model.AuditFilter) ([]model.AuditEvent, error) {
 	return o.base.QueryAudit(ctx, filter)
 }

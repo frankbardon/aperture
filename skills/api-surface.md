@@ -103,6 +103,35 @@ Full surface:
   likewise an auth-required read (all of a type's instance ids, not a
   principal-scoped decision). Scoping only engages when a gate is wired and a
   principal is identified, so the local CLI/MCP facades stay unrestricted.
+### `ListGrants` — all-accounts view + pagination
+
+`ListGrants` (`ListGrantsRequest` → `ListGrantsResponse`) lists grants for a
+scope, gated by `service.readScope` as above, and is paginated:
+
+- **Scope via `account_id`.** A **non-empty** `account_id` lists that single
+  account's grants — the original behaviour, byte-for-byte compatible. An
+  **empty** `account_id` is the **all-accounts sentinel**: it lists grants across
+  EVERY account and is **SYSTEM-ADMIN ONLY** (`sys == true` from `readScope`). An
+  account-admin — however many accounts it administers — is denied the
+  all-accounts path with `APERTURE_AUTHZ_DENIED` / 403 (the service gates it
+  before the store is touched, and never leaks which accounts exist). The
+  wildcard-stamped (`"*"`) platform grants are returned **inline** in an
+  all-accounts page, not filtered out. The empty string is a query sentinel, NOT
+  a real account id — it is distinct from `"*"` (the wildcard account), which is
+  never overloaded to mean "all".
+- **Pagination via `offset` + `limit`.** The request carries `offset` (leading
+  rows to skip) and `limit` (page size); the response is `ListGrantsResponse`,
+  which carries the page as `entities_json` (each grant canonical JSON, like
+  `EntityListResponse`) plus `total` (the full pre-pagination match count for the
+  scope) and echoes the effective `offset` / `limit`. The client renders next/prev
+  from `total` (`next_offset = offset + limit` while `next_offset < total`). A
+  non-positive `limit` falls back to `model.DefaultGrantPageSize` and a `limit`
+  above `model.MaxGrantPageSize` is clamped down (`model.ClampGrantPage`), so a
+  single call never returns an unbounded page. A **negative** `offset` or `limit`
+  is a caller error → `APERTURE_INVALID_INPUT` / 400. Older clients that omit the
+  page fields get the default first page, preserving the original single-account
+  behaviour. The `filter` (if any) applies server-side to the returned page.
+
 - **Mutations require an authenticated principal AND the admin tier their kind
   needs** (`authz.Gate`): schema entities are SYSTEM tier (`system:*`);
   membership + raw grants are ACCOUNT tier (`account:<acct>/admin:*` in the

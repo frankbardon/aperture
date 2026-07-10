@@ -14,9 +14,11 @@
  *
  * Auth + tiers: all six entity types here are SYSTEM-tier schema entities, so
  * editing requires system-admin authority. We probe it with the OPEN Check RPC
- * (action aperture.admin over system:schema, resolved against the active
- * account); a non-admin sees a read-only view with editing affordances hidden,
- * and any mutation that still reaches the API surfaces its APERTURE_* code + msg.
+ * (action aperture.admin over system:schema); this is a global, account-
+ * independent check that resolves system-admin via the platform "*" grant, so
+ * the operator sees edit controls on load with no account context. A non-admin
+ * sees a read-only view with editing affordances hidden, and any mutation that
+ * still reaches the API surfaces its APERTURE_* code + msg.
  */
 
 const CRUD_TOKEN_KEY = "aperture.devToken";
@@ -200,7 +202,6 @@ function crud() {
 
     principal: "",
     accounts: [],
-    account: "",
     canEdit: false,
     tierChecked: false,
 
@@ -228,7 +229,6 @@ function crud() {
       });
       const clear = () => {
         this.principal = "";
-        this.account = ""; // don't carry a prior session's account across sign-in
         this.accounts = [];
         this.rows = [];
         this.canEdit = false;
@@ -236,11 +236,6 @@ function crud() {
       };
       document.addEventListener("aperture:unauthenticated", clear);
       document.addEventListener("aperture:signout", clear);
-      // The account switcher is global (owned by the shell); react when it changes.
-      document.addEventListener("aperture:account", (e) => {
-        this.account = (e.detail && e.detail.account) || "";
-        if (this.principal) this.onAccountChange();
-      });
       if (this.principal) {
         this.bootstrap();
       }
@@ -250,24 +245,25 @@ function crud() {
       return this.types.find((t) => t.key === this.activeType) || this.types[0];
     },
 
-    // bootstrap resolves the active account, probes admin authority, loads the
-    // reference lists, then lists the active entity.
+    // bootstrap probes admin authority, loads the reference lists, then lists the
+    // active entity. These are global schema entities, so nothing here depends on
+    // an account.
     async bootstrap() {
-      // The account is owned by the shell (global switcher); mirror its value.
-      this.account = window.apertureAccount();
       await this.probeTier();
       await this.loadRefs();
       await this.load();
     },
 
     // probeTier asks the open Check RPC whether the signed-in principal holds
-    // system-admin authority, gating the editing affordances. It carries the
-    // bearer but requires no auth, so a read-only viewer still gets an answer.
+    // system-admin authority, gating the editing affordances. The check is global
+    // and account-independent — it resolves system-admin via the platform "*"
+    // grant, so the operator sees edit controls on load with no account context.
+    // It carries the bearer but requires no auth, so a read-only viewer still gets
+    // an answer.
     async probeTier() {
       this.tierChecked = false;
       try {
         const dec = await rpc("Check", {
-          account: this.account,
           principal: this.principal,
           action: ADMIN_ACTION,
           object: ADMIN_OBJECT,
@@ -280,17 +276,20 @@ function crud() {
     },
 
     async loadRefs() {
+      // Most reference lists return an EntityListResponse (entities_json); ListRules
+      // returns a RuleListResponse whose field is rules_json, so name the response
+      // field per job rather than assuming entities_json for all.
       const jobs = [
-        ["roles", "ListRoles"],
-        ["permissions", "ListPermissions"],
-        ["objectTypes", "ListObjectTypes"],
-        ["principals", "ListPrincipals"],
-        ["rules", "ListRules"],
+        ["roles", "ListRoles", "entities_json"],
+        ["permissions", "ListPermissions", "entities_json"],
+        ["objectTypes", "ListObjectTypes", "entities_json"],
+        ["principals", "ListPrincipals", "entities_json"],
+        ["rules", "ListRules", "rules_json"],
       ];
-      for (const [key, method] of jobs) {
+      for (const [key, method, field] of jobs) {
         try {
           const resp = await rpc(method, {});
-          this.refs[key] = (resp.entities_json || []).map((s) => JSON.parse(s));
+          this.refs[key] = (resp[field] || []).map((s) => JSON.parse(s));
         } catch (_) {
           this.refs[key] = [];
         }
@@ -298,6 +297,18 @@ function crud() {
       // Accounts drive the membership widgets and the active-account selector, so
       // refresh them alongside the other reference lists after every mutation.
       await this.loadAccounts();
+    },
+
+    // loadAccounts populates THIS screen's account list (membership widgets)
+    // directly from ListAccounts. It is account-agnostic: the list drives the
+    // membership editors, not any active-account concept.
+    async loadAccounts() {
+      try {
+        const resp = await rpc("ListAccounts", {});
+        this.accounts = (resp.entities_json || []).map((s) => JSON.parse(s));
+      } catch (_) {
+        this.accounts = [];
+      }
     },
 
     async selectType(key) {
@@ -334,12 +345,6 @@ function crud() {
     },
     filterNeedsValue(op) {
       return op !== "empty";
-    },
-
-    async onAccountChange() {
-      await this.probeTier();
-      await this.loadRefs();
-      await this.load();
     },
 
     async load() {
@@ -496,7 +501,9 @@ function crud() {
     },
 
     ruleOptions() {
-      return (this.refs.rules || []).map((r) => ({ value: r.ID, label: r.Name ? r.ID + " — " + r.Name : r.ID }));
+      // Scope references a rule by its Name (scope grammar: "…;rule=<name>"), and
+      // model.Rule has no ID — so both option value and label key off Name.
+      return (this.refs.rules || []).map((r) => ({ value: r.Name, label: r.Description ? r.Name + " — " + r.Description : r.Name }));
     },
 
     // parseScopeRef turns a stored reference string into editor state. It mirrors
@@ -714,7 +721,10 @@ function crud() {
     },
 
     actor() {
-      return { principal: this.principal, account: this.account };
+      // Global schema mutations resolve against system-admin authority (platform
+      // "*"), not an account — so the actor carries only the principal. Membership
+      // upserts pass their AccountID in the entity body, not via the actor.
+      return { principal: this.principal };
     },
 
     // ---- delete ----

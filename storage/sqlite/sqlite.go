@@ -871,6 +871,44 @@ func (s *Store) ListGrants(ctx context.Context, accountID string) ([]model.Grant
 	return collectGrants(rows)
 }
 
+func (s *Store) ListGrantsPage(ctx context.Context, accountID string, offset, limit int) ([]model.Grant, int, error) {
+	offset, limit = model.ClampGrantPage(offset, limit)
+	allAccounts := accountID == model.AllAccounts
+
+	// The count and the page share the same predicate so the total is the exact
+	// pre-pagination match count for the page that follows it. AllAccounts drops
+	// the WHERE clause entirely (wildcard "*" rows are counted/returned inline as
+	// the ordinary rows they are); otherwise both are scoped to the one account.
+	where := ""
+	countArgs := []any(nil)
+	pageArgs := []any(nil)
+	if !allAccounts {
+		where = " WHERE account_id = ?"
+		countArgs = append(countArgs, accountID)
+		pageArgs = append(pageArgs, accountID)
+	}
+	pageArgs = append(pageArgs, limit, offset)
+
+	var total int
+	if err := s.exec.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM grants`+where, countArgs...).Scan(&total); err != nil {
+		return nil, 0, wrapStorage("count grants", err)
+	}
+
+	// Deterministic ordering (account_id, id) so pages are stable and line up with
+	// the in-memory backend's ordering.
+	rows, err := s.exec.QueryContext(ctx,
+		grantSelect+where+` ORDER BY account_id, id LIMIT ? OFFSET ?`, pageArgs...)
+	if err != nil {
+		return nil, 0, wrapStorage("list grants page", err)
+	}
+	page, err := collectGrants(rows)
+	if err != nil {
+		return nil, 0, err
+	}
+	return page, total, nil
+}
+
 func (s *Store) DeleteGrant(ctx context.Context, id string) error {
 	return s.deleteByID(ctx, "grant", "grants", "id", id)
 }

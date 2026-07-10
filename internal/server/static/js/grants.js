@@ -19,11 +19,26 @@
  */
 (function () {
   const TOKEN_KEY = "aperture.devToken";
+  // GRANT_ACCOUNT_KEY persists the Grants view's OWN local account filter across
+  // visits (E1-S5). It is deliberately distinct from the shell's
+  // "aperture.account" key (which E2-S1 deletes) — the Grants view owns its scope
+  // and no longer reads anything from the shell. Only the filter is persisted;
+  // page.offset is never persisted (a stale offset could land past the end), so
+  // a restore always resets to the first page.
+  const GRANT_ACCOUNT_KEY = "aperture.grants.account";
   const PREFIX = "/twirp/aperture.ApertureService/";
   const ADMIN_ACTION = "aperture.admin";
   const SYSTEM_ANCHOR = "system:schema"; // system-tier authority anchor (authz.go)
   const accountAnchor = (a) => "account:" + a + "/admin:all"; // account-tier anchor
   const ACCOUNT_WILDCARD = "*"; // the all-accounts grant stamp (model.AccountWildcard)
+  // GRANT_PAGE_SIZE is the client page size for the grants listing. It stays at
+  // or below model.MaxGrantPageSize (500) so a single request never asks the
+  // server for more than it will return; the server clamps anything larger, but
+  // we never send an over-cap limit. WILDCARD_OVERLAY_LIMIT fetches the "*"
+  // (platform) overlay in single-account mode as one small, non-paginated group
+  // — wildcard-account grants are few, so a generous single page covers them.
+  const GRANT_PAGE_SIZE = 100;
+  const WILDCARD_OVERLAY_LIMIT = 500;
 
   // rpcCall POSTs a Twirp JSON call through the shell's bearer wrapper and
   // normalises a non-2xx Twirp error body into an Error with .code (the canonical
@@ -83,7 +98,16 @@
 
       principal: "",
       accounts: [],
+      // account mirrors the LOCAL grants filter (grantAccountFilter). Empty = the
+      // all-accounts view (E1-S3): the Grants view owns its scope locally and no
+      // longer follows the shell's global account switcher. Downstream helpers
+      // (actor, grant editor default, delegation, apply) read this value.
       account: "",
+      // grantAccountFilter is the Grants view's own account filter. Empty string
+      // is the default "all accounts" listing (system-admin only, per E1-S2);
+      // a non-empty value narrows to that single account. "*" is NOT sent as an
+      // all-accounts sentinel — it is the wildcard account.
+      grantAccountFilter: "",
       canGrant: false, // account-admin: raw grants, apply, bulk, delegation ops
       canDefineTemplate: false, // system-admin: template definition CRUD
       tierChecked: false,
@@ -96,6 +120,15 @@
 
       // ---- grants tab ----
       rows: [],
+      // page holds the pagination envelope for the account-specific (or
+      // all-accounts) grant listing echoed back by ListGrants: offset/limit are
+      // the effective server-clamped window and total is the full pre-pagination
+      // match count that drives prev/next. wildcardCount is the number of "*"
+      // (platform) overlay grants merged in only in single-account mode — an
+      // always-included, NON-paginated group shown alongside the account's page,
+      // deliberately excluded from total so the "X–Y of N" count stays honest
+      // about the account's own grants.
+      page: { offset: 0, limit: GRANT_PAGE_SIZE, total: 0, wildcardCount: 0 },
       grantModal: { open: false, mode: "create", form: {}, strategyFilter: "", saving: false, error: null },
       confirm: { open: false, grant: null, saving: false, error: null },
 
@@ -149,7 +182,8 @@
         });
         const clear = () => {
           this.principal = "";
-          this.account = ""; // don't carry a prior session's account across sign-in
+          this.account = "";
+          this.grantAccountFilter = ""; // reset to the all-accounts default
           this.accounts = [];
           this.rows = [];
           this.templates = [];
@@ -159,20 +193,36 @@
         };
         document.addEventListener("aperture:unauthenticated", clear);
         document.addEventListener("aperture:signout", clear);
-        // The account switcher is global (owned by the shell); react when it changes.
-        document.addEventListener("aperture:account", (e) => {
-          this.account = (e.detail && e.detail.account) || "";
-          if (this.principal) this.onAccountChange();
-        });
+        // E1-S3: the Grants view owns its account scope locally; there is no
+        // global shell account broadcast to subscribe to.
         if (this.principal) this.bootstrap();
       },
 
       async bootstrap() {
-        // The account is owned by the shell (global switcher); mirror its value.
-        this.account = window.apertureAccount();
+        // Restore the persisted local account filter (E1-S5) BEFORE the first
+        // load, so re-opening Grants lands on the last-used scope. Nothing
+        // persisted → the all-accounts default (""). page.offset is never
+        // persisted, so always start on the first page — a stale offset could
+        // otherwise land past the end of the restored result set.
+        const saved = localStorage.getItem(GRANT_ACCOUNT_KEY);
+        this.grantAccountFilter = saved != null ? saved : "";
+        this.account = this.grantAccountFilter;
+        this.page.offset = 0;
+        await this.loadAccounts();
         await this.probeTier();
         await this.loadRefs();
         await this.loadTab();
+      },
+
+      // loadAccounts fetches the accounts this principal may see so the local
+      // filter (and the grant editor's account picker) have options. The server
+      // scopes the list; a failure just leaves the filter as all-accounts.
+      async loadAccounts() {
+        try {
+          this.accounts = parseList(await rpcCall("ListAccounts", {}));
+        } catch (_) {
+          this.accounts = [];
+        }
       },
 
       // probeTier resolves BOTH tiers via the open Check RPC: account-admin (in
@@ -181,7 +231,10 @@
       async probeTier() {
         this.tierChecked = false;
         this.canDefineTemplate = await this.check(SYSTEM_ANCHOR); // system-admin
-        const accountAdmin = await this.check(accountAnchor(this.account));
+        // The account-admin probe needs a concrete account. In the all-accounts
+        // view (empty filter) there is none, so rely on system-admin; when the
+        // filter narrows to a single account, probe that account's admin anchor.
+        const accountAdmin = this.account ? await this.check(accountAnchor(this.account)) : false;
         // System-admin supersedes account-admin (mirrors the authz gate), so a
         // system-admin can manage grants in the active account too.
         this.canGrant = accountAdmin || this.canDefineTemplate;
@@ -227,7 +280,22 @@
         await this.loadTab();
       },
 
-      async onAccountChange() {
+      // onGrantAccountFilterChange reacts to the LOCAL account filter (not the
+      // shell). Empty = all accounts; a value narrows to that single account.
+      // account mirrors the filter so downstream helpers stay consistent, then
+      // the tier is re-probed (a single-account view can gate account-admin ops)
+      // and the active tab reloads. Switching scope resets to the first page.
+      async onGrantAccountFilterChange() {
+        this.account = this.grantAccountFilter;
+        this.page.offset = 0;
+        // Persist the selection under the Grants-owned key so the choice
+        // survives across visits (E1-S5). Empty string ("all accounts") is a
+        // real, restorable value — store it verbatim.
+        try {
+          localStorage.setItem(GRANT_ACCOUNT_KEY, this.grantAccountFilter);
+        } catch (_) {
+          /* storage unavailable (private mode / quota) — non-fatal */
+        }
         await this.probeTier();
         await this.loadTab();
       },
@@ -251,32 +319,74 @@
       },
       filterNeedsValue(op) { return op !== "empty"; },
       addGrantFilter() { this.grantFilters.push({ field: this.grantCols[0].key, op: "contains", value: "" }); },
-      removeGrantFilter(i) { this.grantFilters.splice(i, 1); this.loadGrants(); },
-      clearGrantFilters() { this.grantFilters = []; this.grantFilterMatch = "all"; this.loadGrants(); },
+      removeGrantFilter(i) { this.grantFilters.splice(i, 1); this.reloadGrants(); },
+      clearGrantFilters() { this.grantFilters = []; this.grantFilterMatch = "all"; this.reloadGrants(); },
       addTmplFilter() { this.tmplFilters.push({ field: this.tmplCols[0].key, op: "contains", value: "" }); },
       removeTmplFilter(i) { this.tmplFilters.splice(i, 1); this.loadTemplates(); },
       clearTmplFilters() { this.tmplFilters = []; this.tmplFilterMatch = "all"; this.loadTemplates(); },
 
+      // reloadGrants resets to the first page, then loads. Any change to what the
+      // page window means — the account filter or the search Filter — must go
+      // through here so the operator is never stranded on an offset past the end
+      // of a freshly narrowed result set.
+      reloadGrants() {
+        this.page.offset = 0;
+        return this.loadGrants();
+      },
+
       async loadGrants() {
-        // No visible account (the principal administers none): nothing to list.
-        if (!this.account) {
-          this.rows = [];
-          return;
-        }
         this.loading = true;
         this.error = null;
         const flt = this._buildFilter(this.grantFilters, this.grantFilterMatch);
+        const scope = this.grantAccountFilter; // "" = all accounts (E1-S3)
+        // Clamp the outbound limit at the server cap so a single request never
+        // asks for more than the server will return (it clamps too, but we don't
+        // rely on that). offset is the current page window.
+        const limit = Math.min(GRANT_PAGE_SIZE, 500);
+        const offset = Math.max(0, this.page.offset);
         try {
-          const resp = await rpcCall("ListGrants", { actor: this.actor(), account_id: this.account, ...flt });
+          // All-accounts mode: a single ListGrants with an EMPTY account_id
+          // returns every account's grants — including "*" (wildcard-account)
+          // grants — inline, and is paginated by offset/limit. Do NOT issue the
+          // separate "*" overlay fetch here; that would duplicate the wildcard
+          // rows the all-accounts page already carries. (Empty string is the
+          // all-accounts sentinel; "*" is the wildcard account and must never be
+          // used to mean "all".)
+          const resp = await rpcCall("ListGrants", {
+            actor: this.actor(),
+            account_id: scope,
+            offset,
+            limit,
+            ...flt,
+          });
           let rows = parseList(resp);
-          // Also surface all-accounts ("*") grants. They apply in this account
-          // (and every other), but are stored under the wildcard stamp, so a
-          // per-account list never returns them. Skip when the active account is
-          // already "*" to avoid duplicates. Non-fatal if it fails.
-          if (this.account !== ACCOUNT_WILDCARD) {
+          // Adopt the effective (server-clamped) window + total from the echoed
+          // envelope so prev/next and the "X–Y of N" count reflect what the
+          // server actually paged. wildcardCount defaults to 0 (all-accounts
+          // mode has no separate overlay).
+          this.page.offset = resp.offset || 0;
+          this.page.limit = resp.limit || limit;
+          this.page.total = resp.total || 0;
+          this.page.wildcardCount = 0;
+          // Single-account mode: the per-account listing never returns "*"
+          // (wildcard-account) grants even though they apply in this account, so
+          // overlay them with a second call — a SMALL, always-included,
+          // NON-paginated group. Its rows are appended below the account's page
+          // but excluded from page.total, which stays the account-specific count
+          // that drives prev/next. Skipped when the filter is itself "*".
+          // Non-fatal if the overlay fails.
+          if (scope && scope !== ACCOUNT_WILDCARD) {
             try {
-              const starResp = await rpcCall("ListGrants", { actor: this.actor(), account_id: ACCOUNT_WILDCARD, ...flt });
-              rows = rows.concat(parseList(starResp));
+              const starResp = await rpcCall("ListGrants", {
+                actor: this.actor(),
+                account_id: ACCOUNT_WILDCARD,
+                offset: 0,
+                limit: WILDCARD_OVERLAY_LIMIT,
+                ...flt,
+              });
+              const starRows = parseList(starResp);
+              this.page.wildcardCount = starRows.length;
+              rows = rows.concat(starRows);
             } catch (_) {
               /* keep the account's own grants */
             }
@@ -284,10 +394,47 @@
           this.rows = rows;
         } catch (e) {
           this.rows = [];
+          this.page.total = 0;
+          this.page.wildcardCount = 0;
           if (e.status !== 401) this.error = { code: e.code, msg: e.message };
         } finally {
           this.loading = false;
         }
+      },
+
+      // ---- pagination (grants tab) ----
+
+      // hasPrev / hasNext gate the prev/next controls off the account-specific
+      // (or all-accounts) window; the "*" overlay group is intentionally not part
+      // of the page count. next reaches the following page while
+      // offset + limit < total (matching the server: next_offset < total).
+      hasPrev() {
+        return this.page.offset > 0;
+      },
+      hasNext() {
+        return this.page.offset + this.page.limit < this.page.total;
+      },
+      // pageStart / pageEnd are the 1-based inclusive bounds of the account's own
+      // grants on the current page, for the "showing X–Y of N" display. When the
+      // account's total is 0 the range collapses to 0–0.
+      pageStart() {
+        return this.page.total === 0 ? 0 : this.page.offset + 1;
+      },
+      pageEnd() {
+        // rows also holds the wildcard overlay in single-account mode, so derive
+        // the account-page row count from the window/total, not rows.length.
+        const paged = this.rows.length - this.page.wildcardCount;
+        return Math.min(this.page.offset + paged, this.page.total);
+      },
+      async nextPage() {
+        if (!this.hasNext()) return;
+        this.page.offset = this.page.offset + this.page.limit;
+        await this.loadGrants();
+      },
+      async prevPage() {
+        if (!this.hasPrev()) return;
+        this.page.offset = Math.max(0, this.page.offset - this.page.limit);
+        await this.loadGrants();
       },
 
       // isWildcardGrant reports whether a grant spans all accounts (stamped "*").

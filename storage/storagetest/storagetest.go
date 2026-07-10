@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"strconv"
 	"testing"
 	"time"
 
@@ -41,6 +42,9 @@ func Run(t *testing.T, newStore Factory) {
 	t.Run("GrantCRUDAndUpsert", func(t *testing.T) { testGrantCRUDAndUpsert(t, newStore(t)) })
 	t.Run("GrantValidation", func(t *testing.T) { testGrantValidation(t, newStore(t)) })
 	t.Run("ListGrantsAccountScoped", func(t *testing.T) { testListGrantsAccountScoped(t, newStore(t)) })
+	t.Run("ListGrantsPageAllAccounts", func(t *testing.T) { testListGrantsPageAllAccounts(t, newStore(t)) })
+	t.Run("ListGrantsPagePagination", func(t *testing.T) { testListGrantsPagePagination(t, newStore(t)) })
+	t.Run("ListGrantsPageMaxPageSize", func(t *testing.T) { testListGrantsPageMaxPageSize(t, newStore(t)) })
 	t.Run("GrantsForSubjects", func(t *testing.T) { testGrantsForSubjects(t, newStore(t)) })
 	t.Run("GrantsForSubjectsWildcardAccount", func(t *testing.T) { testGrantsForSubjectsWildcardAccount(t, newStore(t)) })
 	t.Run("GroupsForPrincipal", func(t *testing.T) { testGroupsForPrincipal(t, newStore(t)) })
@@ -485,6 +489,166 @@ func testListGrantsAccountScoped(t *testing.T, s model.Storage) {
 	if len(none) != 0 {
 		t.Fatalf("ghost grants = %d, want 0", len(none))
 	}
+}
+
+// seedGrant puts one minimal valid grant under the given id/account for the
+// pagination tests.
+func seedGrant(t *testing.T, s model.Storage, id, account string) {
+	t.Helper()
+	g := model.Grant{
+		ID: id, AccountID: account,
+		Subject:      model.Subject{Kind: model.SubjectPrincipal, ID: "alice"},
+		PermissionID: "p-read", Object: "**", Effect: model.EffectAllow,
+	}
+	if err := s.PutGrant(ctx(), g); err != nil {
+		t.Fatalf("seed grant %s: %v", id, err)
+	}
+}
+
+// testListGrantsPageAllAccounts pins the all-accounts scope: passing
+// model.AllAccounts ("") returns grants across every account — including the
+// wildcard "*" rows inline — while a concrete account id stays account-scoped.
+func testListGrantsPageAllAccounts(t *testing.T, s model.Storage) {
+	seedGrant(t, s, "g-acme-1", "acme")
+	seedGrant(t, s, "g-acme-2", "acme")
+	seedGrant(t, s, "g-other-1", "other")
+	seedGrant(t, s, "g-star-1", model.AccountWildcard) // "*" is an ordinary row
+
+	all, total, err := s.ListGrantsPage(ctx(), model.AllAccounts, 0, 100)
+	if err != nil {
+		t.Fatalf("list all: %v", err)
+	}
+	if total != 4 {
+		t.Fatalf("all-accounts total = %d, want 4", total)
+	}
+	if len(all) != 4 {
+		t.Fatalf("all-accounts page len = %d, want 4", len(all))
+	}
+	// Wildcard row must be present inline, not filtered out.
+	sawStar := false
+	for _, g := range all {
+		if g.AccountID == model.AccountWildcard {
+			sawStar = true
+		}
+	}
+	if !sawStar {
+		t.Fatal("wildcard '*' grant missing from all-accounts listing")
+	}
+	// Deterministic ordering: by account then id. "*" sorts before "acme".
+	wantOrder := []string{"g-star-1", "g-acme-1", "g-acme-2", "g-other-1"}
+	for i, g := range all {
+		if g.ID != wantOrder[i] {
+			t.Fatalf("all[%d] = %s, want %s (order = %v)", i, g.ID, wantOrder[i], grantIDs(all))
+		}
+	}
+
+	// A concrete account id stays scoped to that account only.
+	acme, acmeTotal, err := s.ListGrantsPage(ctx(), "acme", 0, 100)
+	if err != nil {
+		t.Fatalf("list acme: %v", err)
+	}
+	if acmeTotal != 2 || len(acme) != 2 {
+		t.Fatalf("acme total/len = %d/%d, want 2/2", acmeTotal, len(acme))
+	}
+	for _, g := range acme {
+		if g.AccountID != "acme" {
+			t.Fatalf("cross-account leak: %s stamped %s in acme page", g.ID, g.AccountID)
+		}
+	}
+}
+
+// testListGrantsPagePagination walks fixed-size pages across the all-accounts
+// listing and asserts the total is the pre-pagination count, pages tile the full
+// ordered set without gaps or overlap, and an offset past the end is empty.
+func testListGrantsPagePagination(t *testing.T, s model.Storage) {
+	const n = 7
+	for i := 0; i < n; i++ {
+		// Zero-padded ids so lexical id order is stable and predictable.
+		seedGrant(t, s, "g-"+itoa2(i), "acme")
+	}
+
+	var seen []string
+	for offset := 0; offset < n; offset += 3 {
+		page, total, err := s.ListGrantsPage(ctx(), model.AllAccounts, offset, 3)
+		if err != nil {
+			t.Fatalf("page offset %d: %v", offset, err)
+		}
+		if total != n {
+			t.Fatalf("total at offset %d = %d, want %d", offset, total, n)
+		}
+		seen = append(seen, grantIDs(page)...)
+	}
+	if len(seen) != n {
+		t.Fatalf("paged through %d grants, want %d (%v)", len(seen), n, seen)
+	}
+	// No duplicates across pages.
+	uniq := map[string]bool{}
+	for _, id := range seen {
+		if uniq[id] {
+			t.Fatalf("grant %s returned on more than one page", id)
+		}
+		uniq[id] = true
+	}
+
+	// Offset past the end yields an empty page with the total still intact.
+	empty, total, err := s.ListGrantsPage(ctx(), model.AllAccounts, 999, 3)
+	if err != nil {
+		t.Fatalf("page past end: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("page past end len = %d, want 0", len(empty))
+	}
+	if total != n {
+		t.Fatalf("total past end = %d, want %d", total, n)
+	}
+}
+
+// testListGrantsPageMaxPageSize asserts an over-cap limit is clamped to
+// model.MaxGrantPageSize while total still reports the full match count, and a
+// non-positive limit falls back to the default page size.
+func testListGrantsPageMaxPageSize(t *testing.T, s model.Storage) {
+	total := model.MaxGrantPageSize + 5
+	for i := 0; i < total; i++ {
+		seedGrant(t, s, "g-"+itoa2(i), "acme")
+	}
+	page, got, err := s.ListGrantsPage(ctx(), model.AllAccounts, 0, total) // ask for more than the cap
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if got != total {
+		t.Fatalf("total = %d, want %d", got, total)
+	}
+	if len(page) != model.MaxGrantPageSize {
+		t.Fatalf("page len = %d, want clamp to %d", len(page), model.MaxGrantPageSize)
+	}
+
+	// Non-positive limit falls back to the default page size.
+	deflt, _, err := s.ListGrantsPage(ctx(), model.AllAccounts, 0, 0)
+	if err != nil {
+		t.Fatalf("default-limit list: %v", err)
+	}
+	if len(deflt) != model.DefaultGrantPageSize {
+		t.Fatalf("default page len = %d, want %d", len(deflt), model.DefaultGrantPageSize)
+	}
+}
+
+// grantIDs projects a grant slice to its ids for order/paging assertions.
+func grantIDs(gs []model.Grant) []string {
+	out := make([]string, len(gs))
+	for i, g := range gs {
+		out[i] = g.ID
+	}
+	return out
+}
+
+// itoa2 renders n as a fixed 4-digit zero-padded string so seeded grant ids sort
+// lexically in numeric order (g-0000, g-0001, ...).
+func itoa2(n int) string {
+	s := strconv.Itoa(n)
+	for len(s) < 4 {
+		s = "0" + s
+	}
+	return s
 }
 
 func testGrantsForSubjects(t *testing.T, s model.Storage) {
