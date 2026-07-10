@@ -103,6 +103,26 @@ type Storage interface {
 	GetGrant(ctx context.Context, id string) (Grant, error)
 	// ListGrants returns every grant stamped to accountID.
 	ListGrants(ctx context.Context, accountID string) ([]Grant, error)
+	// ListGrantsPage returns a single deterministic page of grants plus the total
+	// number of matching grants (the pre-pagination count), so a caller can render
+	// a page and drive prev/next without a second query.
+	//
+	// Scope: when accountID is AllAccounts (the empty string) the page spans EVERY
+	// account, and wildcard-stamped ("*") grants are returned inline as the
+	// ordinary rows they are — they are NOT filtered out. Any other accountID
+	// scopes the page to that single account, matching ListGrants' account
+	// stamping exactly (a "*" listing returns only the wildcard grants).
+	//
+	// Pagination: offset and limit are normalized through ClampGrantPage — a
+	// non-positive limit becomes DefaultGrantPageSize, a limit above
+	// MaxGrantPageSize is clamped to the cap, and a negative offset floors at
+	// zero — so no single call can return more than MaxGrantPageSize rows. The
+	// returned total is the full match count BEFORE offset/limit are applied, so
+	// it does not shrink as the caller pages through.
+	//
+	// Ordering is deterministic and stable across pages: by AccountID, then by
+	// grant id. Both backends return the same order so pages line up.
+	ListGrantsPage(ctx context.Context, accountID string, offset, limit int) (grants []Grant, total int, err error)
 	DeleteGrant(ctx context.Context, id string) error
 
 	// ---- Decision-engine queries ----

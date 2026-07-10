@@ -446,6 +446,41 @@ func (s *Store) ListGrants(_ context.Context, accountID string) ([]model.Grant, 
 	return out, nil
 }
 
+func (s *Store) ListGrantsPage(_ context.Context, accountID string, offset, limit int) ([]model.Grant, int, error) {
+	offset, limit = model.ClampGrantPage(offset, limit)
+	allAccounts := accountID == model.AllAccounts
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	// Collect every matching grant, then order deterministically before paginating
+	// so pages are stable across calls (map iteration order is not).
+	matched := make([]model.Grant, 0)
+	for _, g := range s.grants {
+		// AllAccounts spans every account (wildcard "*" rows included inline);
+		// otherwise match the single account exactly, like ListGrants.
+		if allAccounts || g.AccountID == accountID {
+			matched = append(matched, g)
+		}
+	}
+	sort.Slice(matched, func(i, j int) bool {
+		if matched[i].AccountID != matched[j].AccountID {
+			return matched[i].AccountID < matched[j].AccountID
+		}
+		return matched[i].ID < matched[j].ID
+	})
+	total := len(matched)
+	// Apply the offset/limit window; an offset past the end yields an empty page.
+	if offset >= total {
+		return make([]model.Grant, 0), total, nil
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	page := make([]model.Grant, end-offset)
+	copy(page, matched[offset:end])
+	return page, total, nil
+}
+
 func (s *Store) DeleteGrant(_ context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
