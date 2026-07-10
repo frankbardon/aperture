@@ -193,8 +193,8 @@
         };
         document.addEventListener("aperture:unauthenticated", clear);
         document.addEventListener("aperture:signout", clear);
-        // E1-S3: the Grants view owns its account scope locally and deliberately
-        // does NOT subscribe to the shell's global "aperture:account" broadcast.
+        // E1-S3: the Grants view owns its account scope locally; there is no
+        // global shell account broadcast to subscribe to.
         if (this.principal) this.bootstrap();
       },
 

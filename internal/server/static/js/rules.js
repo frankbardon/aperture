@@ -408,11 +408,11 @@ function rules() {
     error: "",
     problems: [],
     // ---- E7-S3 load/save/validate/what-if integration state ----
-    // The dev principal + active account the RPCs resolve against, plus the admin
-    // tier probe (rule editing is SYSTEM tier — only system-admins may save).
+    // The dev principal the RPCs resolve against, plus the admin tier probe (rule
+    // editing is SYSTEM tier — only system-admins may save). Rules are global, so
+    // there is no account context.
     principal: "",
     accounts: [],
-    account: "",
     canEdit: false,
     tierChecked: false,
     // The rule being edited: its name (identity, upsert key), description, and the
@@ -465,18 +465,12 @@ function rules() {
       });
       const clear = () => {
         this.principal = "";
-        this.account = ""; // don't carry a prior session's account across sign-in
         this.accounts = [];
         this.canEdit = false;
         this.tierChecked = false;
       };
       document.addEventListener("aperture:unauthenticated", clear);
       document.addEventListener("aperture:signout", clear);
-      // The account switcher is global (owned by the shell); re-probe on change.
-      document.addEventListener("aperture:account", (e) => {
-        this.account = (e.detail && e.detail.account) || "";
-        if (this.principal) this.probeTier();
-      });
       this.mount();
     },
 
@@ -509,11 +503,10 @@ function rules() {
       }
     },
 
-    // bootstrap resolves the active account, probes system-admin authority (rule
-    // editing is SYSTEM tier), and lists the stored rules to load from.
+    // bootstrap probes system-admin authority (rule editing is SYSTEM tier) and
+    // lists the stored rules to load from. Rules are global — nothing here depends
+    // on an account.
     async bootstrap() {
-      // The account is owned by the shell (global switcher); mirror its value.
-      this.account = window.apertureAccount();
       await this.probeTier();
       await this.loadRules();
       await this.loadObjectTypes();
@@ -559,14 +552,14 @@ function rules() {
 
 
     // probeTier asks the OPEN Check RPC whether the signed-in principal holds
-    // system-admin authority, gating the Save affordance (E6-S2 pattern). It
-    // carries the bearer but needs no auth, so a read-only viewer still gets an
-    // answer and a 403 on save is never a surprise.
+    // system-admin authority, gating the Save affordance (E6-S2 pattern). The
+    // check is global and account-independent — it resolves system-admin via the
+    // platform "*" grant. It carries the bearer but needs no auth, so a read-only
+    // viewer still gets an answer and a 403 on save is never a surprise.
     async probeTier() {
       this.tierChecked = false;
       try {
         const dec = await ruleRpc("Check", {
-          account: this.account,
           principal: this.principal,
           action: "aperture.admin",
           object: "system:schema",
@@ -652,7 +645,7 @@ function rules() {
       try {
         const rule = this.currentRule();
         await ruleRpc("PutRule", {
-          actor: { account: this.account },
+          actor: { principal: this.principal },
           rule_json: JSON.stringify(rule),
         });
         this.status = { kind: "ok", msg: 'Saved rule "' + rule.Name + '".' };

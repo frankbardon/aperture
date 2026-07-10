@@ -16,11 +16,9 @@
 const TOKEN_KEY = "aperture.devToken";
 
 // The shell no longer owns a global account: each screen scopes itself (Grants
-// via its own "aperture.grants.account" filter, What-if/Model/Rules via their own
-// local account state). apertureAccount stays as a no-op compatibility shim so
-// screens that still call it (crud.js, rules.js — cleaned up in a later story)
-// keep working; it always reports "no shell account".
-window.apertureAccount = () => "";
+// via its own "aperture.grants.account" filter, What-if via its own local
+// account state). The Model and Rules tabs are global-entity screens with no
+// account concept at all.
 
 // Nav skeleton — the sections the next stories fill. Sentence case, no emoji.
 const SECTIONS = [
