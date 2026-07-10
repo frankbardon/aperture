@@ -529,8 +529,11 @@
           <div x-show="active === 'grants'" x-data="grants()">
             <div class="bera-section-head">
               <h1 class="bera-h3">Grants</h1>
-              <span class="bera-caption" x-show="account">
-                Account <span class="bera-mono" x-text="account"></span>
+              <span class="bera-caption">
+                <template x-if="grantAccountFilter">
+                  <span>Account <span class="bera-mono" x-text="grantAccountFilter"></span></span>
+                </template>
+                <template x-if="!grantAccountFilter"><span>All accounts</span></template>
               </span>
             </div>
 
@@ -582,6 +585,18 @@
                 <!-- ============ GRANTS TAB ============ -->
                 <div x-show="activeTab === 'grants'">
                   <div class="bera-toolbar">
+                    <!-- Local account filter (E1-S3): empty = all accounts;
+                         choosing an account narrows to it. This is the Grants
+                         view's own scope — it does NOT follow the shell switcher. -->
+                    <label class="bera-field" style="display:flex;align-items:center;gap:8px;margin:0">
+                      <span class="bera-caption">Account</span>
+                      <select class="bera-select" style="width:auto" x-model="grantAccountFilter" @change="onGrantAccountFilterChange()">
+                        <option value="">All accounts</option>
+                        <template x-for="a in accounts" :key="a.ID">
+                          <option :value="a.ID" x-text="a.Name ? (a.ID + ' — ' + a.Name) : a.ID"></option>
+                        </template>
+                      </select>
+                    </label>
                     <div class="bera-toolbar__spacer"></div>
                     <button class="bera-btn bera-btn--secondary" @click="addGrantFilter()">Add filter</button>
                     <button class="bera-btn bera-btn--primary" x-show="canGrant" @click="openCreateGrant()">New grant</button>
@@ -614,7 +629,10 @@
                   </div>
 
                   <template x-if="!loading && rows.length === 0">
-                    <div class="bera-empty"><p class="bera-body">No grants in this account yet.</p></div>
+                    <div class="bera-empty">
+                      <p class="bera-body" x-show="!grantAccountFilter">No grants in any account yet.</p>
+                      <p class="bera-body" x-show="grantAccountFilter">No grants in this account yet.</p>
+                    </div>
                   </template>
 
                   <template x-if="!loading && rows.length > 0">
@@ -631,7 +649,7 @@
                             <tr>
                               <td class="bera-cell-mono" x-text="g.ID"></td>
                               <td>
-                                <template x-if="isWildcardGrant(g)"><span class="bera-badge bera-badge--allow">all accounts</span></template>
+                                <template x-if="isWildcardGrant(g)"><span class="bera-cell-mono" title="Wildcard account — applies in every account">*</span></template>
                                 <template x-if="!isWildcardGrant(g)"><span class="bera-cell-mono" x-text="g.AccountID"></span></template>
                               </td>
                               <td class="bera-cell-mono" x-text="subjectText(g)"></td>

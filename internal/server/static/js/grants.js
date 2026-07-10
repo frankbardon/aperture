@@ -83,7 +83,16 @@
 
       principal: "",
       accounts: [],
+      // account mirrors the LOCAL grants filter (grantAccountFilter). Empty = the
+      // all-accounts view (E1-S3): the Grants view owns its scope locally and no
+      // longer follows the shell's global account switcher. Downstream helpers
+      // (actor, grant editor default, delegation, apply) read this value.
       account: "",
+      // grantAccountFilter is the Grants view's own account filter. Empty string
+      // is the default "all accounts" listing (system-admin only, per E1-S2);
+      // a non-empty value narrows to that single account. "*" is NOT sent as an
+      // all-accounts sentinel — it is the wildcard account.
+      grantAccountFilter: "",
       canGrant: false, // account-admin: raw grants, apply, bulk, delegation ops
       canDefineTemplate: false, // system-admin: template definition CRUD
       tierChecked: false,
@@ -149,7 +158,8 @@
         });
         const clear = () => {
           this.principal = "";
-          this.account = ""; // don't carry a prior session's account across sign-in
+          this.account = "";
+          this.grantAccountFilter = ""; // reset to the all-accounts default
           this.accounts = [];
           this.rows = [];
           this.templates = [];
@@ -159,20 +169,31 @@
         };
         document.addEventListener("aperture:unauthenticated", clear);
         document.addEventListener("aperture:signout", clear);
-        // The account switcher is global (owned by the shell); react when it changes.
-        document.addEventListener("aperture:account", (e) => {
-          this.account = (e.detail && e.detail.account) || "";
-          if (this.principal) this.onAccountChange();
-        });
+        // E1-S3: the Grants view owns its account scope locally and deliberately
+        // does NOT subscribe to the shell's global "aperture:account" broadcast.
         if (this.principal) this.bootstrap();
       },
 
       async bootstrap() {
-        // The account is owned by the shell (global switcher); mirror its value.
-        this.account = window.apertureAccount();
+        // The Grants view defaults to the all-accounts listing; the local filter
+        // (grantAccountFilter) starts empty and account mirrors it.
+        this.grantAccountFilter = "";
+        this.account = "";
+        await this.loadAccounts();
         await this.probeTier();
         await this.loadRefs();
         await this.loadTab();
+      },
+
+      // loadAccounts fetches the accounts this principal may see so the local
+      // filter (and the grant editor's account picker) have options. The server
+      // scopes the list; a failure just leaves the filter as all-accounts.
+      async loadAccounts() {
+        try {
+          this.accounts = parseList(await rpcCall("ListAccounts", {}));
+        } catch (_) {
+          this.accounts = [];
+        }
       },
 
       // probeTier resolves BOTH tiers via the open Check RPC: account-admin (in
@@ -181,7 +202,10 @@
       async probeTier() {
         this.tierChecked = false;
         this.canDefineTemplate = await this.check(SYSTEM_ANCHOR); // system-admin
-        const accountAdmin = await this.check(accountAnchor(this.account));
+        // The account-admin probe needs a concrete account. In the all-accounts
+        // view (empty filter) there is none, so rely on system-admin; when the
+        // filter narrows to a single account, probe that account's admin anchor.
+        const accountAdmin = this.account ? await this.check(accountAnchor(this.account)) : false;
         // System-admin supersedes account-admin (mirrors the authz gate), so a
         // system-admin can manage grants in the active account too.
         this.canGrant = accountAdmin || this.canDefineTemplate;
@@ -227,7 +251,13 @@
         await this.loadTab();
       },
 
-      async onAccountChange() {
+      // onGrantAccountFilterChange reacts to the LOCAL account filter (not the
+      // shell). Empty = all accounts; a value narrows to that single account.
+      // account mirrors the filter so downstream helpers stay consistent, then
+      // the tier is re-probed (a single-account view can gate account-admin ops)
+      // and the active tab reloads.
+      async onGrantAccountFilterChange() {
+        this.account = this.grantAccountFilter;
         await this.probeTier();
         await this.loadTab();
       },
@@ -258,22 +288,24 @@
       clearTmplFilters() { this.tmplFilters = []; this.tmplFilterMatch = "all"; this.loadTemplates(); },
 
       async loadGrants() {
-        // No visible account (the principal administers none): nothing to list.
-        if (!this.account) {
-          this.rows = [];
-          return;
-        }
         this.loading = true;
         this.error = null;
         const flt = this._buildFilter(this.grantFilters, this.grantFilterMatch);
+        const scope = this.grantAccountFilter; // "" = all accounts (E1-S3)
         try {
-          const resp = await rpcCall("ListGrants", { actor: this.actor(), account_id: this.account, ...flt });
+          // All-accounts mode: a single ListGrants with an EMPTY account_id
+          // returns every account's grants — including "*" (wildcard-account)
+          // grants — inline. Do NOT issue the separate "*" overlay fetch here;
+          // that would duplicate the wildcard rows the all-accounts page already
+          // carries. (Empty string is the all-accounts sentinel; "*" is the
+          // wildcard account and must never be used to mean "all".)
+          const resp = await rpcCall("ListGrants", { actor: this.actor(), account_id: scope, ...flt });
           let rows = parseList(resp);
-          // Also surface all-accounts ("*") grants. They apply in this account
-          // (and every other), but are stored under the wildcard stamp, so a
-          // per-account list never returns them. Skip when the active account is
-          // already "*" to avoid duplicates. Non-fatal if it fails.
-          if (this.account !== ACCOUNT_WILDCARD) {
+          // Single-account mode: the per-account listing never returns "*"
+          // (wildcard-account) grants even though they apply in this account, so
+          // overlay them with a second call — as before. Skipped when the filter
+          // is itself "*". Non-fatal if the overlay fails.
+          if (scope && scope !== ACCOUNT_WILDCARD) {
             try {
               const starResp = await rpcCall("ListGrants", { actor: this.actor(), account_id: ACCOUNT_WILDCARD, ...flt });
               rows = rows.concat(parseList(starResp));
