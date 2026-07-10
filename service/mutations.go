@@ -461,6 +461,54 @@ func (s *Service) ListGrants(ctx context.Context, actor Actor, accountID string)
 	return s.store.ListGrants(ctx, accountID)
 }
 
+// ListGrantsPage returns one deterministic page of grants plus the total match
+// count, gating by the actor's read authority. Two scopes are supported:
+//
+//   - accountID == model.AllAccounts (the empty string) is the "all accounts"
+//     query: the page spans EVERY account (wildcard "*" grants returned inline).
+//     This path is SYSTEM-ADMIN ONLY (sys == true from readScope); an
+//     account-admin — however many accounts it administers — is denied it with
+//     APERTURE_AUTHZ_DENIED. Empty string is a query sentinel, never a real
+//     account id (do not conflate with "*", which is the wildcard account).
+//   - any other accountID scopes the page to that single account, gated exactly
+//     as ListGrants — a system-admin any account, an account-admin only the
+//     accounts it administers; platform ("*") grants stay system-admin-only.
+//
+// offset/limit are validated here (negative values are a caller error →
+// APERTURE_INVALID_INPUT) and then normalized by the store through
+// model.ClampGrantPage, so a non-positive limit becomes the default page size
+// and an over-cap limit is clamped to model.MaxGrantPageSize. The returned total
+// is the full pre-pagination match count for the requested scope, so a caller
+// can page through everything.
+func (s *Service) ListGrantsPage(ctx context.Context, actor Actor, accountID string, offset, limit int) ([]model.Grant, int, error) {
+	if err := s.requireStore(); err != nil {
+		return nil, 0, err
+	}
+	if offset < 0 || limit < 0 {
+		return nil, 0, aerr.WithContext(aerr.APERTURE_INVALID_INPUT,
+			"service: grant page offset and limit must not be negative",
+			map[string]any{"offset": offset, "limit": limit})
+	}
+	sys, accts, err := s.readScope(ctx, actor)
+	if err != nil {
+		return nil, 0, err
+	}
+	if accountID == model.AllAccounts {
+		// The all-accounts view crosses every tenant boundary, so it is the one
+		// read reserved to platform (system-admin) authority. authorizeAccountRead
+		// cannot express this — it gates a concrete account — so gate it here,
+		// before the store is touched, and never leak which accounts exist to a
+		// denied account-admin.
+		if !sys {
+			return nil, 0, aerr.New(aerr.APERTURE_AUTHZ_DENIED,
+				"service: listing grants across all accounts requires system-admin authority")
+		}
+	} else if err := s.authorizeAccountRead(sys, accts, accountID); err != nil {
+		return nil, 0, err
+	}
+	return s.store.ListGrantsPage(ctx, accountID, offset, limit)
+}
+
 func (s *Service) DeleteGrant(ctx context.Context, actor Actor, id string) (err error) {
 	if err = s.requireMutator(); err != nil {
 		return err

@@ -41,6 +41,97 @@ func grantInList(t *testing.T, ctx context.Context, c rpc.ApertureService, accou
 	return false
 }
 
+// TestGrantsSmokeAllAccountsPagination is the UI proxy for the grants god-view:
+// a system-admin (root) lists grants across EVERY account by sending an empty
+// account_id, paging through the result via offset/limit and reading total to
+// render prev/next; a non-admin (alice) is denied that path. The wildcard ("*")
+// platform grant is returned inline in the all-accounts view.
+func TestGrantsSmokeAllAccountsPagination(t *testing.T) {
+	srv, store := newTestServer(t)
+	c := client(srv)
+	ctx := context.Background()
+
+	// A second account plus concrete grants in both, so the all-accounts view
+	// spans tenants. The base fixture already seeds the "*" g-root-admin grant.
+	must(t, store.PutAccount(ctx, model.Account{ID: "beta", Name: "Beta"}))
+	must(t, store.PutObjectType(ctx, model.ObjectType{Name: "document", Actions: []string{"read"}}))
+	must(t, store.PutPermission(ctx, model.Permission{ID: "perm-read", ObjectType: "document", Action: "read"}))
+	for _, g := range []model.Grant{
+		{ID: "acme-1", AccountID: acct, Subject: model.Subject{Kind: model.SubjectPrincipal, ID: "alice"}, PermissionID: "perm-read", Object: "account:acme/document:1", Effect: model.EffectAllow},
+		{ID: "acme-2", AccountID: acct, Subject: model.Subject{Kind: model.SubjectPrincipal, ID: "alice"}, PermissionID: "perm-read", Object: "account:acme/document:2", Effect: model.EffectAllow},
+		{ID: "beta-1", AccountID: "beta", Subject: model.Subject{Kind: model.SubjectPrincipal, ID: "alice"}, PermissionID: "perm-read", Object: "account:beta/document:1", Effect: model.EffectAllow},
+	} {
+		must(t, store.PutGrant(ctx, g))
+	}
+
+	rootCtx := asPrincipal(context.Background(), t, "root")
+
+	// System-admin all-accounts (empty account_id): total spans every account
+	// (acme-1, acme-2, beta-1, g-root-admin = 4), wildcard grant returned inline.
+	resp, err := c.ListGrants(rootCtx, &rpc.ListGrantsRequest{Actor: &rpc.Actor{Principal: "root"}, AccountId: model.AllAccounts, Limit: 100})
+	if err != nil {
+		t.Fatalf("system-admin all-accounts ListGrants: %v", err)
+	}
+	if resp.Total != 4 {
+		t.Fatalf("all-accounts total = %d; want 4", resp.Total)
+	}
+	if len(resp.EntitiesJson) != 4 {
+		t.Fatalf("all-accounts page = %d rows; want 4", len(resp.EntitiesJson))
+	}
+	var sawWildcard bool
+	for _, s := range resp.EntitiesJson {
+		var g model.Grant
+		must(t, json.Unmarshal([]byte(s), &g))
+		if g.AccountID == model.AccountWildcard {
+			sawWildcard = true
+		}
+	}
+	if !sawWildcard {
+		t.Fatal("all-accounts view dropped the wildcard (\"*\") grant; it must be inline")
+	}
+
+	// Paging: a window of 2 returns a partial page and echoes offset/limit while
+	// total reports the full count so the UI can compute next/prev.
+	page1, err := c.ListGrants(rootCtx, &rpc.ListGrantsRequest{Actor: &rpc.Actor{Principal: "root"}, AccountId: model.AllAccounts, Offset: 0, Limit: 2})
+	if err != nil {
+		t.Fatalf("all-accounts page 1: %v", err)
+	}
+	if page1.Total != 4 || len(page1.EntitiesJson) != 2 || page1.Offset != 0 || page1.Limit != 2 {
+		t.Fatalf("page 1 = %d rows, total %d, off %d, lim %d; want 2/4/0/2", len(page1.EntitiesJson), page1.Total, page1.Offset, page1.Limit)
+	}
+	page2, err := c.ListGrants(rootCtx, &rpc.ListGrantsRequest{Actor: &rpc.Actor{Principal: "root"}, AccountId: model.AllAccounts, Offset: 2, Limit: 2})
+	if err != nil {
+		t.Fatalf("all-accounts page 2: %v", err)
+	}
+	if page2.Total != 4 || len(page2.EntitiesJson) != 2 {
+		t.Fatalf("page 2 = %d rows, total %d; want 2/4", len(page2.EntitiesJson), page2.Total)
+	}
+
+	// Non-admin (alice) is denied the all-accounts path (twirp PermissionDenied,
+	// APERTURE_AUTHZ_DENIED meta), even though alice may read her own account.
+	aliceCtx := asPrincipal(context.Background(), t, "alice")
+	_, err = c.ListGrants(aliceCtx, &rpc.ListGrantsRequest{Actor: &rpc.Actor{Principal: "alice"}, AccountId: model.AllAccounts, Limit: 100})
+	if err == nil {
+		t.Fatal("non-admin all-accounts ListGrants should be denied")
+	}
+	te, ok := err.(twirp.Error)
+	if !ok || te.Code() != twirp.PermissionDenied {
+		t.Fatalf("want twirp PermissionDenied, got %v", err)
+	}
+	if code := te.Meta("code"); code != string(aerr.APERTURE_AUTHZ_DENIED) {
+		t.Fatalf("want meta code %s, got %q", aerr.APERTURE_AUTHZ_DENIED, code)
+	}
+
+	// Single-account path stays backward compatible: alice lists her own account.
+	own, err := c.ListGrants(aliceCtx, &rpc.ListGrantsRequest{Actor: &rpc.Actor{Principal: "alice", Account: acct}, AccountId: acct})
+	if err != nil {
+		t.Fatalf("single-account ListGrants(acme) for member: %v", err)
+	}
+	if own.Total != 2 || len(own.EntitiesJson) != 2 {
+		t.Fatalf("acme page = %d rows, total %d; want 2/2 (acme-1, acme-2)", len(own.EntitiesJson), own.Total)
+	}
+}
+
 // TestGrantsSmokeTemplateProvision is the UI proxy for the templates tab: an
 // admin defines a template (PutTemplate, system tier), previews it client-side,
 // then provisions a principal by applying it (ApplyTemplate, account tier,

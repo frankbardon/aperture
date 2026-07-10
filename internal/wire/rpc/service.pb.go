@@ -1718,11 +1718,30 @@ func (x *MembershipKeyRequest) GetAccountId() string {
 	return ""
 }
 
+// ListGrantsRequest lists grants for a scope, optionally filtered and paginated.
+//
+// account_id selects the scope. A non-empty account_id lists that single
+// account's grants (backward-compatible with the original single-account call).
+// An EMPTY account_id is the "all accounts" sentinel: it lists grants across
+// EVERY account (wildcard "*" grants returned inline) and is SYSTEM-ADMIN ONLY —
+// an account-admin is denied that path (APERTURE_AUTHZ_DENIED). Empty string is
+// a query sentinel, NOT a real account id; it is distinct from "*", which is the
+// wildcard account (platform grants).
+//
+// offset/limit paginate the result. offset is the number of leading rows to
+// skip; limit caps the page size. A non-positive limit falls back to the server
+// default page size and any limit above the server cap is clamped down, so a
+// single call never returns an unbounded page. Negative offset or limit is a
+// caller error (APERTURE_INVALID_INPUT). filter applies server-side before
+// pagination is reported. Older clients that omit offset/limit get the default
+// first page, preserving the original unpaginated single-account behaviour.
 type ListGrantsRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Actor         *Actor                 `protobuf:"bytes,1,opt,name=actor,proto3" json:"actor,omitempty"`
 	AccountId     string                 `protobuf:"bytes,2,opt,name=account_id,json=accountId,proto3" json:"account_id,omitempty"`
 	Filter        *Filter                `protobuf:"bytes,3,opt,name=filter,proto3" json:"filter,omitempty"`
+	Offset        int32                  `protobuf:"varint,4,opt,name=offset,proto3" json:"offset,omitempty"`
+	Limit         int32                  `protobuf:"varint,5,opt,name=limit,proto3" json:"limit,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1778,6 +1797,94 @@ func (x *ListGrantsRequest) GetFilter() *Filter {
 	return nil
 }
 
+func (x *ListGrantsRequest) GetOffset() int32 {
+	if x != nil {
+		return x.Offset
+	}
+	return 0
+}
+
+func (x *ListGrantsRequest) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+// ListGrantsResponse returns one page of grant bodies (each canonical JSON, like
+// EntityListResponse) plus the pagination envelope the client needs to render
+// prev/next: total is the full pre-pagination match count for the requested
+// scope, and offset/limit echo the effective (server-clamped) page window the
+// rows correspond to. next_offset = offset + limit reaches the following page
+// while next_offset < total.
+type ListGrantsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	EntitiesJson  []string               `protobuf:"bytes,1,rep,name=entities_json,json=entitiesJson,proto3" json:"entities_json,omitempty"`
+	Total         int32                  `protobuf:"varint,2,opt,name=total,proto3" json:"total,omitempty"`
+	Offset        int32                  `protobuf:"varint,3,opt,name=offset,proto3" json:"offset,omitempty"`
+	Limit         int32                  `protobuf:"varint,4,opt,name=limit,proto3" json:"limit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListGrantsResponse) Reset() {
+	*x = ListGrantsResponse{}
+	mi := &file_service_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListGrantsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListGrantsResponse) ProtoMessage() {}
+
+func (x *ListGrantsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_service_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListGrantsResponse.ProtoReflect.Descriptor instead.
+func (*ListGrantsResponse) Descriptor() ([]byte, []int) {
+	return file_service_proto_rawDescGZIP(), []int{33}
+}
+
+func (x *ListGrantsResponse) GetEntitiesJson() []string {
+	if x != nil {
+		return x.EntitiesJson
+	}
+	return nil
+}
+
+func (x *ListGrantsResponse) GetTotal() int32 {
+	if x != nil {
+		return x.Total
+	}
+	return 0
+}
+
+func (x *ListGrantsResponse) GetOffset() int32 {
+	if x != nil {
+		return x.Offset
+	}
+	return 0
+}
+
+func (x *ListGrantsResponse) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
 // TemplateKeyRequest names a template by (name, version). version <= 0 selects
 // the latest version for Get, and deletes every version for Delete.
 type TemplateKeyRequest struct {
@@ -1791,7 +1898,7 @@ type TemplateKeyRequest struct {
 
 func (x *TemplateKeyRequest) Reset() {
 	*x = TemplateKeyRequest{}
-	mi := &file_service_proto_msgTypes[33]
+	mi := &file_service_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1803,7 +1910,7 @@ func (x *TemplateKeyRequest) String() string {
 func (*TemplateKeyRequest) ProtoMessage() {}
 
 func (x *TemplateKeyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[33]
+	mi := &file_service_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1816,7 +1923,7 @@ func (x *TemplateKeyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TemplateKeyRequest.ProtoReflect.Descriptor instead.
 func (*TemplateKeyRequest) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{33}
+	return file_service_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *TemplateKeyRequest) GetActor() *Actor {
@@ -1857,7 +1964,7 @@ type ApplyTemplateRequest struct {
 
 func (x *ApplyTemplateRequest) Reset() {
 	*x = ApplyTemplateRequest{}
-	mi := &file_service_proto_msgTypes[34]
+	mi := &file_service_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1869,7 +1976,7 @@ func (x *ApplyTemplateRequest) String() string {
 func (*ApplyTemplateRequest) ProtoMessage() {}
 
 func (x *ApplyTemplateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[34]
+	mi := &file_service_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1882,7 +1989,7 @@ func (x *ApplyTemplateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApplyTemplateRequest.ProtoReflect.Descriptor instead.
 func (*ApplyTemplateRequest) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{34}
+	return file_service_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *ApplyTemplateRequest) GetActor() *Actor {
@@ -1937,7 +2044,7 @@ type BulkGrantsRequest struct {
 
 func (x *BulkGrantsRequest) Reset() {
 	*x = BulkGrantsRequest{}
-	mi := &file_service_proto_msgTypes[35]
+	mi := &file_service_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1949,7 +2056,7 @@ func (x *BulkGrantsRequest) String() string {
 func (*BulkGrantsRequest) ProtoMessage() {}
 
 func (x *BulkGrantsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[35]
+	mi := &file_service_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1962,7 +2069,7 @@ func (x *BulkGrantsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BulkGrantsRequest.ProtoReflect.Descriptor instead.
 func (*BulkGrantsRequest) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{35}
+	return file_service_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *BulkGrantsRequest) GetActor() *Actor {
@@ -1989,7 +2096,7 @@ type BulkDeleteGrantsRequest struct {
 
 func (x *BulkDeleteGrantsRequest) Reset() {
 	*x = BulkDeleteGrantsRequest{}
-	mi := &file_service_proto_msgTypes[36]
+	mi := &file_service_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2001,7 +2108,7 @@ func (x *BulkDeleteGrantsRequest) String() string {
 func (*BulkDeleteGrantsRequest) ProtoMessage() {}
 
 func (x *BulkDeleteGrantsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[36]
+	mi := &file_service_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2014,7 +2121,7 @@ func (x *BulkDeleteGrantsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BulkDeleteGrantsRequest.ProtoReflect.Descriptor instead.
 func (*BulkDeleteGrantsRequest) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{36}
+	return file_service_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *BulkDeleteGrantsRequest) GetActor() *Actor {
@@ -2043,7 +2150,7 @@ type ExportRequest struct {
 
 func (x *ExportRequest) Reset() {
 	*x = ExportRequest{}
-	mi := &file_service_proto_msgTypes[37]
+	mi := &file_service_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2055,7 +2162,7 @@ func (x *ExportRequest) String() string {
 func (*ExportRequest) ProtoMessage() {}
 
 func (x *ExportRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[37]
+	mi := &file_service_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2068,7 +2175,7 @@ func (x *ExportRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExportRequest.ProtoReflect.Descriptor instead.
 func (*ExportRequest) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{37}
+	return file_service_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *ExportRequest) GetActor() *Actor {
@@ -2089,7 +2196,7 @@ type ExportResponse struct {
 
 func (x *ExportResponse) Reset() {
 	*x = ExportResponse{}
-	mi := &file_service_proto_msgTypes[38]
+	mi := &file_service_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2101,7 +2208,7 @@ func (x *ExportResponse) String() string {
 func (*ExportResponse) ProtoMessage() {}
 
 func (x *ExportResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[38]
+	mi := &file_service_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2114,7 +2221,7 @@ func (x *ExportResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExportResponse.ProtoReflect.Descriptor instead.
 func (*ExportResponse) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{38}
+	return file_service_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *ExportResponse) GetDocumentJson() string {
@@ -2136,7 +2243,7 @@ type ImportRequest struct {
 
 func (x *ImportRequest) Reset() {
 	*x = ImportRequest{}
-	mi := &file_service_proto_msgTypes[39]
+	mi := &file_service_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2148,7 +2255,7 @@ func (x *ImportRequest) String() string {
 func (*ImportRequest) ProtoMessage() {}
 
 func (x *ImportRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[39]
+	mi := &file_service_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2161,7 +2268,7 @@ func (x *ImportRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ImportRequest.ProtoReflect.Descriptor instead.
 func (*ImportRequest) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{39}
+	return file_service_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *ImportRequest) GetActor() *Actor {
@@ -2208,7 +2315,7 @@ type QueryAuditRequest struct {
 
 func (x *QueryAuditRequest) Reset() {
 	*x = QueryAuditRequest{}
-	mi := &file_service_proto_msgTypes[40]
+	mi := &file_service_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2220,7 +2327,7 @@ func (x *QueryAuditRequest) String() string {
 func (*QueryAuditRequest) ProtoMessage() {}
 
 func (x *QueryAuditRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[40]
+	mi := &file_service_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2233,7 +2340,7 @@ func (x *QueryAuditRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryAuditRequest.ProtoReflect.Descriptor instead.
 func (*QueryAuditRequest) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{40}
+	return file_service_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *QueryAuditRequest) GetActor() *Actor {
@@ -2303,7 +2410,7 @@ type QueryAuditResponse struct {
 
 func (x *QueryAuditResponse) Reset() {
 	*x = QueryAuditResponse{}
-	mi := &file_service_proto_msgTypes[41]
+	mi := &file_service_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2315,7 +2422,7 @@ func (x *QueryAuditResponse) String() string {
 func (*QueryAuditResponse) ProtoMessage() {}
 
 func (x *QueryAuditResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[41]
+	mi := &file_service_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2328,7 +2435,7 @@ func (x *QueryAuditResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueryAuditResponse.ProtoReflect.Descriptor instead.
 func (*QueryAuditResponse) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{41}
+	return file_service_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *QueryAuditResponse) GetEventsJson() []string {
@@ -2350,7 +2457,7 @@ type BestowRequest struct {
 
 func (x *BestowRequest) Reset() {
 	*x = BestowRequest{}
-	mi := &file_service_proto_msgTypes[42]
+	mi := &file_service_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2362,7 +2469,7 @@ func (x *BestowRequest) String() string {
 func (*BestowRequest) ProtoMessage() {}
 
 func (x *BestowRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[42]
+	mi := &file_service_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2375,7 +2482,7 @@ func (x *BestowRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BestowRequest.ProtoReflect.Descriptor instead.
 func (*BestowRequest) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{42}
+	return file_service_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *BestowRequest) GetDelegator() string {
@@ -2402,7 +2509,7 @@ type RevokeRequest struct {
 
 func (x *RevokeRequest) Reset() {
 	*x = RevokeRequest{}
-	mi := &file_service_proto_msgTypes[43]
+	mi := &file_service_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2414,7 +2521,7 @@ func (x *RevokeRequest) String() string {
 func (*RevokeRequest) ProtoMessage() {}
 
 func (x *RevokeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[43]
+	mi := &file_service_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2427,7 +2534,7 @@ func (x *RevokeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RevokeRequest.ProtoReflect.Descriptor instead.
 func (*RevokeRequest) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{43}
+	return file_service_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *RevokeRequest) GetDelegator() string {
@@ -2456,7 +2563,7 @@ type ImpersonationStartRequest struct {
 
 func (x *ImpersonationStartRequest) Reset() {
 	*x = ImpersonationStartRequest{}
-	mi := &file_service_proto_msgTypes[44]
+	mi := &file_service_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2468,7 +2575,7 @@ func (x *ImpersonationStartRequest) String() string {
 func (*ImpersonationStartRequest) ProtoMessage() {}
 
 func (x *ImpersonationStartRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[44]
+	mi := &file_service_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2481,7 +2588,7 @@ func (x *ImpersonationStartRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ImpersonationStartRequest.ProtoReflect.Descriptor instead.
 func (*ImpersonationStartRequest) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{44}
+	return file_service_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *ImpersonationStartRequest) GetOperator() string {
@@ -2526,7 +2633,7 @@ type ImpersonationSession struct {
 
 func (x *ImpersonationSession) Reset() {
 	*x = ImpersonationSession{}
-	mi := &file_service_proto_msgTypes[45]
+	mi := &file_service_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2538,7 +2645,7 @@ func (x *ImpersonationSession) String() string {
 func (*ImpersonationSession) ProtoMessage() {}
 
 func (x *ImpersonationSession) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[45]
+	mi := &file_service_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2551,7 +2658,7 @@ func (x *ImpersonationSession) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ImpersonationSession.ProtoReflect.Descriptor instead.
 func (*ImpersonationSession) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{45}
+	return file_service_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *ImpersonationSession) GetRealActor() string {
@@ -2608,7 +2715,7 @@ type ImpersonationStopRequest struct {
 
 func (x *ImpersonationStopRequest) Reset() {
 	*x = ImpersonationStopRequest{}
-	mi := &file_service_proto_msgTypes[46]
+	mi := &file_service_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2620,7 +2727,7 @@ func (x *ImpersonationStopRequest) String() string {
 func (*ImpersonationStopRequest) ProtoMessage() {}
 
 func (x *ImpersonationStopRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[46]
+	mi := &file_service_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2633,7 +2740,7 @@ func (x *ImpersonationStopRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ImpersonationStopRequest.ProtoReflect.Descriptor instead.
 func (*ImpersonationStopRequest) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{46}
+	return file_service_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *ImpersonationStopRequest) GetOperator() string {
@@ -2770,12 +2877,19 @@ const file_service_proto_rawDesc = "" +
 	"\x05actor\x18\x01 \x01(\v2\x0f.aperture.ActorR\x05actor\x12!\n" +
 	"\fprincipal_id\x18\x02 \x01(\tR\vprincipalId\x12\x1d\n" +
 	"\n" +
-	"account_id\x18\x03 \x01(\tR\taccountId\"\x83\x01\n" +
+	"account_id\x18\x03 \x01(\tR\taccountId\"\xb1\x01\n" +
 	"\x11ListGrantsRequest\x12%\n" +
 	"\x05actor\x18\x01 \x01(\v2\x0f.aperture.ActorR\x05actor\x12\x1d\n" +
 	"\n" +
 	"account_id\x18\x02 \x01(\tR\taccountId\x12(\n" +
-	"\x06filter\x18\x03 \x01(\v2\x10.aperture.FilterR\x06filter\"i\n" +
+	"\x06filter\x18\x03 \x01(\v2\x10.aperture.FilterR\x06filter\x12\x16\n" +
+	"\x06offset\x18\x04 \x01(\x05R\x06offset\x12\x14\n" +
+	"\x05limit\x18\x05 \x01(\x05R\x05limit\"}\n" +
+	"\x12ListGrantsResponse\x12#\n" +
+	"\rentities_json\x18\x01 \x03(\tR\fentitiesJson\x12\x14\n" +
+	"\x05total\x18\x02 \x01(\x05R\x05total\x12\x16\n" +
+	"\x06offset\x18\x03 \x01(\x05R\x06offset\x12\x14\n" +
+	"\x05limit\x18\x04 \x01(\x05R\x05limit\"i\n" +
 	"\x12TemplateKeyRequest\x12%\n" +
 	"\x05actor\x18\x01 \x01(\v2\x0f.aperture.ActorR\x05actor\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x18\n" +
@@ -2893,7 +3007,7 @@ const file_service_proto_rawDesc = "" +
 	"\bPutGrant\x12\x17.aperture.EntityRequest\x1a\x0f.aperture.Empty\x12:\n" +
 	"\bGetGrant\x12\x14.aperture.GetRequest\x1a\x18.aperture.EntityResponse\x12G\n" +
 	"\n" +
-	"ListGrants\x12\x1b.aperture.ListGrantsRequest\x1a\x1c.aperture.EntityListResponse\x127\n" +
+	"ListGrants\x12\x1b.aperture.ListGrantsRequest\x1a\x1c.aperture.ListGrantsResponse\x127\n" +
 	"\vDeleteGrant\x12\x17.aperture.DeleteRequest\x1a\x0f.aperture.Empty\x127\n" +
 	"\vPutTemplate\x12\x17.aperture.EntityRequest\x1a\x0f.aperture.Empty\x12E\n" +
 	"\vGetTemplate\x12\x1c.aperture.TemplateKeyRequest\x1a\x18.aperture.EntityResponse\x12D\n" +
@@ -2923,7 +3037,7 @@ func file_service_proto_rawDescGZIP() []byte {
 	return file_service_proto_rawDescData
 }
 
-var file_service_proto_msgTypes = make([]protoimpl.MessageInfo, 48)
+var file_service_proto_msgTypes = make([]protoimpl.MessageInfo, 49)
 var file_service_proto_goTypes = []any{
 	(*Empty)(nil),                     // 0: aperture.Empty
 	(*FieldPredicate)(nil),            // 1: aperture.FieldPredicate
@@ -2958,21 +3072,22 @@ var file_service_proto_goTypes = []any{
 	(*SimulateRequest)(nil),           // 30: aperture.SimulateRequest
 	(*MembershipKeyRequest)(nil),      // 31: aperture.MembershipKeyRequest
 	(*ListGrantsRequest)(nil),         // 32: aperture.ListGrantsRequest
-	(*TemplateKeyRequest)(nil),        // 33: aperture.TemplateKeyRequest
-	(*ApplyTemplateRequest)(nil),      // 34: aperture.ApplyTemplateRequest
-	(*BulkGrantsRequest)(nil),         // 35: aperture.BulkGrantsRequest
-	(*BulkDeleteGrantsRequest)(nil),   // 36: aperture.BulkDeleteGrantsRequest
-	(*ExportRequest)(nil),             // 37: aperture.ExportRequest
-	(*ExportResponse)(nil),            // 38: aperture.ExportResponse
-	(*ImportRequest)(nil),             // 39: aperture.ImportRequest
-	(*QueryAuditRequest)(nil),         // 40: aperture.QueryAuditRequest
-	(*QueryAuditResponse)(nil),        // 41: aperture.QueryAuditResponse
-	(*BestowRequest)(nil),             // 42: aperture.BestowRequest
-	(*RevokeRequest)(nil),             // 43: aperture.RevokeRequest
-	(*ImpersonationStartRequest)(nil), // 44: aperture.ImpersonationStartRequest
-	(*ImpersonationSession)(nil),      // 45: aperture.ImpersonationSession
-	(*ImpersonationStopRequest)(nil),  // 46: aperture.ImpersonationStopRequest
-	nil,                               // 47: aperture.ApplyTemplateRequest.ParamsEntry
+	(*ListGrantsResponse)(nil),        // 33: aperture.ListGrantsResponse
+	(*TemplateKeyRequest)(nil),        // 34: aperture.TemplateKeyRequest
+	(*ApplyTemplateRequest)(nil),      // 35: aperture.ApplyTemplateRequest
+	(*BulkGrantsRequest)(nil),         // 36: aperture.BulkGrantsRequest
+	(*BulkDeleteGrantsRequest)(nil),   // 37: aperture.BulkDeleteGrantsRequest
+	(*ExportRequest)(nil),             // 38: aperture.ExportRequest
+	(*ExportResponse)(nil),            // 39: aperture.ExportResponse
+	(*ImportRequest)(nil),             // 40: aperture.ImportRequest
+	(*QueryAuditRequest)(nil),         // 41: aperture.QueryAuditRequest
+	(*QueryAuditResponse)(nil),        // 42: aperture.QueryAuditResponse
+	(*BestowRequest)(nil),             // 43: aperture.BestowRequest
+	(*RevokeRequest)(nil),             // 44: aperture.RevokeRequest
+	(*ImpersonationStartRequest)(nil), // 45: aperture.ImpersonationStartRequest
+	(*ImpersonationSession)(nil),      // 46: aperture.ImpersonationSession
+	(*ImpersonationStopRequest)(nil),  // 47: aperture.ImpersonationStopRequest
+	nil,                               // 48: aperture.ApplyTemplateRequest.ParamsEntry
 }
 var file_service_proto_depIdxs = []int32{
 	1,  // 0: aperture.Filter.predicates:type_name -> aperture.FieldPredicate
@@ -2994,13 +3109,13 @@ var file_service_proto_depIdxs = []int32{
 	2,  // 16: aperture.ListGrantsRequest.filter:type_name -> aperture.Filter
 	4,  // 17: aperture.TemplateKeyRequest.actor:type_name -> aperture.Actor
 	4,  // 18: aperture.ApplyTemplateRequest.actor:type_name -> aperture.Actor
-	47, // 19: aperture.ApplyTemplateRequest.params:type_name -> aperture.ApplyTemplateRequest.ParamsEntry
+	48, // 19: aperture.ApplyTemplateRequest.params:type_name -> aperture.ApplyTemplateRequest.ParamsEntry
 	4,  // 20: aperture.BulkGrantsRequest.actor:type_name -> aperture.Actor
 	4,  // 21: aperture.BulkDeleteGrantsRequest.actor:type_name -> aperture.Actor
 	4,  // 22: aperture.ExportRequest.actor:type_name -> aperture.Actor
 	4,  // 23: aperture.ImportRequest.actor:type_name -> aperture.Actor
 	4,  // 24: aperture.QueryAuditRequest.actor:type_name -> aperture.Actor
-	45, // 25: aperture.ImpersonationStopRequest.session:type_name -> aperture.ImpersonationSession
+	46, // 25: aperture.ImpersonationStopRequest.session:type_name -> aperture.ImpersonationSession
 	5,  // 26: aperture.ApertureService.Check:input_type -> aperture.CheckRequest
 	7,  // 27: aperture.ApertureService.CheckBatch:input_type -> aperture.CheckBatchRequest
 	10, // 28: aperture.ApertureService.Enumerate:input_type -> aperture.EnumerateRequest
@@ -3047,19 +3162,19 @@ var file_service_proto_depIdxs = []int32{
 	32, // 69: aperture.ApertureService.ListGrants:input_type -> aperture.ListGrantsRequest
 	24, // 70: aperture.ApertureService.DeleteGrant:input_type -> aperture.DeleteRequest
 	22, // 71: aperture.ApertureService.PutTemplate:input_type -> aperture.EntityRequest
-	33, // 72: aperture.ApertureService.GetTemplate:input_type -> aperture.TemplateKeyRequest
+	34, // 72: aperture.ApertureService.GetTemplate:input_type -> aperture.TemplateKeyRequest
 	3,  // 73: aperture.ApertureService.ListTemplates:input_type -> aperture.ListRequest
-	33, // 74: aperture.ApertureService.DeleteTemplate:input_type -> aperture.TemplateKeyRequest
-	34, // 75: aperture.ApertureService.ApplyTemplate:input_type -> aperture.ApplyTemplateRequest
-	35, // 76: aperture.ApertureService.BulkPutGrants:input_type -> aperture.BulkGrantsRequest
-	36, // 77: aperture.ApertureService.BulkDeleteGrants:input_type -> aperture.BulkDeleteGrantsRequest
-	37, // 78: aperture.ApertureService.Export:input_type -> aperture.ExportRequest
-	39, // 79: aperture.ApertureService.Import:input_type -> aperture.ImportRequest
-	40, // 80: aperture.ApertureService.QueryAudit:input_type -> aperture.QueryAuditRequest
-	42, // 81: aperture.ApertureService.Bestow:input_type -> aperture.BestowRequest
-	43, // 82: aperture.ApertureService.Revoke:input_type -> aperture.RevokeRequest
-	44, // 83: aperture.ApertureService.ImpersonationStart:input_type -> aperture.ImpersonationStartRequest
-	46, // 84: aperture.ApertureService.ImpersonationStop:input_type -> aperture.ImpersonationStopRequest
+	34, // 74: aperture.ApertureService.DeleteTemplate:input_type -> aperture.TemplateKeyRequest
+	35, // 75: aperture.ApertureService.ApplyTemplate:input_type -> aperture.ApplyTemplateRequest
+	36, // 76: aperture.ApertureService.BulkPutGrants:input_type -> aperture.BulkGrantsRequest
+	37, // 77: aperture.ApertureService.BulkDeleteGrants:input_type -> aperture.BulkDeleteGrantsRequest
+	38, // 78: aperture.ApertureService.Export:input_type -> aperture.ExportRequest
+	40, // 79: aperture.ApertureService.Import:input_type -> aperture.ImportRequest
+	41, // 80: aperture.ApertureService.QueryAudit:input_type -> aperture.QueryAuditRequest
+	43, // 81: aperture.ApertureService.Bestow:input_type -> aperture.BestowRequest
+	44, // 82: aperture.ApertureService.Revoke:input_type -> aperture.RevokeRequest
+	45, // 83: aperture.ApertureService.ImpersonationStart:input_type -> aperture.ImpersonationStartRequest
+	47, // 84: aperture.ApertureService.ImpersonationStop:input_type -> aperture.ImpersonationStopRequest
 	6,  // 85: aperture.ApertureService.Check:output_type -> aperture.Decision
 	9,  // 86: aperture.ApertureService.CheckBatch:output_type -> aperture.CheckBatchResponse
 	11, // 87: aperture.ApertureService.Enumerate:output_type -> aperture.EnumerateResponse
@@ -3103,7 +3218,7 @@ var file_service_proto_depIdxs = []int32{
 	0,  // 125: aperture.ApertureService.DeleteMembership:output_type -> aperture.Empty
 	0,  // 126: aperture.ApertureService.PutGrant:output_type -> aperture.Empty
 	25, // 127: aperture.ApertureService.GetGrant:output_type -> aperture.EntityResponse
-	26, // 128: aperture.ApertureService.ListGrants:output_type -> aperture.EntityListResponse
+	33, // 128: aperture.ApertureService.ListGrants:output_type -> aperture.ListGrantsResponse
 	0,  // 129: aperture.ApertureService.DeleteGrant:output_type -> aperture.Empty
 	0,  // 130: aperture.ApertureService.PutTemplate:output_type -> aperture.Empty
 	25, // 131: aperture.ApertureService.GetTemplate:output_type -> aperture.EntityResponse
@@ -3112,12 +3227,12 @@ var file_service_proto_depIdxs = []int32{
 	26, // 134: aperture.ApertureService.ApplyTemplate:output_type -> aperture.EntityListResponse
 	0,  // 135: aperture.ApertureService.BulkPutGrants:output_type -> aperture.Empty
 	0,  // 136: aperture.ApertureService.BulkDeleteGrants:output_type -> aperture.Empty
-	38, // 137: aperture.ApertureService.Export:output_type -> aperture.ExportResponse
+	39, // 137: aperture.ApertureService.Export:output_type -> aperture.ExportResponse
 	0,  // 138: aperture.ApertureService.Import:output_type -> aperture.Empty
-	41, // 139: aperture.ApertureService.QueryAudit:output_type -> aperture.QueryAuditResponse
+	42, // 139: aperture.ApertureService.QueryAudit:output_type -> aperture.QueryAuditResponse
 	0,  // 140: aperture.ApertureService.Bestow:output_type -> aperture.Empty
 	0,  // 141: aperture.ApertureService.Revoke:output_type -> aperture.Empty
-	45, // 142: aperture.ApertureService.ImpersonationStart:output_type -> aperture.ImpersonationSession
+	46, // 142: aperture.ApertureService.ImpersonationStart:output_type -> aperture.ImpersonationSession
 	0,  // 143: aperture.ApertureService.ImpersonationStop:output_type -> aperture.Empty
 	85, // [85:144] is the sub-list for method output_type
 	26, // [26:85] is the sub-list for method input_type
@@ -3137,7 +3252,7 @@ func file_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_service_proto_rawDesc), len(file_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   48,
+			NumMessages:   49,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

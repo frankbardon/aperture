@@ -97,7 +97,7 @@ service ApertureService {
 
   rpc PutGrant(EntityRequest) returns (Empty);
   rpc GetGrant(GetRequest) returns (EntityResponse);
-  rpc ListGrants(ListGrantsRequest) returns (EntityListResponse);
+  rpc ListGrants(ListGrantsRequest) returns (ListGrantsResponse);
   rpc DeleteGrant(DeleteRequest) returns (Empty);
 
   // ---- Templates (definition writes require system-admin; apply is account-tier) ----
@@ -334,10 +334,42 @@ message MembershipKeyRequest {
   string account_id = 3;
 }
 
+// ListGrantsRequest lists grants for a scope, optionally filtered and paginated.
+//
+// account_id selects the scope. A non-empty account_id lists that single
+// account's grants (backward-compatible with the original single-account call).
+// An EMPTY account_id is the "all accounts" sentinel: it lists grants across
+// EVERY account (wildcard "*" grants returned inline) and is SYSTEM-ADMIN ONLY —
+// an account-admin is denied that path (APERTURE_AUTHZ_DENIED). Empty string is
+// a query sentinel, NOT a real account id; it is distinct from "*", which is the
+// wildcard account (platform grants).
+//
+// offset/limit paginate the result. offset is the number of leading rows to
+// skip; limit caps the page size. A non-positive limit falls back to the server
+// default page size and any limit above the server cap is clamped down, so a
+// single call never returns an unbounded page. Negative offset or limit is a
+// caller error (APERTURE_INVALID_INPUT). filter applies server-side before
+// pagination is reported. Older clients that omit offset/limit get the default
+// first page, preserving the original unpaginated single-account behaviour.
 message ListGrantsRequest {
   Actor actor = 1;
   string account_id = 2;
   Filter filter = 3;
+  int32 offset = 4;
+  int32 limit = 5;
+}
+
+// ListGrantsResponse returns one page of grant bodies (each canonical JSON, like
+// EntityListResponse) plus the pagination envelope the client needs to render
+// prev/next: total is the full pre-pagination match count for the requested
+// scope, and offset/limit echo the effective (server-clamped) page window the
+// rows correspond to. next_offset = offset + limit reaches the following page
+// while next_offset < total.
+message ListGrantsResponse {
+  repeated string entities_json = 1;
+  int32 total = 2;
+  int32 offset = 3;
+  int32 limit = 4;
 }
 
 // ---- Template messages ----

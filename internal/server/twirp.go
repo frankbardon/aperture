@@ -559,16 +559,36 @@ func (h *twirpHandler) GetGrant(ctx context.Context, req *rpc.GetRequest) (*rpc.
 	return entityResponse(g)
 }
 
-func (h *twirpHandler) ListGrants(ctx context.Context, req *rpc.ListGrantsRequest) (*rpc.EntityListResponse, error) {
+// ListGrants lists grants for a scope, paginated. An empty account_id is the
+// "all accounts" sentinel (system-admin only); a non-empty account_id lists that
+// single account (backward-compatible). The service owns the auth gate and page
+// validation; offset/limit are threaded through and echoed back alongside the
+// total match count so the client can render prev/next.
+func (h *twirpHandler) ListGrants(ctx context.Context, req *rpc.ListGrantsRequest) (*rpc.ListGrantsResponse, error) {
 	actor, err := h.readActor(ctx)
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	items, err := h.svc.ListGrants(ctx, actor, req.AccountId)
+	offset, limit := int(req.GetOffset()), int(req.GetLimit())
+	items, total, err := h.svc.ListGrantsPage(ctx, actor, req.GetAccountId(), offset, limit)
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return entityListResponse(items, filterSpec(req.GetFilter()))
+	out := make([]string, len(items))
+	for i := range items {
+		js, err := json.Marshal(items[i])
+		if err != nil {
+			return nil, mapErr(aerr.Wrap(aerr.APERTURE_STORAGE, "twirp: marshalling entity", err))
+		}
+		out[i] = string(js)
+	}
+	out = filter.Apply(out, filterSpec(req.GetFilter()))
+	return &rpc.ListGrantsResponse{
+		EntitiesJson: out,
+		Total:        int32(total),
+		Offset:       req.GetOffset(),
+		Limit:        req.GetLimit(),
+	}, nil
 }
 
 func (h *twirpHandler) DeleteGrant(ctx context.Context, req *rpc.DeleteRequest) (*rpc.Empty, error) {
