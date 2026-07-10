@@ -112,17 +112,6 @@
           <div class="shell__topbar-spacer"></div>
           <template x-if="signedIn">
             <div class="shell__identity">
-              <!-- Global account switcher: one selection shared by every screen. -->
-              <template x-if="accounts.length > 0">
-                <label class="shell__account">
-                  <span class="bera-caption">Account</span>
-                  <select class="bera-select" style="width: auto" x-model="account" @change="changeAccount()">
-                    <template x-for="a in accounts" :key="a.ID">
-                      <option :value="a.ID" x-text="a.Name || a.ID"></option>
-                    </template>
-                  </select>
-                </label>
-              </template>
               <span>Signed in as</span>
               <span class="shell__identity-id" x-text="principal"></span>
               <button class="bera-btn bera-btn--secondary" @click="signOut()">Sign out</button>
