@@ -230,21 +230,24 @@
       // template definition. A non-admin still gets an answer (Check is open).
       async probeTier() {
         this.tierChecked = false;
-        this.canDefineTemplate = await this.check(SYSTEM_ANCHOR); // system-admin
+        // System-admin resolves in the platform "*" account (where the super-admin
+        // grant lives); the account-admin probe resolves in the concrete filtered
+        // account. Both must name an account — the engine rejects an empty one.
+        this.canDefineTemplate = await this.check(SYSTEM_ANCHOR, ACCOUNT_WILDCARD); // system-admin
         // The account-admin probe needs a concrete account. In the all-accounts
         // view (empty filter) there is none, so rely on system-admin; when the
         // filter narrows to a single account, probe that account's admin anchor.
-        const accountAdmin = this.account ? await this.check(accountAnchor(this.account)) : false;
+        const accountAdmin = this.account ? await this.check(accountAnchor(this.account), this.account) : false;
         // System-admin supersedes account-admin (mirrors the authz gate), so a
         // system-admin can manage grants in the active account too.
         this.canGrant = accountAdmin || this.canDefineTemplate;
         this.tierChecked = true;
       },
 
-      async check(object) {
+      async check(object, account) {
         try {
           const dec = await rpcCall("Check", {
-            account: this.account,
+            account,
             principal: this.principal,
             action: ADMIN_ACTION,
             object,
@@ -272,7 +275,12 @@
       },
 
       actor() {
-        return { principal: this.principal, account: this.account };
+        // Grant mutations are account-tier (authorized against the grant's target
+        // account), but a system-admin drives them via the system-admin fallback,
+        // which resolves in the actor's account. In the all-accounts view there is
+        // no filter, so fall back to the platform "*" account — an empty actor
+        // account is rejected outright.
+        return { principal: this.principal, account: this.account || ACCOUNT_WILDCARD };
       },
 
       async selectTab(key) {

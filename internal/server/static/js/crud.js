@@ -25,6 +25,11 @@ const CRUD_TOKEN_KEY = "aperture.devToken";
 const RPC_PREFIX = "/twirp/aperture.ApertureService/";
 const ADMIN_ACTION = "aperture.admin";
 const ADMIN_OBJECT = "system:schema"; // the system-tier authority anchor (authz.go)
+// System-admin authority is an ordinary account-scoped grant, resolved in the
+// actor's active account — so both the probe and every schema mutation must name
+// one. The platform "*" account (model.AccountWildcard) is where the super-admin
+// grant lives, so system-tier work resolves against it.
+const ADMIN_ACCOUNT = "*";
 
 // rpc POSTs a Twirp JSON call through the shared bearer wrapper and returns the
 // decoded response. A non-2xx carries a Twirp error body
@@ -264,6 +269,7 @@ function crud() {
       this.tierChecked = false;
       try {
         const dec = await rpc("Check", {
+          account: ADMIN_ACCOUNT,
           principal: this.principal,
           action: ADMIN_ACTION,
           object: ADMIN_OBJECT,
@@ -721,10 +727,11 @@ function crud() {
     },
 
     actor() {
-      // Global schema mutations resolve against system-admin authority (platform
-      // "*"), not an account — so the actor carries only the principal. Membership
+      // Global schema mutations resolve against system-admin authority in the
+      // platform "*" account (where the super-admin grant lives), so the actor
+      // must name it — the authz gate rejects an empty actor account. Membership
       // upserts pass their AccountID in the entity body, not via the actor.
-      return { principal: this.principal };
+      return { principal: this.principal, account: ADMIN_ACCOUNT };
     },
 
     // ---- delete ----
