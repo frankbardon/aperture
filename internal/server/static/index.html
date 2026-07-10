@@ -605,22 +605,22 @@
                   <div class="bera-filterbar" x-show="grantFilters.length > 0">
                     <div class="bera-filterbar__match">
                       <span class="bera-caption">Match</span>
-                      <select class="bera-select" style="width:auto" x-model="grantFilterMatch" @change="loadGrants()">
+                      <select class="bera-select" style="width:auto" x-model="grantFilterMatch" @change="reloadGrants()">
                         <option value="all">all</option><option value="any">any</option>
                       </select>
                       <span class="bera-caption">of:</span>
                     </div>
                     <template x-for="(f, i) in grantFilters" :key="i">
                       <div class="bera-filterrow">
-                        <select class="bera-select" x-model="f.field" @change="loadGrants()">
+                        <select class="bera-select" x-model="f.field" @change="reloadGrants()">
                           <template x-for="col in grantCols" :key="col.key"><option :value="col.key" x-text="col.label"></option></template>
                         </select>
-                        <select class="bera-select" style="width:auto" x-model="f.op" @change="loadGrants()">
+                        <select class="bera-select" style="width:auto" x-model="f.op" @change="reloadGrants()">
                           <option value="contains">contains</option><option value="eq">equals</option>
                           <option value="starts">starts with</option><option value="empty">is empty</option>
                         </select>
                         <input class="bera-input" style="width:150px" x-model="f.value" x-show="filterNeedsValue(f.op)"
-                               placeholder="value" @keydown.enter="loadGrants()" @blur="loadGrants()" />
+                               placeholder="value" @keydown.enter="reloadGrants()" @blur="reloadGrants()" />
                         <button class="bera-iconbtn" title="Remove" @click="removeGrantFilter(i)">✕</button>
                       </div>
                     </template>
@@ -672,6 +672,24 @@
                       </table>
                     </div>
                   </template>
+
+                  <!-- Pagination bar (E1-S4): count of the account's own grants
+                       plus prev/next over its window. In single-account mode the
+                       "*" (platform) overlay is an always-included group NOT
+                       counted in the total, called out separately when present. -->
+                  <div class="bera-toolbar" x-show="!loading && page.total > 0">
+                    <span class="bera-caption">
+                      Showing <span x-text="pageStart()"></span>–<span x-text="pageEnd()"></span>
+                      of <span x-text="page.total"></span>
+                      <span x-show="!grantAccountFilter"> across all accounts</span>
+                      <span x-show="grantAccountFilter"> in this account</span>
+                      <span class="bera-muted" x-show="page.wildcardCount > 0"
+                            x-text="'  + ' + page.wildcardCount + ' platform (*) grant' + (page.wildcardCount === 1 ? '' : 's')"></span>
+                    </span>
+                    <div class="bera-toolbar__spacer"></div>
+                    <button class="bera-btn bera-btn--secondary" :disabled="!hasPrev()" @click="prevPage()">Prev</button>
+                    <button class="bera-btn bera-btn--secondary" :disabled="!hasNext()" @click="nextPage()">Next</button>
+                  </div>
                 </div>
 
                 <!-- ============ TEMPLATES TAB ============ -->

@@ -24,6 +24,14 @@
   const SYSTEM_ANCHOR = "system:schema"; // system-tier authority anchor (authz.go)
   const accountAnchor = (a) => "account:" + a + "/admin:all"; // account-tier anchor
   const ACCOUNT_WILDCARD = "*"; // the all-accounts grant stamp (model.AccountWildcard)
+  // GRANT_PAGE_SIZE is the client page size for the grants listing. It stays at
+  // or below model.MaxGrantPageSize (500) so a single request never asks the
+  // server for more than it will return; the server clamps anything larger, but
+  // we never send an over-cap limit. WILDCARD_OVERLAY_LIMIT fetches the "*"
+  // (platform) overlay in single-account mode as one small, non-paginated group
+  // — wildcard-account grants are few, so a generous single page covers them.
+  const GRANT_PAGE_SIZE = 100;
+  const WILDCARD_OVERLAY_LIMIT = 500;
 
   // rpcCall POSTs a Twirp JSON call through the shell's bearer wrapper and
   // normalises a non-2xx Twirp error body into an Error with .code (the canonical
@@ -105,6 +113,15 @@
 
       // ---- grants tab ----
       rows: [],
+      // page holds the pagination envelope for the account-specific (or
+      // all-accounts) grant listing echoed back by ListGrants: offset/limit are
+      // the effective server-clamped window and total is the full pre-pagination
+      // match count that drives prev/next. wildcardCount is the number of "*"
+      // (platform) overlay grants merged in only in single-account mode — an
+      // always-included, NON-paginated group shown alongside the account's page,
+      // deliberately excluded from total so the "X–Y of N" count stays honest
+      // about the account's own grants.
+      page: { offset: 0, limit: GRANT_PAGE_SIZE, total: 0, wildcardCount: 0 },
       grantModal: { open: false, mode: "create", form: {}, strategyFilter: "", saving: false, error: null },
       confirm: { open: false, grant: null, saving: false, error: null },
 
@@ -179,6 +196,7 @@
         // (grantAccountFilter) starts empty and account mirrors it.
         this.grantAccountFilter = "";
         this.account = "";
+        this.page.offset = 0;
         await this.loadAccounts();
         await this.probeTier();
         await this.loadRefs();
@@ -255,9 +273,10 @@
       // shell). Empty = all accounts; a value narrows to that single account.
       // account mirrors the filter so downstream helpers stay consistent, then
       // the tier is re-probed (a single-account view can gate account-admin ops)
-      // and the active tab reloads.
+      // and the active tab reloads. Switching scope resets to the first page.
       async onGrantAccountFilterChange() {
         this.account = this.grantAccountFilter;
+        this.page.offset = 0;
         await this.probeTier();
         await this.loadTab();
       },
@@ -281,34 +300,74 @@
       },
       filterNeedsValue(op) { return op !== "empty"; },
       addGrantFilter() { this.grantFilters.push({ field: this.grantCols[0].key, op: "contains", value: "" }); },
-      removeGrantFilter(i) { this.grantFilters.splice(i, 1); this.loadGrants(); },
-      clearGrantFilters() { this.grantFilters = []; this.grantFilterMatch = "all"; this.loadGrants(); },
+      removeGrantFilter(i) { this.grantFilters.splice(i, 1); this.reloadGrants(); },
+      clearGrantFilters() { this.grantFilters = []; this.grantFilterMatch = "all"; this.reloadGrants(); },
       addTmplFilter() { this.tmplFilters.push({ field: this.tmplCols[0].key, op: "contains", value: "" }); },
       removeTmplFilter(i) { this.tmplFilters.splice(i, 1); this.loadTemplates(); },
       clearTmplFilters() { this.tmplFilters = []; this.tmplFilterMatch = "all"; this.loadTemplates(); },
+
+      // reloadGrants resets to the first page, then loads. Any change to what the
+      // page window means — the account filter or the search Filter — must go
+      // through here so the operator is never stranded on an offset past the end
+      // of a freshly narrowed result set.
+      reloadGrants() {
+        this.page.offset = 0;
+        return this.loadGrants();
+      },
 
       async loadGrants() {
         this.loading = true;
         this.error = null;
         const flt = this._buildFilter(this.grantFilters, this.grantFilterMatch);
         const scope = this.grantAccountFilter; // "" = all accounts (E1-S3)
+        // Clamp the outbound limit at the server cap so a single request never
+        // asks for more than the server will return (it clamps too, but we don't
+        // rely on that). offset is the current page window.
+        const limit = Math.min(GRANT_PAGE_SIZE, 500);
+        const offset = Math.max(0, this.page.offset);
         try {
           // All-accounts mode: a single ListGrants with an EMPTY account_id
           // returns every account's grants — including "*" (wildcard-account)
-          // grants — inline. Do NOT issue the separate "*" overlay fetch here;
-          // that would duplicate the wildcard rows the all-accounts page already
-          // carries. (Empty string is the all-accounts sentinel; "*" is the
-          // wildcard account and must never be used to mean "all".)
-          const resp = await rpcCall("ListGrants", { actor: this.actor(), account_id: scope, ...flt });
+          // grants — inline, and is paginated by offset/limit. Do NOT issue the
+          // separate "*" overlay fetch here; that would duplicate the wildcard
+          // rows the all-accounts page already carries. (Empty string is the
+          // all-accounts sentinel; "*" is the wildcard account and must never be
+          // used to mean "all".)
+          const resp = await rpcCall("ListGrants", {
+            actor: this.actor(),
+            account_id: scope,
+            offset,
+            limit,
+            ...flt,
+          });
           let rows = parseList(resp);
+          // Adopt the effective (server-clamped) window + total from the echoed
+          // envelope so prev/next and the "X–Y of N" count reflect what the
+          // server actually paged. wildcardCount defaults to 0 (all-accounts
+          // mode has no separate overlay).
+          this.page.offset = resp.offset || 0;
+          this.page.limit = resp.limit || limit;
+          this.page.total = resp.total || 0;
+          this.page.wildcardCount = 0;
           // Single-account mode: the per-account listing never returns "*"
           // (wildcard-account) grants even though they apply in this account, so
-          // overlay them with a second call — as before. Skipped when the filter
-          // is itself "*". Non-fatal if the overlay fails.
+          // overlay them with a second call — a SMALL, always-included,
+          // NON-paginated group. Its rows are appended below the account's page
+          // but excluded from page.total, which stays the account-specific count
+          // that drives prev/next. Skipped when the filter is itself "*".
+          // Non-fatal if the overlay fails.
           if (scope && scope !== ACCOUNT_WILDCARD) {
             try {
-              const starResp = await rpcCall("ListGrants", { actor: this.actor(), account_id: ACCOUNT_WILDCARD, ...flt });
-              rows = rows.concat(parseList(starResp));
+              const starResp = await rpcCall("ListGrants", {
+                actor: this.actor(),
+                account_id: ACCOUNT_WILDCARD,
+                offset: 0,
+                limit: WILDCARD_OVERLAY_LIMIT,
+                ...flt,
+              });
+              const starRows = parseList(starResp);
+              this.page.wildcardCount = starRows.length;
+              rows = rows.concat(starRows);
             } catch (_) {
               /* keep the account's own grants */
             }
@@ -316,10 +375,47 @@
           this.rows = rows;
         } catch (e) {
           this.rows = [];
+          this.page.total = 0;
+          this.page.wildcardCount = 0;
           if (e.status !== 401) this.error = { code: e.code, msg: e.message };
         } finally {
           this.loading = false;
         }
+      },
+
+      // ---- pagination (grants tab) ----
+
+      // hasPrev / hasNext gate the prev/next controls off the account-specific
+      // (or all-accounts) window; the "*" overlay group is intentionally not part
+      // of the page count. next reaches the following page while
+      // offset + limit < total (matching the server: next_offset < total).
+      hasPrev() {
+        return this.page.offset > 0;
+      },
+      hasNext() {
+        return this.page.offset + this.page.limit < this.page.total;
+      },
+      // pageStart / pageEnd are the 1-based inclusive bounds of the account's own
+      // grants on the current page, for the "showing X–Y of N" display. When the
+      // account's total is 0 the range collapses to 0–0.
+      pageStart() {
+        return this.page.total === 0 ? 0 : this.page.offset + 1;
+      },
+      pageEnd() {
+        // rows also holds the wildcard overlay in single-account mode, so derive
+        // the account-page row count from the window/total, not rows.length.
+        const paged = this.rows.length - this.page.wildcardCount;
+        return Math.min(this.page.offset + paged, this.page.total);
+      },
+      async nextPage() {
+        if (!this.hasNext()) return;
+        this.page.offset = this.page.offset + this.page.limit;
+        await this.loadGrants();
+      },
+      async prevPage() {
+        if (!this.hasPrev()) return;
+        this.page.offset = Math.max(0, this.page.offset - this.page.limit);
+        await this.loadGrants();
       },
 
       // isWildcardGrant reports whether a grant spans all accounts (stamped "*").
