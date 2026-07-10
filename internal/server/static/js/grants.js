@@ -19,6 +19,13 @@
  */
 (function () {
   const TOKEN_KEY = "aperture.devToken";
+  // GRANT_ACCOUNT_KEY persists the Grants view's OWN local account filter across
+  // visits (E1-S5). It is deliberately distinct from the shell's
+  // "aperture.account" key (which E2-S1 deletes) — the Grants view owns its scope
+  // and no longer reads anything from the shell. Only the filter is persisted;
+  // page.offset is never persisted (a stale offset could land past the end), so
+  // a restore always resets to the first page.
+  const GRANT_ACCOUNT_KEY = "aperture.grants.account";
   const PREFIX = "/twirp/aperture.ApertureService/";
   const ADMIN_ACTION = "aperture.admin";
   const SYSTEM_ANCHOR = "system:schema"; // system-tier authority anchor (authz.go)
@@ -192,10 +199,14 @@
       },
 
       async bootstrap() {
-        // The Grants view defaults to the all-accounts listing; the local filter
-        // (grantAccountFilter) starts empty and account mirrors it.
-        this.grantAccountFilter = "";
-        this.account = "";
+        // Restore the persisted local account filter (E1-S5) BEFORE the first
+        // load, so re-opening Grants lands on the last-used scope. Nothing
+        // persisted → the all-accounts default (""). page.offset is never
+        // persisted, so always start on the first page — a stale offset could
+        // otherwise land past the end of the restored result set.
+        const saved = localStorage.getItem(GRANT_ACCOUNT_KEY);
+        this.grantAccountFilter = saved != null ? saved : "";
+        this.account = this.grantAccountFilter;
         this.page.offset = 0;
         await this.loadAccounts();
         await this.probeTier();
@@ -277,6 +288,14 @@
       async onGrantAccountFilterChange() {
         this.account = this.grantAccountFilter;
         this.page.offset = 0;
+        // Persist the selection under the Grants-owned key so the choice
+        // survives across visits (E1-S5). Empty string ("all accounts") is a
+        // real, restorable value — store it verbatim.
+        try {
+          localStorage.setItem(GRANT_ACCOUNT_KEY, this.grantAccountFilter);
+        } catch (_) {
+          /* storage unavailable (private mode / quota) — non-fatal */
+        }
         await this.probeTier();
         await this.loadTab();
       },
