@@ -560,6 +560,7 @@ function rules() {
       this.tierChecked = false;
       try {
         const dec = await ruleRpc("Check", {
+          account: "*", // resolve the system-admin grant in the platform "*" account
           principal: this.principal,
           action: "aperture.admin",
           object: "system:schema",
@@ -645,7 +646,9 @@ function rules() {
       try {
         const rule = this.currentRule();
         await ruleRpc("PutRule", {
-          actor: { principal: this.principal },
+          // Rules are system-tier: the actor resolves system-admin in the "*"
+          // account, so it must carry it (an empty actor account is rejected).
+          actor: { principal: this.principal, account: "*" },
           rule_json: JSON.stringify(rule),
         });
         this.status = { kind: "ok", msg: 'Saved rule "' + rule.Name + '".' };
