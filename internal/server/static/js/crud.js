@@ -280,17 +280,20 @@ function crud() {
     },
 
     async loadRefs() {
+      // Most reference lists return an EntityListResponse (entities_json); ListRules
+      // returns a RuleListResponse whose field is rules_json, so name the response
+      // field per job rather than assuming entities_json for all.
       const jobs = [
-        ["roles", "ListRoles"],
-        ["permissions", "ListPermissions"],
-        ["objectTypes", "ListObjectTypes"],
-        ["principals", "ListPrincipals"],
-        ["rules", "ListRules"],
+        ["roles", "ListRoles", "entities_json"],
+        ["permissions", "ListPermissions", "entities_json"],
+        ["objectTypes", "ListObjectTypes", "entities_json"],
+        ["principals", "ListPrincipals", "entities_json"],
+        ["rules", "ListRules", "rules_json"],
       ];
-      for (const [key, method] of jobs) {
+      for (const [key, method, field] of jobs) {
         try {
           const resp = await rpc(method, {});
-          this.refs[key] = (resp.entities_json || []).map((s) => JSON.parse(s));
+          this.refs[key] = (resp[field] || []).map((s) => JSON.parse(s));
         } catch (_) {
           this.refs[key] = [];
         }
@@ -298,6 +301,23 @@ function crud() {
       // Accounts drive the membership widgets and the active-account selector, so
       // refresh them alongside the other reference lists after every mutation.
       await this.loadAccounts();
+    },
+
+    // loadAccounts populates THIS screen's account list (membership widgets)
+    // directly from ListAccounts. It deliberately does NOT broadcast
+    // aperture:account — the shell owns the global account selection and its
+    // broadcast. Defining it here also stops `this.loadAccounts()` above from
+    // climbing Alpine's scope chain to the shell's broadcasting loadAccounts,
+    // which — because loadRefs runs inside the aperture:account handler
+    // (onAccountChange) — otherwise re-broadcast the account on every load and
+    // spun every screen into an endless reload loop.
+    async loadAccounts() {
+      try {
+        const resp = await rpc("ListAccounts", {});
+        this.accounts = (resp.entities_json || []).map((s) => JSON.parse(s));
+      } catch (_) {
+        this.accounts = [];
+      }
     },
 
     async selectType(key) {
@@ -496,7 +516,9 @@ function crud() {
     },
 
     ruleOptions() {
-      return (this.refs.rules || []).map((r) => ({ value: r.ID, label: r.Name ? r.ID + " — " + r.Name : r.ID }));
+      // Scope references a rule by its Name (scope grammar: "…;rule=<name>"), and
+      // model.Rule has no ID — so both option value and label key off Name.
+      return (this.refs.rules || []).map((r) => ({ value: r.Name, label: r.Description ? r.Name + " — " + r.Description : r.Name }));
     },
 
     // parseScopeRef turns a stored reference string into editor state. It mirrors
