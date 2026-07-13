@@ -11,6 +11,7 @@
     -->
     <link rel="stylesheet" href="/css/bera.css" />
     <script defer src="/js/app.js"></script>
+    <script defer src="/js/transfer.js"></script>
     <script defer src="/js/crud.js"></script>
     <script defer src="/js/grants.js"></script>
     <script defer src="/js/audit.js"></script>
@@ -127,9 +128,6 @@
           <div x-show="active === 'crud'" x-data="crud()">
             <div class="bera-section-head">
               <h1 class="bera-h3">Model</h1>
-              <span class="bera-caption" x-show="account">
-                Account <span class="bera-mono" x-text="account"></span>
-              </span>
             </div>
 
             <!-- Not signed in: factual gate, no editing surface. -->
@@ -382,16 +380,47 @@
                             </template>
 
                             <template x-if="field.widget === 'refchecks'">
-                              <div class="bera-checks">
-                                <template x-if="refOptions(field).length === 0">
-                                  <span class="bera-caption">No options available.</span>
-                                </template>
-                                <template x-for="o in refOptions(field)" :key="o.value">
-                                  <label class="bera-check" :class="(modal.form[field.key] || []).includes(o.value) ? 'bera-check--on' : ''">
-                                    <input type="checkbox" :checked="(modal.form[field.key] || []).includes(o.value)" @change="toggleRef(field.key, o.value)" />
-                                    <span class="bera-cell-mono" x-text="o.label"></span>
-                                  </label>
-                                </template>
+                              <div class="bera-transfer" x-data="transferList({
+                                items: () => refOptions(field),
+                                has: (v) => (modal.form[field.key] || []).includes(v),
+                                toggle: (v) => toggleRef(field.key, v),
+                              })">
+                                <div class="bera-transfer__pane">
+                                  <div class="bera-transfer__head">
+                                    <span class="bera-transfer__title">Available</span>
+                                    <button type="button" class="bera-linkbtn" x-show="available.length" @click="addAll()" x-text="'Add all (' + available.length + ')'"></button>
+                                  </div>
+                                  <input type="search" class="bera-input bera-transfer__filter" placeholder="Filter…" x-model="availQuery" />
+                                  <ul class="bera-transfer__list">
+                                    <template x-if="available.length === 0">
+                                      <li class="bera-transfer__empty" x-text="totalCount === 0 ? 'No options available.' : 'Nothing to add.'"></li>
+                                    </template>
+                                    <template x-for="o in available" :key="o.value">
+                                      <li class="bera-transfer__item" @click="pick(o.value)" :title="o.label">
+                                        <span class="bera-cell-mono" x-text="o.label"></span>
+                                        <span class="bera-transfer__op" aria-hidden="true">+</span>
+                                      </li>
+                                    </template>
+                                  </ul>
+                                </div>
+                                <div class="bera-transfer__pane">
+                                  <div class="bera-transfer__head">
+                                    <span class="bera-transfer__title">Selected <span class="bera-transfer__count" x-text="selectedCount"></span></span>
+                                    <button type="button" class="bera-linkbtn" x-show="chosen.length" @click="removeAll()" x-text="'Clear (' + chosen.length + ')'"></button>
+                                  </div>
+                                  <input type="search" class="bera-input bera-transfer__filter" placeholder="Filter…" x-model="selQuery" />
+                                  <ul class="bera-transfer__list">
+                                    <template x-if="chosen.length === 0">
+                                      <li class="bera-transfer__empty" x-text="selectedCount === 0 ? 'None selected yet.' : 'No match.'"></li>
+                                    </template>
+                                    <template x-for="o in chosen" :key="o.value">
+                                      <li class="bera-transfer__item bera-transfer__item--on" @click="pick(o.value)" :title="o.label">
+                                        <span class="bera-transfer__op" aria-hidden="true">×</span>
+                                        <span class="bera-cell-mono" x-text="o.label"></span>
+                                      </li>
+                                    </template>
+                                  </ul>
+                                </div>
                               </div>
                             </template>
 
@@ -423,16 +452,47 @@
                               <span class="bera-caption">Loading memberships…</span>
                             </template>
                             <template x-if="!modal.memberLoading">
-                              <div class="bera-checks">
-                                <template x-if="accounts.length === 0">
-                                  <span class="bera-caption">No accounts yet. Create one in the Accounts tab.</span>
-                                </template>
-                                <template x-for="a in accounts" :key="a.ID">
-                                  <label class="bera-check" :class="modal.memberSel[a.ID] ? 'bera-check--on' : ''">
-                                    <input type="checkbox" :checked="!!modal.memberSel[a.ID]" @change="toggleModalAccount(a.ID)" />
-                                    <span class="bera-cell-mono" x-text="a.Name ? (a.ID + ' — ' + a.Name) : a.ID"></span>
-                                  </label>
-                                </template>
+                              <div class="bera-transfer" x-data="transferList({
+                                items: () => accounts.map((a) => ({ value: a.ID, label: a.Name ? (a.ID + ' — ' + a.Name) : a.ID })),
+                                has: (v) => !!modal.memberSel[v],
+                                toggle: (v) => toggleModalAccount(v),
+                              })">
+                                <div class="bera-transfer__pane">
+                                  <div class="bera-transfer__head">
+                                    <span class="bera-transfer__title">Available</span>
+                                    <button type="button" class="bera-linkbtn" x-show="available.length" @click="addAll()" x-text="'Add all (' + available.length + ')'"></button>
+                                  </div>
+                                  <input type="search" class="bera-input bera-transfer__filter" placeholder="Filter…" x-model="availQuery" />
+                                  <ul class="bera-transfer__list">
+                                    <template x-if="available.length === 0">
+                                      <li class="bera-transfer__empty" x-text="totalCount === 0 ? 'No accounts yet. Create one in the Accounts tab.' : 'Nothing to add.'"></li>
+                                    </template>
+                                    <template x-for="o in available" :key="o.value">
+                                      <li class="bera-transfer__item" @click="pick(o.value)" :title="o.label">
+                                        <span class="bera-cell-mono" x-text="o.label"></span>
+                                        <span class="bera-transfer__op" aria-hidden="true">+</span>
+                                      </li>
+                                    </template>
+                                  </ul>
+                                </div>
+                                <div class="bera-transfer__pane">
+                                  <div class="bera-transfer__head">
+                                    <span class="bera-transfer__title">Selected <span class="bera-transfer__count" x-text="selectedCount"></span></span>
+                                    <button type="button" class="bera-linkbtn" x-show="chosen.length" @click="removeAll()" x-text="'Clear (' + chosen.length + ')'"></button>
+                                  </div>
+                                  <input type="search" class="bera-input bera-transfer__filter" placeholder="Filter…" x-model="selQuery" />
+                                  <ul class="bera-transfer__list">
+                                    <template x-if="chosen.length === 0">
+                                      <li class="bera-transfer__empty" x-text="selectedCount === 0 ? 'None selected yet.' : 'No match.'"></li>
+                                    </template>
+                                    <template x-for="o in chosen" :key="o.value">
+                                      <li class="bera-transfer__item bera-transfer__item--on" @click="pick(o.value)" :title="o.label">
+                                        <span class="bera-transfer__op" aria-hidden="true">×</span>
+                                        <span class="bera-cell-mono" x-text="o.label"></span>
+                                      </li>
+                                    </template>
+                                  </ul>
+                                </div>
                               </div>
                             </template>
                             <p class="bera-field__hint">Accounts this principal is a member of. Saved with the principal.</p>
@@ -468,16 +528,47 @@
 
                       <template x-if="!members.loading">
                         <div class="bera-field">
-                          <div class="bera-checks">
-                            <template x-if="refs.principals.length === 0">
-                              <span class="bera-caption">No principals available.</span>
-                            </template>
-                            <template x-for="p in refs.principals" :key="p.ID">
-                              <label class="bera-check" :class="members.selected[p.ID] ? 'bera-check--on' : ''">
-                                <input type="checkbox" :checked="!!members.selected[p.ID]" @change="toggleMember(p.ID)" />
-                                <span class="bera-cell-mono" x-text="p.Identity ? (p.ID + ' — ' + p.Identity) : p.ID"></span>
-                              </label>
-                            </template>
+                          <div class="bera-transfer" x-data="transferList({
+                            items: () => refs.principals.map((p) => ({ value: p.ID, label: p.Identity ? (p.ID + ' — ' + p.Identity) : p.ID })),
+                            has: (v) => !!members.selected[v],
+                            toggle: (v) => toggleMember(v),
+                          })">
+                            <div class="bera-transfer__pane">
+                              <div class="bera-transfer__head">
+                                <span class="bera-transfer__title">Available</span>
+                                <button type="button" class="bera-linkbtn" x-show="available.length" @click="addAll()" x-text="'Add all (' + available.length + ')'"></button>
+                              </div>
+                              <input type="search" class="bera-input bera-transfer__filter" placeholder="Filter…" x-model="availQuery" />
+                              <ul class="bera-transfer__list">
+                                <template x-if="available.length === 0">
+                                  <li class="bera-transfer__empty" x-text="totalCount === 0 ? 'No principals available.' : 'Nothing to add.'"></li>
+                                </template>
+                                <template x-for="o in available" :key="o.value">
+                                  <li class="bera-transfer__item" @click="pick(o.value)" :title="o.label">
+                                    <span class="bera-cell-mono" x-text="o.label"></span>
+                                    <span class="bera-transfer__op" aria-hidden="true">+</span>
+                                  </li>
+                                </template>
+                              </ul>
+                            </div>
+                            <div class="bera-transfer__pane">
+                              <div class="bera-transfer__head">
+                                <span class="bera-transfer__title">Members <span class="bera-transfer__count" x-text="selectedCount"></span></span>
+                                <button type="button" class="bera-linkbtn" x-show="chosen.length" @click="removeAll()" x-text="'Clear (' + chosen.length + ')'"></button>
+                              </div>
+                              <input type="search" class="bera-input bera-transfer__filter" placeholder="Filter…" x-model="selQuery" />
+                              <ul class="bera-transfer__list">
+                                <template x-if="chosen.length === 0">
+                                  <li class="bera-transfer__empty" x-text="selectedCount === 0 ? 'No members yet.' : 'No match.'"></li>
+                                </template>
+                                <template x-for="o in chosen" :key="o.value">
+                                  <li class="bera-transfer__item bera-transfer__item--on" @click="pick(o.value)" :title="o.label">
+                                    <span class="bera-transfer__op" aria-hidden="true">×</span>
+                                    <span class="bera-cell-mono" x-text="o.label"></span>
+                                  </li>
+                                </template>
+                              </ul>
+                            </div>
                           </div>
                         </div>
                       </template>
@@ -1054,13 +1145,47 @@
                           </div>
                           <div class="bera-field">
                             <label class="bera-label">Principals to provision</label>
-                            <div class="bera-checks">
-                              <template x-for="p in refs.principals" :key="p.ID">
-                                <label class="bera-check" :class="apply.principals.includes(p.ID) ? 'bera-check--on' : ''">
-                                  <input type="checkbox" :checked="apply.principals.includes(p.ID)" @change="toggleBulkPrincipal(p.ID)" />
-                                  <span class="bera-cell-mono" x-text="p.ID"></span>
-                                </label>
-                              </template>
+                            <div class="bera-transfer" x-data="transferList({
+                              items: () => refs.principals.map((p) => ({ value: p.ID, label: p.ID })),
+                              has: (v) => apply.principals.includes(v),
+                              toggle: (v) => toggleBulkPrincipal(v),
+                            })">
+                              <div class="bera-transfer__pane">
+                                <div class="bera-transfer__head">
+                                  <span class="bera-transfer__title">Available</span>
+                                  <button type="button" class="bera-linkbtn" x-show="available.length" @click="addAll()" x-text="'Add all (' + available.length + ')'"></button>
+                                </div>
+                                <input type="search" class="bera-input bera-transfer__filter" placeholder="Filter…" x-model="availQuery" />
+                                <ul class="bera-transfer__list">
+                                  <template x-if="available.length === 0">
+                                    <li class="bera-transfer__empty" x-text="totalCount === 0 ? 'No principals available.' : 'Nothing to add.'"></li>
+                                  </template>
+                                  <template x-for="o in available" :key="o.value">
+                                    <li class="bera-transfer__item" @click="pick(o.value)" :title="o.label">
+                                      <span class="bera-cell-mono" x-text="o.label"></span>
+                                      <span class="bera-transfer__op" aria-hidden="true">+</span>
+                                    </li>
+                                  </template>
+                                </ul>
+                              </div>
+                              <div class="bera-transfer__pane">
+                                <div class="bera-transfer__head">
+                                  <span class="bera-transfer__title">To provision <span class="bera-transfer__count" x-text="selectedCount"></span></span>
+                                  <button type="button" class="bera-linkbtn" x-show="chosen.length" @click="removeAll()" x-text="'Clear (' + chosen.length + ')'"></button>
+                                </div>
+                                <input type="search" class="bera-input bera-transfer__filter" placeholder="Filter…" x-model="selQuery" />
+                                <ul class="bera-transfer__list">
+                                  <template x-if="chosen.length === 0">
+                                    <li class="bera-transfer__empty" x-text="selectedCount === 0 ? 'None selected yet.' : 'No match.'"></li>
+                                  </template>
+                                  <template x-for="o in chosen" :key="o.value">
+                                    <li class="bera-transfer__item bera-transfer__item--on" @click="pick(o.value)" :title="o.label">
+                                      <span class="bera-transfer__op" aria-hidden="true">×</span>
+                                      <span class="bera-cell-mono" x-text="o.label"></span>
+                                    </li>
+                                  </template>
+                                </ul>
+                              </div>
                             </div>
                           </div>
                         </div>

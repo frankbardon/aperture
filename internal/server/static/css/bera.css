@@ -422,6 +422,58 @@ body {
 .bera-check input { accent-color: var(--bera-600); margin: 0; }
 .bera-check--on { border-color: var(--bera-500); background: var(--bera-50); color: var(--bera-800); }
 
+/* Dual-pane transfer list — the reusable subset selector (transfer.js) */
+.bera-transfer {
+  display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3);
+}
+.bera-transfer__pane {
+  display: flex; flex-direction: column; min-width: 0;
+  border: 1px solid var(--color-border); border-radius: var(--radius-md);
+  background: var(--color-surface); overflow: hidden;
+}
+.bera-transfer__head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-divider); background: var(--color-surface-2);
+}
+.bera-transfer__title {
+  font: 600 var(--text-xs)/1 var(--font-body); letter-spacing: 0.04em;
+  text-transform: uppercase; color: var(--color-fg-muted);
+}
+.bera-transfer__count {
+  display: inline-block; min-width: 18px; padding: 1px 6px; margin-left: 4px;
+  border-radius: var(--radius-full); background: var(--bera-500);
+  color: var(--color-primary-fg); font: 600 var(--text-2xs)/1.4 var(--font-body);
+  text-align: center;
+}
+.bera-transfer__filter {
+  border: none; border-bottom: 1px solid var(--color-divider); border-radius: 0;
+  padding: var(--space-2) var(--space-3); font-size: var(--text-sm);
+}
+.bera-transfer__filter:focus { outline: none; box-shadow: none; border-bottom-color: var(--bera-500); }
+.bera-transfer__list {
+  list-style: none; margin: 0; padding: var(--space-1);
+  height: 200px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px;
+}
+.bera-transfer__item {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-2);
+  padding: 6px 8px; border-radius: var(--radius-sm); cursor: pointer;
+  font: 400 var(--text-sm)/1.2 var(--font-body); color: var(--color-fg);
+}
+.bera-transfer__item:hover { background: var(--bera-50); }
+.bera-transfer__item span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bera-transfer__item--on { color: var(--color-fg-strong); }
+.bera-transfer__op {
+  flex: none; width: 16px; text-align: center; color: var(--color-fg-muted);
+  font: 600 var(--text-md)/1 var(--font-mono);
+}
+.bera-transfer__item:hover .bera-transfer__op { color: var(--bera-700); }
+.bera-transfer__empty {
+  padding: var(--space-3); color: var(--color-fg-muted);
+  font: 400 var(--text-sm)/1.4 var(--font-body); text-align: center;
+}
+@media (max-width: 520px) { .bera-transfer { grid-template-columns: 1fr; } }
+
 /* ── Graph (E8): force-directed model map ─────────────────────────────── */
 .bera-graph-toolbar {
   display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
