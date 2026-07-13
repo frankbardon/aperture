@@ -31,12 +31,15 @@ permissions:
   - id: perm-doc-read
     object_type: document
     action: read
+    scope_strategy: literal
   - id: perm-doc-write
     object_type: document
     action: write
+    scope_strategy: literal
   - id: perm-doc-delete
     object_type: document
     action: delete
+    scope_strategy: literal
 
 principals:
   - id: alice

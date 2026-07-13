@@ -40,14 +40,17 @@ permissions:
   - id: admin
     object_type: system
     action: aperture.admin
+    scope_strategy: literal
     description: Full administrative authority (system and account tiers).
   - id: doc-read
     object_type: document
     action: read
+    scope_strategy: literal
     description: Read a document.
   - id: doc-write
     object_type: document
     action: write
+    scope_strategy: literal
     description: Write a document.
 
 principals:

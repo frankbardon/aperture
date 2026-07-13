@@ -518,14 +518,34 @@
       },
 
       openEditGrant(g) {
+        // Alpine binds each <select>'s x-model before its x-for options are in
+        // the DOM, so a value assigned at open time matches no <option> and the
+        // dropdown falls back to its placeholder. Open with the option-backed
+        // fields (AccountID, Subject.ID, PermissionID) blank, then fill them on
+        // $nextTick — once the options exist the model change lands on them.
+        // Subject.Kind is set up front so its dependent Subject.ID option list
+        // renders on first paint, letting Subject.ID resolve in the same tick.
+        const full = JSON.parse(JSON.stringify(g));
         this.grantModal = {
           open: true,
           mode: "edit",
           strategyFilter: "",
-          form: JSON.parse(JSON.stringify(g)),
+          form: {
+            ID: full.ID,
+            AccountID: "",
+            Subject: { Kind: full.Subject.Kind, ID: "" },
+            PermissionID: "",
+            Object: full.Object,
+            Effect: full.Effect,
+          },
           saving: false,
           error: null,
         };
+        this.$nextTick(() => {
+          this.grantModal.form.AccountID = full.AccountID;
+          this.grantModal.form.PermissionID = full.PermissionID;
+          this.grantModal.form.Subject.ID = full.Subject.ID;
+        });
       },
 
       async saveGrant() {
