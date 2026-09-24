@@ -43,7 +43,7 @@ func serveCommand() *ucli.Command {
 			},
 			&ucli.StringFlag{
 				Name:  "seed",
-				Usage: "path to a JSON/YAML seed model (defaults to the embedded example)",
+				Usage: "path to a JSON/YAML seed model to apply on startup (when omitted: the embedded example for the in-memory store, and nothing at all for a --store DSN)",
 			},
 			&ucli.StringFlag{
 				Name:  "store",

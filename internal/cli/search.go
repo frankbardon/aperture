@@ -51,7 +51,7 @@ func searchCommand() *ucli.Command {
 			"on the scan, so the best N are returned rather than the first N found. The scan itself\n" +
 			"runs to the deployment's --enumerate-limit ceiling.",
 		Flags: append(append([]ucli.Flag{
-			&ucli.StringFlag{Name: "seed", Usage: "path to a JSON/YAML seed model (defaults to the embedded example)"},
+			&ucli.StringFlag{Name: "seed", Usage: "path to a JSON/YAML seed model to apply on startup (when omitted: the embedded example for the in-memory store, and nothing at all for a --store DSN)"},
 			&ucli.StringFlag{Name: "store", Usage: "DSN for the backing store: a postgres:// or postgresql:// URL for PostgreSQL, any other value as a SQLite path (defaults to in-memory). Set APERTURE_POSTGRES_SCHEMA to place Aperture's tables in a named PostgreSQL schema; unset uses the connection's search_path"},
 			&ucli.StringFlag{Name: "account", Usage: "active account the search is scoped to", Value: seed.ExampleAccount},
 			&ucli.StringSliceFlag{Name: inFlagName, Usage: "restrict matching to this metadata field; repeatable (default: every field holding text)"},

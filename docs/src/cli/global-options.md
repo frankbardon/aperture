@@ -15,23 +15,50 @@ Every command resolves its model from these two options, in this order:
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--seed` | embedded example | Path to a JSON/YAML seed model to load. When omitted, the committed [example fixture](../getting-started/first-decision-cli.md) is used. |
-| `--store` | in-memory | SQLite DSN for a persistent backing store. When omitted, an in-memory store is built and seeded, then discarded when the command exits. |
+| `--seed` | see below | Path to a JSON/YAML seed model. When given, the document is applied to the store on **every** invocation. |
+| `--store` | in-memory | DSN for a persistent backing store: a `postgres://` / `postgresql://` URL for PostgreSQL, any other value as a SQLite path. When omitted, an in-memory store is built and seeded, then discarded when the command exits. |
 
 Use `--seed` to point at your own model file for a one-shot decision, and
-`--store` when you want changes to persist to disk across invocations. A store
-built from `--store` is seeded from `--seed` (or the embedded example) the first
-time it is populated.
+`--store` when you want changes to persist across invocations.
+
+### What an omitted `--seed` means
+
+**It depends on `--store`, and the difference is deliberate.**
+
+| `--store` | `--seed` omitted |
+|---|---|
+| omitted (in-memory) | the committed [example fixture](../getting-started/first-decision-cli.md) is loaded — this is the zero-flag demo |
+| a SQLite path or a `postgres://` URL | **nothing is seeded**; the model already in that database is used as it stands |
+
+Applying a seed document upserts the *entire* model — accounts, principals,
+roles, groups, grants, rules. On an in-memory store there is nothing to
+overwrite and the fixture is the only model there could be. On a database there
+usually is: it is somebody's production model, or a model a sibling instance
+provisioned. So Aperture never guesses. Writing model state is an explicit act —
+`--seed`, [`import`](portability.md), or a mutation command — and never a side
+effect of starting up.
+
+That is what lets a second instance boot against a database it does not own:
+
+```bash
+# Reads the model another process provisioned. Writes nothing on startup.
+bin/aperture serve --store 'postgres://aperture@db/aperture'
+```
 
 ```bash
 # Decide against a model file, no persistence:
 bin/aperture check alice read account:acme/project:atlas/document:42 \
   --seed ./my-model.yaml
 
-# Persist mutations to a SQLite file so a later command sees them:
+# Provision a SQLite store from a document, then persist mutations to it:
 bin/aperture put grant --principal root --account acme \
-  --store ./aperture.db --file ./grant.json
+  --store ./aperture.db --seed ./my-model.yaml --file ./grant.json
 ```
+
+Note that `--seed` is re-applied on every invocation, not just the first, so a
+multi-step session against a persistent store should pass the document once and
+then drop the flag — otherwise each step's deletions are undone by the next
+step's seed.
 
 ## Scoping a decision: `--account`
 

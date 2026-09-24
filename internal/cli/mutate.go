@@ -67,7 +67,7 @@ func buildService(ctx context.Context, storeDSN, seedPath string) (*service.Serv
 // storeFlags are the backend-selection flags every mutation command shares.
 func storeFlags() []ucli.Flag {
 	return []ucli.Flag{
-		&ucli.StringFlag{Name: "seed", Usage: "path to a JSON/YAML seed model (defaults to the embedded example)"},
+		&ucli.StringFlag{Name: "seed", Usage: "path to a JSON/YAML seed model to apply on startup (when omitted: the embedded example for the in-memory store, and nothing at all for a --store DSN)"},
 		&ucli.StringFlag{Name: "store", Usage: "DSN for the backing store: a postgres:// or postgresql:// URL for PostgreSQL, any other value as a SQLite path (defaults to in-memory). Set APERTURE_POSTGRES_SCHEMA to place Aperture's tables in a named PostgreSQL schema; unset uses the connection's search_path"},
 	}
 }

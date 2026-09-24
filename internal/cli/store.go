@@ -16,18 +16,20 @@ import (
 // buildStore constructs and initialises a model.Storage for a command, then
 // seeds it. This is the manual constructor-DI seam the check and serve commands
 // share: choose a backend from --store, run Setup, and load a model from --seed
-// (or the embedded example when --seed is empty).
+// (or, for the in-memory demo only, the embedded example when --seed is empty).
 //
 //   - storeDSN == ""            -> in-memory backend (storage/memory), ideal for the demo.
 //   - storeDSN is a postgres URL -> PostgreSQL backend (storage/postgres).
 //   - any other storeDSN         -> SQLite backend at the DSN (storage/sqlite).
-//   - seedPath == ""  -> load the embedded example fixture (account "acme").
-//   - seedPath != ""  -> load the file, format inferred from its extension.
+//   - seedPath != ""            -> load the file, format inferred from its extension.
+//   - seedPath == "" and an in-memory store -> load the embedded example fixture (account "acme").
+//   - seedPath == "" and a DURABLE store    -> seed nothing at all.
 //
 // On any failure the partially constructed store is closed and the caller gets a
 // coded error: the failure's OWN code when it has one, and APERTURE_BOOT only
 // when it does not. See bootError for why that distinction is not cosmetic.
 func buildStore(ctx context.Context, storeDSN, seedPath string) (model.Storage, error) {
+	kind := classifyStore(storeDSN)
 	store, err := openStore(storeDSN)
 	if err != nil {
 		return nil, err
@@ -36,7 +38,7 @@ func buildStore(ctx context.Context, storeDSN, seedPath string) (model.Storage, 
 		_ = store.Close()
 		return nil, bootError("cli: storage setup failed", err)
 	}
-	if err := loadSeed(ctx, store, seedPath); err != nil {
+	if err := loadSeed(ctx, store, seedPath, kind); err != nil {
 		_ = store.Close()
 		return nil, bootError("cli: seeding the model failed", err)
 	}
@@ -94,6 +96,44 @@ func isPostgresDSN(storeDSN string) bool {
 	return false
 }
 
+// storeKind names which backend a --store DSN selects. It exists so that "which
+// backend is this?" and "is this store durable?" are ONE question with one
+// answer: openStore switches on it to build the backend, and loadSeed reads its
+// durable() to decide whether an absent --seed means the demo fixture or nothing
+// at all.
+//
+// A second notion of durability — a `storeDSN != ""` test written out again at
+// the seeding site — would be a second answer that could drift from the backend
+// actually opened, and drifting in the permissive direction means writing the
+// demo model into somebody's production database.
+type storeKind int
+
+const (
+	// storeMemory is the in-memory backend: no DSN was given, nothing survives
+	// the process, and it is the zero-flag demo.
+	storeMemory storeKind = iota
+	// storePostgres is the PostgreSQL backend, selected by a libpq URI scheme.
+	storePostgres
+	// storeSQLite is the SQLite backend at the DSN's path.
+	storeSQLite
+)
+
+// classifyStore maps a --store DSN onto the backend it selects. This is the
+// whole rule, stated once.
+func classifyStore(storeDSN string) storeKind {
+	if storeDSN == "" {
+		return storeMemory
+	}
+	if isPostgresDSN(storeDSN) {
+		return storePostgres
+	}
+	return storeSQLite
+}
+
+// durable reports whether the backend outlives the process — whether, in other
+// words, anything this boot writes to the model is still there on the next one.
+func (k storeKind) durable() bool { return k != storeMemory }
+
 // openStore selects the storage backend from the DSN.
 //
 //   - ""                                -> in-memory (storage/memory)
@@ -115,30 +155,57 @@ func isPostgresDSN(storeDSN string) bool {
 // connection is made, and bootError passes that code through rather than burying
 // it under APERTURE_BOOT.
 func openStore(storeDSN string) (model.Storage, error) {
-	if storeDSN == "" {
+	switch classifyStore(storeDSN) {
+	case storeMemory:
 		return memory.New(), nil
-	}
-	if isPostgresDSN(storeDSN) {
+	case storePostgres:
 		store, err := postgres.Open(storeDSN, postgres.WithSchemaFromEnv())
 		if err != nil {
 			return nil, bootError("cli: open postgres store", err)
 		}
 		return store, nil
+	default:
+		store, err := sqlite.Open(storeDSN)
+		if err != nil {
+			return nil, bootError("cli: open sqlite store", err)
+		}
+		return store, nil
 	}
-	store, err := sqlite.Open(storeDSN)
-	if err != nil {
-		return nil, bootError("cli: open sqlite store", err)
-	}
-	return store, nil
 }
 
-// loadSeed loads the model from the seed file, or the embedded example when no
-// path is given.
-func loadSeed(ctx context.Context, store model.Storage, seedPath string) error {
-	if seedPath == "" {
-		return seed.Load(ctx, store, seed.Example, seed.FormatYAML)
+// loadSeed loads the model from the seed file. With no --seed it loads the
+// embedded example for an in-memory store and NOTHING for a durable one.
+//
+// That asymmetry is the whole point of the function, so it is worth stating why.
+// seed.Document.Apply upserts the ENTIRE model — accounts, principals, roles,
+// groups, grants, rules — and does so deliberately outside the ManagedEntities
+// posture. Defaulting to the embedded fixture for every store therefore meant
+// that `aperture serve --store postgres://prod` with no --seed wrote the acme
+// demo model into production, and that two instances sharing one database
+// re-asserted their own model over each other on every restart. Nothing refused
+// it and nothing said it had happened.
+//
+// The in-memory half keeps the demo: with no flags at all there is no database to
+// overwrite, the fixture is the only model there could be, and the
+// getting-started pages, the end-to-end test, and seed.ExampleAccount as the
+// default --account all rest on it. A durable store is the opposite situation —
+// the operator named a database because it already holds, or is about to hold,
+// something they care about — so an absent --seed is read as "leave the model
+// alone" rather than guessed at.
+//
+// This is a skip, not a refusal, and so carries no error code: a durable store
+// with no --seed is the normal way a second instance boots against a database
+// another process provisioned. Applying model state stays an explicit act —
+// --seed, `aperture import`, or a mutation command — and never an implicit
+// consequence of starting up.
+func loadSeed(ctx context.Context, store model.Storage, seedPath string, kind storeKind) error {
+	if seedPath != "" {
+		return seed.LoadFile(ctx, store, seedPath)
 	}
-	return seed.LoadFile(ctx, store, seedPath)
+	if kind.durable() {
+		return nil
+	}
+	return seed.Load(ctx, store, seed.Example, seed.FormatYAML)
 }
 
 // seedDocument parses the seed model (the --seed file, or the embedded example

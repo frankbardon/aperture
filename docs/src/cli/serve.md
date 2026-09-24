@@ -28,7 +28,11 @@ Press `Ctrl-C` to trigger a graceful shutdown (`shutting down...`).
 - `--addr` — the TCP address to listen on (default `:8080`).
 - `--seed` / `--store` — the model to serve, exactly as elsewhere (see
   [Global options](global-options.md)). With no `--store`, the server runs
-  against an in-memory model seeded from `--seed` or the embedded example.
+  against an in-memory model seeded from `--seed` or, when that is omitted too,
+  the embedded example — the zero-flag demo. With a `--store` DSN and no
+  `--seed`, **nothing is seeded**: the server reads the model already in that
+  database and writes no model rows on startup. See
+  [Booting against a database](#booting-against-a-database) below.
 - `--auth` — the authenticator adapter that maps each request to a principal:
   `dev` (the default — the bearer token *is* the principal id, no external IdP),
   `oidc`, or `parsec`. It overrides the `APERTURE_AUTH_MODE` env var. Because the
@@ -72,6 +76,28 @@ Press `Ctrl-C` to trigger a graceful shutdown (`shutting down...`).
   for a human who typed one. An operator who wrote `-5` would be served `1000`
   while believing otherwise, so the CLI refuses at the boundary what the library
   would have absorbed. To get the default, omit the setting.
+
+## Booting against a database
+
+`serve` with a `--store` DSN and no `--seed` seeds **nothing**. It runs `Setup`
+(which creates missing tables and never migrates), reads the model that is
+already there, and writes no model rows of its own.
+
+```bash
+# A second instance, against a database another process provisioned:
+bin/aperture serve --store 'postgres://aperture@db/aperture'
+```
+
+This is what makes a long-lived deployment safe and what lets two instances
+share one database. Passing a `--seed` alongside a durable `--store` still
+applies that document in full, on **every** boot — which is how you provision a
+database on purpose, and which two instances pointed at the same database must
+not both do, or each restart re-asserts one instance's model over the other's.
+
+```bash
+# Provisioning, deliberately and once:
+bin/aperture serve --store 'postgres://aperture@db/aperture' --seed ./model.yaml
+```
 
 Under `serve`, the facade is wired with everything the other surfaces expect: the
 admin gate, delegation and impersonation mutators, the append-only audit trail,
