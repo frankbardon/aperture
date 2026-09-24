@@ -17,12 +17,12 @@ import (
 // ---- the embedded script and the table list ----
 
 // knownTableFloor is the anti-vacuity floor for the schema scan below: the
-// schema has fourteen tables and a scanner that suddenly finds three has
+// schema has nineteen tables and a scanner that suddenly finds three has
 // stopped parsing, not stopped needing to. It mirrors the per-dialect
 // tableFloor that internal/schemagate's dialect registry keeps for the same
 // reason -- this one guards Setup's expectedTables list, that one guards the
 // naming gate, and neither is a substitute for the other.
-const knownTableFloor = 14
+const knownTableFloor = 19
 
 var createTablePattern = regexp.MustCompile(`(?m)^CREATE TABLE IF NOT EXISTS\s+` +
 	regexp.QuoteMeta(schemaPlaceholder) + `(apt_[a-z_]+)`)

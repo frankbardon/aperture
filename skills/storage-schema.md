@@ -1,6 +1,6 @@
 ---
 name: storage-schema
-description: The contract Aperture's own database schema keeps — the apt_ identifier convention, the one timestamp encoding (int64 Unix nanoseconds, 0 means unset, 1677-2262), the nine foreign-key edges with their ON DELETE/ON UPDATE actions, the three integrity checks SQL cannot express (the two wildcard-bearing account_id columns and the polymorphic grant subject), the columns that deliberately carry NO foreign key and why touching that decision breaks the audit trail, the SQLite/Postgres dialect divergences, the gates that keep the two schema files honest, and the operator facts (schema qualifier, DSN selection, account teardown, seed write order) that are otherwise misdiagnosed as bugs.
+description: The contract Aperture's own database schema keeps — the apt_ identifier convention, the one timestamp encoding (int64 Unix nanoseconds, 0 means unset, 1677-2262), the eleven foreign-key edges with their ON DELETE/ON UPDATE actions, the three integrity checks SQL cannot express (the two wildcard-bearing account_id columns and the polymorphic grant subject), the columns that deliberately carry NO foreign key and why touching that decision breaks the audit trail, the five shared-wiring tables and the secret they may never carry, the SQLite/Postgres dialect divergences, the gates that keep the two schema files honest, and the operator facts (schema qualifier, DSN selection, account teardown, seed write order) that are otherwise misdiagnosed as bugs.
 applies_to: [library, cli, http]
 ---
 
@@ -20,7 +20,7 @@ Three backends implement one interface. `storage/memory` is map-backed and
 durable-free; `storage/sqlite` is the reference durable backend on pure-Go
 `modernc.org/sqlite`; `storage/postgres` is its full peer on
 `jackc/pgx/v5/stdlib` through `database/sql`. Both SQL backends apply a
-hand-written, `//go:embed`ed `schema.sql` of **14 tables and 7 indexes** — no
+hand-written, `//go:embed`ed `schema.sql` of **19 tables and 7 indexes** — no
 ORM, no sqlc, no query builder, **no migration tool and no schema versioning**.
 All three run the single behavioural contract in `storage/storagetest`, which
 carries no backend-conditional assertions: backends are proven identical, not
@@ -117,9 +117,9 @@ and strips the monotonic reading, and it does **not** truncate. No tolerance or
 precision knob may be added — `TestConformanceSuiteHasNoPrecisionKnob` enforces
 that.
 
-## Referential integrity: nine SQL edges
+## Referential integrity: eleven SQL edges
 
-Nine relationship columns carry a **real** foreign key, declared as a table
+Eleven relationship columns carry a **real** foreign key, declared as a table
 constraint beside the `PRIMARY KEY`, identically in both dialects.
 
 | # | Child column | Parent | ON DELETE | ON UPDATE |
@@ -133,12 +133,15 @@ constraint beside the `PRIMARY KEY`, identically in both dialects.
 | 7 | `apt_group_members.group_id` | `apt_groups(id)` | **CASCADE** | RESTRICT |
 | 8 | `apt_group_members.principal_id` | `apt_principals(id)` | RESTRICT | RESTRICT |
 | 9 | `apt_grants.permission_id` | `apt_permissions(id)` | RESTRICT | RESTRICT |
+| 10 | `apt_wiring_providers.object_type` | `apt_object_types(name)` | RESTRICT | RESTRICT |
+| 11 | `apt_wiring_provider_references.object_type` | `apt_wiring_providers(object_type)` | **CASCADE** | RESTRICT |
 
-**Three CASCADE, six RESTRICT, `ON UPDATE RESTRICT` throughout.**
+**Four CASCADE, seven RESTRICT, `ON UPDATE RESTRICT` throughout.**
 
-- **CASCADE only on an owner.** The three cascading edges are the ones where an
-  entity owns its own join rows: a principal's role list, a role's permission
-  list, a group's member list. The join row has no meaning without its owner.
+- **CASCADE only on an owner.** The four cascading edges are the ones where an
+  entity owns its own child rows: a principal's role list, a role's permission
+  list, a group's member list, and a provider entry's `references:` map. The
+  child row has no meaning without its owner.
   **The key is the only implementation of that cleanup in the SQL backends** —
   `DeletePrincipal`, `DeleteRole` and `DeleteGroup` write no join-table `DELETE`
   of their own. They used to, and the two halves covered for each other:
@@ -254,7 +257,7 @@ The table is append-only through the interface too: `AppendAudit` is the only
 single-event write, there is no update, and there is no single-event delete —
 only bulk retention pruning.
 
-### JSON value columns — `apt_object_types.apt_actions`, `apt_templates.apt_grants`
+### JSON value columns — `apt_object_types.apt_actions`, `apt_templates.apt_grants`, `apt_wiring_attribute_providers.declared_keys`
 
 These are **value lists, not relationships**. An object type's action verb set and
 a template's parameterized grant templates ride as JSON text. `apt_templates`'s
@@ -275,15 +278,92 @@ against an **in-process registry of resolvers**, not a table, and hosts register
 their own. A rule name that may appear inside one is a parameter buried in the
 string, not the column's value. There is nothing for a key to point at.
 
+### `apt_wiring_providers.apt_connection` and `apt_wiring_attribute_providers.apt_connection`
+
+The column names an `apt_wiring_connections` row, and still takes **no** key. The
+reason is the empty string: an entry of a kind that reads no database names no
+connection, so an edge would demand either a NULL-encoded absence — the one
+encoding this schema does not use **anywhere** — or a fake `''` connection row in
+every deployment. The name is resolved when the wiring is *built*, where an
+unknown one is a coded error naming the typo and the manifest it is missing from.
+A `23503` could not say that.
+
+### `apt_wiring_field_types.object_type`
+
+No key, and the asymmetry with `apt_wiring_providers.object_type` (which has one)
+is the decision. A field-type declaration may name a type a provider entry serves
+**or** a type whose objects a seed document lists inline, and an inline type needs
+no `object_types:` row at all — so the parent an edge would require may
+legitimately not exist, and the edge would refuse a declaration the loader
+accepts.
+
+### `apt_wiring_provider_references.target_type`
+
+No key. A reference target is resolved against the **registry the wiring builds**,
+not against a table: the target must be a type that registry serves, and an inline
+`objects:` type belongs to that set without appearing in any wiring table. An
+unknown target is `APERTURE_PROVIDER_REFERENCE_INVALID` at build, naming the field
+and the target.
+
+## The five shared-wiring tables
+
+Fourteen of the nineteen tables are **model state** — who exists and who may do
+what. The other five are **runtime wiring**: where a decision's object metadata
+and attribute bags are read *from*. They are the database-backed home for a seed
+document's `connections:`, `providers:`, `field_types:` and `attribute_providers:`
+sections, so a second instance can boot with **no seed file** and decide
+identically.
+
+| Table | Holds | Key |
+|---|---|---|
+| `apt_wiring_connections` | one row per connection **name**, and nothing else | `name` |
+| `apt_wiring_providers` | a `providers:` entry: kind, connection, `get_one`, `get_all`, `id_column`, `ttl`, `max_size` | `object_type` |
+| `apt_wiring_provider_references` | a provider's `references:` map, flattened | (`object_type`, `field`) |
+| `apt_wiring_field_types` | the `field_types:` section, flattened | (`object_type`, `field`) |
+| `apt_wiring_attribute_providers` | an `attribute_providers:` entry, plus the optional declared key set | `subject` (the slot) |
+
+Four properties are load-bearing, and three of them are about what is **absent**:
+
+- **No column can carry a secret.** There is no DSN, no password and no
+  credential anywhere in these five tables — not even the `dsn_env:` variable
+  *name*. A connection's credentials are a per-instance fact each instance
+  resolves for itself, so there is nothing here to leak, nothing to rotate, and no
+  credential in a backup of this database. That is why `apt_wiring_connections`
+  holds names and nothing else: the name is the only part a provider entry refers
+  to.
+- **There is no `path` column.** `kind: csv` is refused in shared wiring. A
+  filesystem path is machine-local, both loaders resolve a relative one against
+  the *seed file's* directory, and a stored path is a guess about the other
+  instance's filesystem. csv stays a local-file affordance.
+- **A `ttl` is stored as the Go duration TEXT the operator wrote** (`"30s"`,
+  `"5m"`), never as an integer. This is wiring an operator pushes and reads back,
+  and the read back must be re-pushable byte for byte; an integer would round-trip
+  `30s` as `30000000000`. Same reason `apt_rules.ast` is `TEXT`. A duration is
+  **not** an instant — the timestamp encoding above governs `created_at` and
+  `updated_at` here and nothing else in these tables.
+- **`declared_keys` distinguishes "not declared" from "declared empty".** It
+  carries the attribute keys a shared slot guarantees, as a JSON array of names —
+  the simplest shape that round-trips, with **no** per-key type information,
+  because the value model already governs shape. `''` means *not declared* (the
+  slot is opted out and behaves exactly as it did before the column existed);
+  `'[]'` means *declared empty* (opted in, permitting no keys). Do not collapse
+  them. The column landed with the tables rather than with its first reader
+  because `Setup` creates and never migrates, so adding it later would be a second
+  hard break.
+
+`apt_wiring_provider_references` carries no timestamps, for the reason the other
+owned child tables carry none: its history is its provider entry's, and the
+`CASCADE` edge means it cannot outlive it.
+
 ## The two dialects, and where they legitimately differ
 
-`storage/postgres/schema.sql` is the peer of the SQLite file: same 14 tables, same
-columns, same 9 edges with the same actions, same 7 indexes. Every difference is a
+`storage/postgres/schema.sql` is the peer of the SQLite file: same 19 tables, same
+columns, same 11 edges with the same actions, same 7 indexes. Every difference is a
 dialect requirement and is written down at the point it occurs.
 
 1. **Integer widths.** SQLite's `INTEGER` is 64-bit whatever the column holds;
    Postgres's is 32-bit. So **every** column SQLite spells `INTEGER` is `BIGINT`
-   here — timestamps *and* `seq`, `version`, `delegatable` — rather than only the
+   here — timestamps *and* `seq`, `version`, `delegatable`, `max_size` — rather than only the
    timestamps. Uniform on purpose: a column that silently narrowed its domain
    would be a behavioural difference between backends `storagetest` asserts are
    identical, and a uniform rule is one an automated gate can check.
@@ -295,7 +375,7 @@ dialect requirement and is written down at the point it occurs.
    rejected: Postgres has no `IF NOT EXISTS` for it, which would cost the file its
    idempotency. Declaration order is not a fact the parity gate collects.
 3. **Primary-key nullability.** SQLite lets a non-`INTEGER` `PRIMARY KEY` hold
-   NULL (a backwards-compatibility quirk), so the nine single-column TEXT keys
+   NULL (a backwards-compatibility quirk), so the twelve single-column TEXT keys
    read back nullable there and `NOT NULL` in Postgres. Nothing relies on the
    looseness and no statement writes a NULL key; it is recorded rather than
    "fixed", because fixing it would mean editing the SQLite schema for a value
@@ -314,7 +394,7 @@ total refusal at boot, not a partial apply. Nothing may route the script through
 processes can both pass the existence check and the loser fails `42P07`/`23505` —
 so `Setup` takes a transaction-scoped advisory lock around the script, at
 `sql.LevelReadCommitted` (under `REPEATABLE READ` the verify step reads the
-pre-schema snapshot and reports all 14 tables missing).
+pre-schema snapshot and reports all 19 tables missing).
 
 `Atomic` **flattens**: a nested `Atomic` reuses the open transaction rather than
 taking a second connection. Both SQL backends do this, and in Postgres it is what
@@ -438,8 +518,13 @@ Update-Demand rows live in `CLAUDE.md`. In short:
 - **The timestamp encoding** (`storage/storagetime`) → both `schema.sql` headers'
   "Time" sections, this document, and `docs/src/concepts/storage.md`.
 - **The foreign-key edge set or an action** → both `schema.sql` files (the parity
-  gate makes half a change build-red), the edge table above, and
-  `docs/src/concepts/storage.md`.
+  gate makes half a change build-red), the edge table above,
+  `docs/src/concepts/storage.md`, and `wantEdges` in
+  `storage/sqlite/foreign_keys_test.go` (which reads the actions back out of a
+  live database, plus an exact CASCADE count).
+- **A wiring column** → both `schema.sql` files, the wiring table above, and
+  `docs/src/concepts/storage.md`. A column that could carry a DSN, a credential or
+  a filesystem path is not a wiring column; see the section above for why.
 - **`physicalTypes` / `refusedTypes`** in `internal/schemagate` → the dialect
   divergence list above and the affected `schema.sql` header. Changing that table
   changes what "the dialects agree" *means*, which is not a refactor.

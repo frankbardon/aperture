@@ -43,7 +43,7 @@ import (
 // ordinary text and is compared here literally (ensureSchema and inspectTables
 // both do `nspname = $1`). Configure "Aperture" and an unquoted qualifier would
 // address schema `aperture` while the catalog lookups asked about `Aperture`:
-// Setup would create fourteen tables and then report all fourteen missing. With
+// Setup would create nineteen tables and then report all nineteen missing. With
 // the name quoted, the schema the statements address and the schema the catalog
 // lookups name are the same string, for every accepted value.
 //
