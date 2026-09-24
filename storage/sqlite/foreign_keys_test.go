@@ -199,6 +199,8 @@ var wantEdges = []fkEdge{
 	{"apt_principal_roles", "role_id", "apt_roles", "id", "RESTRICT", "RESTRICT"},
 	{"apt_role_permissions", "permission_id", "apt_permissions", "id", "RESTRICT", "RESTRICT"},
 	{"apt_role_permissions", "role_id", "apt_roles", "id", "CASCADE", "RESTRICT"},
+	{"apt_wiring_provider_references", "object_type", "apt_wiring_providers", "object_type", "CASCADE", "RESTRICT"},
+	{"apt_wiring_providers", "object_type", "apt_object_types", "name", "RESTRICT", "RESTRICT"},
 }
 
 // TestSchemaDeclaresExactlyTheIntendedForeignKeys reads the keys back out of a
@@ -229,7 +231,7 @@ func TestSchemaDeclaresExactlyTheIntendedForeignKeys(t *testing.T) {
 		t.Fatalf("the schema's foreign keys are not the intended set:\n got:\n%s\n want:\n%s",
 			renderEdges(got), renderEdges(want))
 	}
-	// Anti-vacuity: three CASCADE edges and no more. CASCADE is the action that
+	// Anti-vacuity: four CASCADE edges and no more. CASCADE is the action that
 	// DELETES data, so an extra one is the expensive direction to get wrong.
 	cascades := 0
 	for _, e := range got {
@@ -237,9 +239,10 @@ func TestSchemaDeclaresExactlyTheIntendedForeignKeys(t *testing.T) {
 			cascades++
 		}
 	}
-	if cascades != 3 {
-		t.Fatalf("found %d ON DELETE CASCADE edges, want exactly 3 "+
-			"(a join table's owner: principal->roles, role->permissions, group->members)", cascades)
+	if cascades != 4 {
+		t.Fatalf("found %d ON DELETE CASCADE edges, want exactly 4 "+
+			"(a child table's owner: principal->roles, role->permissions, group->members, "+
+			"provider->references)", cascades)
 	}
 }
 

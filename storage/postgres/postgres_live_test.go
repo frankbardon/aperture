@@ -356,7 +356,7 @@ func TestPostgresLive_ConstraintViolationsAreCoded(t *testing.T) {
 // fills it.
 //
 // The connection's search_path points at "public" throughout, and every one of
-// Aperture's fourteen tables still lands in the configured schema and NOT in
+// Aperture's nineteen tables still lands in the configured schema and NOT in
 // public. That is the deterministic-resolution criterion made observable: where
 // a statement lands is decided when the statement is built, not by session
 // state, so a store can address a schema its connection cannot even see

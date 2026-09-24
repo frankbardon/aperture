@@ -12,8 +12,9 @@ backend implements. Three backends ship, all behind the one interface:
   **`jackc/pgx/v5/stdlib`** through `database/sql`, also pure Go. Not a variant:
   the same tables, the same keys, the same behaviour.
 
-Both SQL backends use a hand-written, embedded `schema.sql` — **14 tables and 7
-indexes**, no ORM, no sqlc, no migration tool.
+Both SQL backends use a hand-written, embedded `schema.sql` — **19 tables and 7
+indexes**, no ORM, no sqlc, no migration tool. Fourteen of those tables are model
+state; the other five are [shared wiring](#the-five-shared-wiring-tables).
 
 The interface is deliberately free of any backend-specific concept. All three
 backends enforce the **same** validation and typed-action rules and pass the
@@ -87,7 +88,7 @@ layer where a `time.Time` becomes an integer, or an integer a `time.Time`.
 
 ## Referential integrity is in the database
 
-Nine relationship columns carry a **real foreign key**, identically in both SQL
+Eleven relationship columns carry a **real foreign key**, identically in both SQL
 dialects:
 
 | Child column | Parent | ON DELETE |
@@ -101,14 +102,16 @@ dialects:
 | `apt_group_members.group_id` | `apt_groups(id)` | **CASCADE** |
 | `apt_group_members.principal_id` | `apt_principals(id)` | RESTRICT |
 | `apt_grants.permission_id` | `apt_permissions(id)` | RESTRICT |
+| `apt_wiring_providers.object_type` | `apt_object_types(name)` | RESTRICT |
+| `apt_wiring_provider_references.object_type` | `apt_wiring_providers(object_type)` | **CASCADE** |
 
 `ON UPDATE RESTRICT` throughout, without exception: an id in Aperture is
 immutable, so an `UPDATE` that moved a parent key is a bug and RESTRICT makes it
 a loud one.
 
-**CASCADE appears only where an entity owns its own join rows** — a principal's
-role list, a role's permission list, a group's member list. The join row has no
-meaning without its owner.
+**CASCADE appears only where an entity owns its own child rows** — a principal's
+role list, a role's permission list, a group's member list, and a provider
+entry's `references:` map. The child row has no meaning without its owner.
 
 **Everywhere else the delete is refused**, with `APERTURE_STORAGE_CONSTRAINT`.
 Deleting a permission a grant still cites, a role a principal still holds, or a
@@ -140,13 +143,26 @@ This list is load-bearing. Adding a key to any of these breaks something.
   **outlive** — recording what was done to a principal since deleted is the whole
   point. A key would either refuse the delete (making the trail the reason you
   cannot remove a user) or erase the evidence.
-- **JSON value columns** — `apt_object_types.apt_actions` and
-  `apt_templates.apt_grants` — are value lists, not relationships.
+- **JSON value columns** — `apt_object_types.apt_actions`,
+  `apt_templates.apt_grants` and
+  `apt_wiring_attribute_providers.declared_keys` — are value lists, not
+  relationships.
   `apt_templates.apt_grants` is spelled that way because `grants` is a reserved
   word, not because it references the `apt_grants` table.
 - **`apt_grants.subject_id`** — polymorphic, as above.
 - **`apt_permissions.scope_strategy`** — not an id. It is an opaque scope
   reference resolved against an in-process registry of resolvers, not a table.
+- **`apt_wiring_providers.apt_connection`** and
+  **`apt_wiring_attribute_providers.apt_connection`** — the column names a row in
+  the connection manifest, but an entry of a kind that reads no database names
+  no connection, so a key would demand a NULL-encoded absence (an encoding this
+  schema uses nowhere) or a fake `''` row in every deployment. An unknown name
+  is a coded error when the wiring is built, naming the typo.
+- **`apt_wiring_field_types.object_type`** — a field-type declaration may name a
+  type whose objects are listed inline, and such a type needs no object-type row
+  at all, so the parent a key would require may legitimately not exist.
+- **`apt_wiring_provider_references.target_type`** — a reference target is
+  resolved against the registry the wiring builds, not against a table.
 
 Each refusal is written into both `schema.sql` files as a comment, next to the
 column it concerns.
@@ -156,6 +172,40 @@ defaults OFF and scopes per connection. `sqlite.Open` therefore forces
 `_pragma=foreign_keys(1)` into every DSN it opens, whatever the caller passed,
 and `Setup` verifies it and refuses a non-enforcing connection. PostgreSQL
 enforces unconditionally and has no equivalent switch.
+
+## The five shared-wiring tables
+
+Fourteen tables are **model state** — who exists and who may do what. The other
+five are **runtime wiring**: where a decision's object metadata and attribute bags
+are read *from*. They are the database-backed home for a seed document's
+`connections:`, `providers:`, `field_types:` and `attribute_providers:` sections,
+so a second instance can boot with **no seed file** and decide identically.
+
+| Table | Holds | Key |
+|---|---|---|
+| `apt_wiring_connections` | one row per connection **name**, and nothing else | `name` |
+| `apt_wiring_providers` | a `providers:` entry: kind, connection, `get_one`, `get_all`, `id_column`, `ttl`, `max_size` | `object_type` |
+| `apt_wiring_provider_references` | a provider's `references:` map, flattened | (`object_type`, `field`) |
+| `apt_wiring_field_types` | the `field_types:` section, flattened | (`object_type`, `field`) |
+| `apt_wiring_attribute_providers` | an `attribute_providers:` entry, plus the optional declared key set | `subject` (the slot) |
+
+What is **absent** from them is the load-bearing part:
+
+- **No column can carry a secret** — no DSN, no password, no credential, not even
+  the `dsn_env:` variable *name*. A connection's credentials are a per-instance
+  fact each instance resolves for itself, so there is nothing here to leak and no
+  credential in a backup of this database. That is why the connection table holds
+  names and nothing else: the name is the only part a provider entry refers to.
+- **There is no `path` column.** A filesystem path is machine-local, and a stored
+  one is a guess about another instance's filesystem. File-backed providers stay a
+  local-file affordance.
+- **A `ttl` is stored as the Go duration text the operator wrote** (`"30s"`),
+  never as an integer, because wiring read back out has to be re-pushable byte for
+  byte. A duration is not an instant: the nanosecond encoding above governs
+  `created_at` and `updated_at`, and nothing else in these tables.
+- **`declared_keys` tells "not declared" apart from "declared empty".** It holds
+  the attribute keys a shared slot guarantees, as a JSON array of names. `''` means
+  *not declared*; `'[]'` means *declared empty*. They are different answers.
 
 ## Account stamping is enforced in the queries
 

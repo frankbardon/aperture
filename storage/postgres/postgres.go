@@ -253,7 +253,7 @@ func (s *Store) Close() error {
 // Setting the same transaction to REPEATABLE READ instead makes every one of
 // those reads use the snapshot taken at step 1 — before the lock was even
 // granted — and the observed result is that Setup applies the whole schema and
-// then reports all fourteen tables missing, on a completely uncontended
+// then reports all nineteen tables missing, on a completely uncontended
 // database. The waiter in a race is worse off still: it inspects a pre-lock
 // snapshot, concludes the tables are absent, and runs the CREATE statements the
 // lock exists to prevent.
@@ -503,6 +503,11 @@ var expectedTables = []string{
 	"apt_roles",
 	"apt_rules",
 	"apt_templates",
+	"apt_wiring_attribute_providers",
+	"apt_wiring_connections",
+	"apt_wiring_field_types",
+	"apt_wiring_provider_references",
+	"apt_wiring_providers",
 }
 
 // inspectTables returns the set of Aperture's tables that exist in target.
