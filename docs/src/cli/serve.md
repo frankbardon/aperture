@@ -113,6 +113,16 @@ was. There is no flag and nothing to configure; see
 for the whole rule, including how a shared connection **name** is routed to this
 instance's own DSN.
 
+With both — wiring rows *and* a `--seed` file — the **database is authoritative
+and the local file may only ADD**. A local `providers:`, `field_types:`,
+`attribute_providers:` or `attributes:` entry for an object type or slot the
+database never declared is built normally, which is how a `kind: csv` provider (a
+path cannot be shared wiring) and a Go host's hand-written providers survive a
+push. A local entry for one the database **already declares** fails the boot with
+`APERTURE_WIRING_LOCAL_COLLISION` naming it, rather than one side quietly winning.
+See
+[With both, the database wins and the file may only ADD](global-options.md#with-both-the-database-wins-and-the-file-may-only-add).
+
 Under `serve`, the facade is wired with everything the other surfaces expect: the
 admin gate, delegation and impersonation mutators, the append-only audit trail,
 the rules engine over a storage-backed rule source, and the object providers the

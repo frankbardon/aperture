@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -43,11 +44,75 @@ import (
 // attribute_providers:. Not carried, because the tables have no column for them
 // and never will: a path (kind: csv is refused at push), a DSN, a dsn_env
 // variable NAME, and the pool tuning. Those are the ROUTE, and the route is a
-// per-instance fact — see connectionRoute.
+// per-instance fact — see connectionRoutes.
 //
 // objects: and attributes: are the local document's own, untouched: both carry
 // DATA rather than a pointer to data, and they belong to the instance whose seed
 // file lists them.
+//
+// # The database is authoritative; the local file may only ADD
+//
+// The local file's own four WIRING sections are not discarded. They are layered
+// on top of the projection ADDITIVELY: a local entry for an object type or an
+// attribute slot the shared wiring never declared is carried through and built
+// exactly as it would be on an unpushed instance, and a local entry for one the
+// shared wiring DOES declare fails the boot with
+// APERTURE_WIRING_LOCAL_COLLISION naming it.
+//
+// Additive is not a convenience. It is the only shape that composes with a Go
+// host: Arc's `wave` and `metric` object providers are hand-written Go registered
+// onto the same *provider.Registry, so "the database is the only source" would
+// mean Arc could never read a pushed wiring at all. A local kind: csv provider is
+// the same case in YAML — a path is machine-local, which is why it cannot BE
+// shared wiring (APERTURE_WIRING_KIND_UNSHAREABLE) and therefore must stay
+// addable.
+//
+// A collision is refused in BOTH directions rather than resolved by precedence,
+// and that is the load-bearing half. Either resolution is silent and either one
+// changes what a decision reads: the database winning discards wiring somebody
+// checked into this instance's file, and the file winning means one instance in a
+// fleet answers from a source its peers cannot see. Neither surfaces as an error
+// on any later decision — it surfaces as a different verdict, on an instance
+// that looks identically configured.
+//
+// # Where the collision check lives, and why part of it is not here
+//
+// The rule is about the REGISTRY, not about which syntax declared the entry, so
+// the refusal has to exist at the registry as well as in this projection:
+//
+//   - A file-declared entry passes through this function, and the three layer*
+//     helpers below refuse it here, naming the two SECTIONS — which is the thing
+//     an operator can act on.
+//   - A GO-registered entry never reaches this function at all. A host calls
+//     provider.Registry.Register (Arc's RegisterProviders, from its own
+//     apertureScopeDeps) on the registry a decision stack already built, long
+//     after any document has been read. Its collision is refused by Register's
+//     own duplicate check — APERTURE_PROVIDER_INVALID naming the object type, and
+//     APERTURE_ATTRIBUTE_PROVIDER_INVALID naming the slot on the attribute
+//     registry — which is structural: a *provider.Registry holds at most one
+//     provider per type and has never accepted a second.
+//
+// So there is one arbiter and two messages, not two rules. This layer's job is to
+// say WHICH SOURCE before the registry says merely "twice", because "object type
+// already has a registered provider" is the truth and not the remedy when the
+// other declaration is in a database on another host. Do not add a second
+// registry-level check here: a projection cannot see a Register call that has not
+// happened yet, and one that tried would be a rule that disagrees with the
+// registry the moment a host registers in a different order.
+//
+// The inline-data sections are refused on the same axis, one by each mechanism it
+// already has:
+//
+//   - objects: against a shared providers: entry — seed.StrictProviderCollision(),
+//     which is exactly that posture and is passed on this path only (see
+//     wiringBuildOptions). On the file-only path the overlap stays the documented
+//     silent discard, because adding a providers: row while inline entries are
+//     still in the file is an ordinary migration step.
+//   - attributes: against a shared attribute_providers: entry — refused by
+//     layerAttributeProviders, because the attribute builder takes no BuildOption
+//     and the posture has nowhere else to be stated. The hazard there is the worse
+//     of the two: a discarded inline bag is a MISSING bag, and a missing bag
+//     WIDENS an exclusive grant with nothing in the verdict saying so.
 
 // connectionDSNEnvPrefix and connectionDSNEnvSuffix bracket the environment
 // variable a DB-declared connection name is read through when the local seed
@@ -71,16 +136,22 @@ const (
 )
 
 // wiringDocument projects a non-empty shared wiring set into the four wiring
-// sections of a seed.Document, carrying local's two DATA sections (objects: and
-// attributes:) through unchanged.
+// sections of a seed.Document, layers this instance's own LOCAL wiring on top of
+// it additively, and carries local's two DATA sections (objects: and attributes:)
+// through unchanged.
 //
-// local is this instance's own seed document — possibly empty — and is read for
-// exactly two things: the data sections, and the ROUTE for each connection name
-// the shared manifest declares. Its own four WIRING sections are not read here:
-// with shared wiring present the database is what the registries are built from.
-// (Letting the local file ADD an object type or a slot the database never
-// declared, and refusing a collision, is a separate rule with its own story; this
-// function is where that layering will compose, not where it is decided.)
+// local is this instance's own seed document — possibly empty or nil — and is
+// read for four things: the data sections, the ROUTE for each connection name the
+// shared manifest declares, its own connections: block, and the object types and
+// attribute slots it ADDS. The database entries are authoritative: a local entry
+// for a type or slot the shared wiring already declares fails the boot with
+// APERTURE_WIRING_LOCAL_COLLISION rather than either side quietly winning. See
+// the file header for why both resolutions are worse than a refusal, and for
+// where the same rule is enforced for a host that registers in Go.
+//
+// The sections are layered in a fixed order — connections, providers, field
+// types, attribute providers — so a document with collisions on two axes always
+// fails on the same one and a boot is reproducible.
 func wiringDocument(set model.WiringSet, local *seed.Document) (*seed.Document, error) {
 	doc := &seed.Document{}
 	if local != nil {
@@ -94,20 +165,209 @@ func wiringDocument(set model.WiringSet, local *seed.Document) (*seed.Document, 
 	}
 	doc.Connections = conns
 
-	if len(set.Providers) > 0 {
-		doc.Providers = make([]seed.Provider, 0, len(set.Providers))
-		for _, p := range set.Providers {
-			doc.Providers = append(doc.Providers, wiringSeedProvider(p))
-		}
+	if doc.Providers, err = layerProviders(set.Providers, local); err != nil {
+		return nil, err
 	}
-	doc.FieldTypes = wiringSeedFieldTypes(set.FieldTypes)
-	if len(set.AttributeProviders) > 0 {
-		doc.AttributeProviders = make([]seed.AttributeProvider, 0, len(set.AttributeProviders))
-		for _, ap := range set.AttributeProviders {
-			doc.AttributeProviders = append(doc.AttributeProviders, wiringSeedAttributeProvider(ap))
-		}
+	if doc.FieldTypes, err = layerFieldTypes(set.FieldTypes, local); err != nil {
+		return nil, err
+	}
+	if doc.AttributeProviders, err = layerAttributeProviders(set.AttributeProviders, local); err != nil {
+		return nil, err
 	}
 	return doc, nil
+}
+
+// wiringBuildOptions are the seed.BuildOptions the object registry is built under
+// on a DB-wired boot, and on that boot only.
+//
+// One option, and it is the posture rather than a new mechanism:
+// seed.StrictProviderCollision() turns an object type declared in BOTH the
+// document's providers: and objects: sections from a silent type-level discard
+// into an APERTURE_CONFIG_INVALID naming the type.
+//
+// On the file-only path that discard stays the default, deliberately: pointing a
+// type at a CSV while its inline entries are still in the file is an ordinary
+// migration step in ONE document a single author owns, and a seed that booted
+// yesterday must not stop booting because a providers: row was added. Here the
+// document is one Aperture ASSEMBLED from two sources that two different people
+// edit, on two different machines, and the overlap is cross-source by
+// construction: the providers: section is the database's and the objects: section
+// is this instance's file. A discard there is a push on another host silently
+// switching off metadata checked into this instance's seed — which is exactly the
+// additive rule's whole subject, so the strict posture is what states it.
+//
+// It applies to the WHOLE assembled document, which means a local file that
+// declares both a providers: entry and inline objects: for one type is also
+// refused once wiring rows exist. That is one rule applied uniformly to one
+// document rather than a second rule with an exception in it, and the refusal
+// names the type either way.
+func wiringBuildOptions() []seed.BuildOption {
+	return []seed.BuildOption{seed.StrictProviderCollision()}
+}
+
+// layerProviders projects the shared providers: entries and appends the local
+// document's own, refusing any object type both declare.
+//
+// The shared entries come first so the section reads database-then-local, but the
+// order carries no precedence: a collision is refused, so there is never a second
+// entry for one type to be resolved against. It matters only for
+// seed.declareReferences, which runs in its own pass after every type is
+// registered and therefore lets a local provider's references: name a shared type
+// and the other way round.
+//
+// A local entry is carried VERBATIM, path: included. That is the point: kind: csv
+// cannot be shared wiring at all (a filesystem path is machine-local), so a local
+// file is the only place a csv provider can ever be declared, and dropping it
+// from a DB-wired boot would make pushing any wiring at all a silent loss of
+// every csv-backed type.
+func layerProviders(shared []model.WiringProvider, local *seed.Document) ([]seed.Provider, error) {
+	out := make([]seed.Provider, 0, len(shared))
+	declared := make(map[string]struct{}, len(shared))
+	for _, p := range shared {
+		out = append(out, wiringSeedProvider(p))
+		declared[p.ObjectType] = struct{}{}
+	}
+	if local != nil {
+		var collided []string
+		for _, p := range local.Providers {
+			if _, dup := declared[p.ObjectType]; dup {
+				collided = append(collided, p.ObjectType)
+				continue
+			}
+			out = append(out, p)
+		}
+		if len(collided) > 0 {
+			return nil, localCollision("object type", "providers:", "providers:", collided)
+		}
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+// layerFieldTypes regroups the shared field-type rows and appends the local
+// document's own entries, refusing any object type both declare.
+//
+// A field_types: entry is keyed by object type and applies to the objects:
+// section only, so the shared rows and the local inline objects: they type are the
+// INTENDED composition and not a collision — a pushed declaration that says
+// project.started_on is a date types the entries this instance's file lists for
+// project. What cannot happen is two declarations for one type: seed's own
+// fieldTypeIndex refuses a type declared twice, so an un-layered append would
+// fail the build with "object_type declared twice" and leave the operator to work
+// out that the other one is in a database.
+func layerFieldTypes(shared []model.WiringFieldType, local *seed.Document) ([]seed.FieldType, error) {
+	out := wiringSeedFieldTypes(shared)
+	if local == nil || len(local.FieldTypes) == 0 {
+		return out, nil
+	}
+	declared := make(map[string]struct{}, len(out))
+	for _, ft := range out {
+		declared[ft.ObjectType] = struct{}{}
+	}
+	var collided []string
+	for _, ft := range local.FieldTypes {
+		if _, dup := declared[ft.ObjectType]; dup {
+			collided = append(collided, ft.ObjectType)
+			continue
+		}
+		out = append(out, ft)
+	}
+	if len(collided) > 0 {
+		return nil, localCollision("object type", "field_types:", "field_types:", collided)
+	}
+	return out, nil
+}
+
+// layerAttributeProviders projects the shared attribute_providers: entries and
+// appends the local document's own, refusing any slot both declare — and refusing
+// a local INLINE attributes: entry for a slot the shared wiring declares, which is
+// the same collision arriving through the data section.
+//
+// The inline half has to be refused here rather than by a build option, because
+// BuildAttributeRegistryWithConnections takes none: the attribute seam's
+// external-wins-entirely precedence has no strict posture to turn on, so this is
+// the only place the additive rule can be stated for it.
+//
+// It is also the worse of the two hazards, and the reason the check is not
+// "tidiness". The external source wins a slot ENTIRELY — no per-subject merge, no
+// fallback — so a push on another host silently replaces this instance's inline
+// bags with a directory that has never heard of its subjects. Every read of that
+// slot then returns an empty bag, and an empty bag does not deny: it WIDENS an
+// exclusive grant, because a rule that excluded on an attribute no longer sees the
+// attribute. Nothing in the resulting verdict says a bag went missing.
+func layerAttributeProviders(shared []model.WiringAttributeProvider, local *seed.Document) ([]seed.AttributeProvider, error) {
+	out := make([]seed.AttributeProvider, 0, len(shared))
+	declared := make(map[string]struct{}, len(shared))
+	for _, ap := range shared {
+		out = append(out, wiringSeedAttributeProvider(ap))
+		declared[strings.TrimSpace(ap.Subject)] = struct{}{}
+	}
+	if local != nil {
+		var collided []string
+		for _, ap := range local.AttributeProviders {
+			if _, dup := declared[strings.TrimSpace(ap.Subject)]; dup {
+				collided = append(collided, strings.TrimSpace(ap.Subject))
+				continue
+			}
+			out = append(out, ap)
+		}
+		if len(collided) > 0 {
+			return nil, localCollision("attribute slot", "attribute_providers:", "attribute_providers:", collided)
+		}
+		// The inline section is NOT dropped when it does not collide: a slot the
+		// shared wiring never declared is served from this instance's own bags,
+		// exactly as it is on an unpushed instance.
+		var inline []string
+		for _, a := range local.Attributes {
+			if _, dup := declared[strings.TrimSpace(a.Subject)]; dup {
+				inline = append(inline, strings.TrimSpace(a.Subject))
+			}
+		}
+		if len(inline) > 0 {
+			return nil, localCollision("attribute slot", "attributes:", "attribute_providers:", inline)
+		}
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+// localCollision is the boot refusal for names a LOCAL wiring section declares
+// that the shared wiring already declares.
+//
+// noun names what collided ("object type", "attribute slot"); localSection and
+// sharedSection name the two YAML keys, so the message says which two places to
+// go and read rather than only what is wrong. Only TYPE and SLOT names ride in
+// it — never an object id, never an attribute key — for the same reason
+// decisionStack.reportCollisions names only those: an object id can embed an
+// account, and an error message is the wrong place for one.
+//
+// Names are sorted and de-duplicated so an operator fixing a document sees every
+// colliding entry on that axis in one pass, in the same order every time.
+func localCollision(noun, localSection, sharedSection string, names []string) error {
+	sort.Strings(names)
+	names = slices.Compact(names)
+	return aerr.WithContext(aerr.APERTURE_WIRING_LOCAL_COLLISION,
+		fmt.Sprintf("cli: this instance's seed file declares %s %s in %s, and the shared wiring in its database already declares %s in %s; with wiring rows present the database is AUTHORITATIVE and the local file may only ADD %ss the database never declared, so the collision is refused rather than resolved — delete the local declaration, or push a wiring document that omits the shared one if the local wiring is what this fleet should use",
+			noun, strings.Join(quoteEach(names), ", "), localSection,
+			plural("it", "them", len(names)), sharedSection, noun),
+		map[string]any{
+			"collisions":     names,
+			"local_section":  localSection,
+			"shared_section": sharedSection,
+		})
+}
+
+// plural picks between two words by count, so a refusal naming one entry does not
+// read as a formatting bug.
+func plural(one, many string, n int) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }
 
 // wiringSeedProvider converts one stored provider entry into its seed form.
@@ -213,11 +473,34 @@ func wiringSeedAttributeProvider(ap model.WiringAttributeProvider) seed.Attribut
 // naming a variable, and seed.resolveConnection refuses an unset one by name with
 // APERTURE_SQL_PROVIDER_CONNECTION — the same refusal, with the same remedy, that
 // a local file's own connection raises.
+//
+// # Why the WHOLE local block is carried, not only the shared names it routes
+//
+// connections: is the one section the additive rule does not apply to, in either
+// half. A local entry under a shared NAME is that name's route (case 2 above) and
+// not a competing declaration, so it is not a collision; and a local entry under a
+// name the manifest never mentions is the route for a connection only this
+// instance's own ADDED kind: sql providers can reach, so dropping it would make
+// every locally-added SQL provider fail the build for an undeclared connection.
+// So the map starts as the local block in full and the manifest fills in the rest.
+//
+// Carrying entries nothing references costs one lazy pool and one dsn_env: lookup
+// each, which is precisely what the same file costs on the pure-file path —
+// seed.openConnections resolves every DECLARED connection whether a provider uses
+// it or not. A DB-wired boot therefore adds no failure mode a file-only boot of the
+// same document did not already have.
 func connectionRoutes(manifest []model.WiringConnection, local *seed.Document) (map[string]seed.Connection, error) {
-	if len(manifest) == 0 {
-		return nil, nil
-	}
 	out := make(map[string]seed.Connection, len(manifest))
+	// Local entries are copied VERBATIM, DSNLiteral included. A literal dsn: is
+	// refused by seed.Parse before a document is usable for anything, so a parsed
+	// file cannot carry one, and re-deriving that refusal here would be the same
+	// rule in two places — the one thing wiring_project.go's own doc comment warns
+	// against.
+	if local != nil {
+		for name, c := range local.Connections {
+			out[name] = c
+		}
+	}
 	// Only the CONVENTIONAL names are checked for a collision. A local document
 	// may legitimately point two connections at one dsn_env: — two logical names
 	// over one server is two pools, which the seed path has always allowed — but
@@ -226,8 +509,7 @@ func connectionRoutes(manifest []model.WiringConnection, local *seed.Document) (
 	// somewhere nobody asked for.
 	derived := make(map[string][]string, len(manifest))
 	for _, c := range manifest {
-		if declared, ok := localConnection(local, c.Name); ok {
-			out[c.Name] = declared
+		if _, routed := out[c.Name]; routed {
 			continue
 		}
 		env := connectionDSNEnvVar(c.Name)
@@ -245,22 +527,10 @@ func connectionRoutes(manifest []model.WiringConnection, local *seed.Document) (
 				strings.Join(quoteEach(names), ", "), env),
 			map[string]any{"connections": names, "dsn_env": env})
 	}
-	return out, nil
-}
-
-// localConnection returns this instance's declared route for name, if its seed
-// document declares one.
-//
-// The entry is returned verbatim, DSNLiteral included. A literal dsn: is refused
-// by seed.Parse before a document is usable for anything, so a parsed file cannot
-// carry one, and re-deriving that refusal here would be the same rule in two
-// places — the one thing wiring_project.go's own doc comment warns against.
-func localConnection(local *seed.Document, name string) (seed.Connection, bool) {
-	if local == nil || len(local.Connections) == 0 {
-		return seed.Connection{}, false
+	if len(out) == 0 {
+		return nil, nil
 	}
-	c, ok := local.Connections[name]
-	return c, ok
+	return out, nil
 }
 
 // connectionDSNEnvVar is the environment variable a DB-declared connection name

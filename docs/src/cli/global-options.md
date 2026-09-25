@@ -82,6 +82,40 @@ it opened. When those tables are empty — which is every deployment that has ne
 run `aperture wiring push` — the local seed file's wiring is used exactly as it
 always was. There is no flag for this and nothing to configure.
 
+### With both, the database wins and the file may only ADD
+
+An instance can have wiring rows *and* a `--seed` file, and most will: some wiring
+cannot be shared at all. A `kind: csv` provider's data source is a filesystem
+path, so `aperture wiring push` refuses one outright, and a Go host's
+hand-written providers are code no document describes.
+
+So the two compose, additively:
+
+- The **database is authoritative**. Every pushed entry is built.
+- The **local file may ADD** an object type or an attribute slot the database
+  never declared. It is built exactly as it would be on an instance that has
+  never been pushed to, `kind: csv` and all.
+- A local entry for an object type or slot the database **already declares**
+  fails the boot with `APERTURE_WIRING_LOCAL_COLLISION`, naming the entry and
+  both sections.
+
+The collision is refused rather than resolved because both resolutions are silent
+and both change what a decision reads: the database winning would discard wiring
+somebody checked into this instance's file, and the file winning would mean one
+instance in the fleet answers from a source its peers cannot see. Neither shows up
+as an error later — it shows up as a different verdict. Fix it by deleting the
+local declaration, or by pushing a wiring document that omits the shared one.
+
+`connections:` is the exception, in both directions: a local entry under a shared
+name is that name's **route** (see below) and not a competing declaration, and a
+local entry under a name the shared manifest never mentions is the route for a
+connection only this instance's own added providers reach. Both are carried.
+
+A host that registers its own providers in Go gets the same answer from the same
+place — `provider.Registry.Register` refuses a second provider for a type it
+already serves, with `APERTURE_PROVIDER_INVALID`. The rule is about the registry,
+not about which syntax declared the entry.
+
 A shared connection carries its **name** and nothing else: no DSN, no credential,
 not even the `dsn_env:` variable name. Each instance supplies its own route for a
 name, in one of three ways — a Go host's `seed.WithConnectionOpener`, a

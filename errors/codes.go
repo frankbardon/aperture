@@ -387,6 +387,27 @@ const (
 	// deployment's own file, and the instance that reads the seed is the instance
 	// the path belongs to.
 	APERTURE_WIRING_KIND_UNSHAREABLE Code = "APERTURE_WIRING_KIND_UNSHAREABLE"
+	// APERTURE_WIRING_LOCAL_COLLISION — this instance's LOCAL seed file declares
+	// an object type or an attribute slot the shared wiring in its database
+	// already declares. The message names the colliding entries and the two
+	// sections that declare them.
+	//
+	// With wiring rows present the database is AUTHORITATIVE, and a local
+	// declaration may only ADD an object type or a slot the database never
+	// declared — which is the permanent situation of a Go host whose own object
+	// providers no document can describe. A collision is refused rather than
+	// resolved by precedence, in either direction, because both resolutions are
+	// silent and both change what a decision reads: letting the database win
+	// discards wiring somebody checked into this instance's file, and letting the
+	// file win means one instance in a fleet answers from a source the others
+	// cannot see. Neither shows up as an error on any later decision — it shows up
+	// as a different verdict.
+	//
+	// It is distinct from APERTURE_PROVIDER_INVALID, which the registry raises for
+	// the same overlap arriving from Go, because the remedies differ: this one
+	// names two configuration sources an operator can edit, where that one names a
+	// duplicate registration a developer has to remove.
+	APERTURE_WIRING_LOCAL_COLLISION Code = "APERTURE_WIRING_LOCAL_COLLISION"
 )
 
 // Metadata describes an Aperture code: the canonical human-readable Message and
@@ -773,6 +794,15 @@ var Registry = map[Code]Metadata{
 			"A csv entry's only data source is a filesystem path; the shared-wiring schema has no path column, because a relative path resolves against the seed file's own directory and an absolute one is a guess about the other host's disk.",
 		},
 	},
+	APERTURE_WIRING_LOCAL_COLLISION: {
+		Message: "the local seed file declares an object type or attribute slot the shared wiring already declares",
+		Fixups: []string{
+			"Delete the local declaration named in the message: with wiring rows present the database is authoritative, and the local file may only ADD an object type or slot the database never declared.",
+			"Or remove the shared declaration instead — push a wiring document that omits it (`aperture wiring push --store <dsn> --seed <file>`) — if the local one is the wiring you actually want the fleet to use.",
+			"Check which side declares what with `aperture wiring show --store <dsn>`, then read the same section of this instance's --seed file.",
+			"A host registering its own providers in Go gets the same refusal from the registry as APERTURE_PROVIDER_INVALID: the rule is about the registry, not about which syntax declared the entry.",
+		},
+	},
 }
 
 // AllCodes is the registry every gate walks. Append new codes here; the
@@ -827,6 +857,7 @@ var AllCodes = []Code{
 	APERTURE_WIRING_OBJECT_TYPE_UNKNOWN,
 	APERTURE_WIRING_CONNECTION_UNDECLARED,
 	APERTURE_WIRING_KIND_UNSHAREABLE,
+	APERTURE_WIRING_LOCAL_COLLISION,
 }
 
 // Message returns the canonical message for a code, or empty when the code has

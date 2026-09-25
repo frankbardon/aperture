@@ -125,12 +125,16 @@ func (s decisionStack) reportCollisions(w io.Writer) {
 // run Setup, so the store's five shared-wiring tables are readable, and this
 // builder reads them (readSharedWiring) before it builds anything:
 //
-//   - wiring rows PRESENT -> the registries are built from the DATABASE. The rows
-//     are projected back into the four wiring sections of a Document
-//     (wiringDocument) and handed to the same two builders the file path uses, so
-//     two instances cannot end up with equivalent-but-different registries. The
-//     local document still supplies its two DATA sections (`objects:` and
-//     `attributes:`) and the ROUTE for each connection name the manifest declares.
+//   - wiring rows PRESENT -> the DATABASE is authoritative. The rows are projected
+//     back into the four wiring sections of a Document (wiringDocument) and handed
+//     to the same two builders the file path uses, so two instances cannot end up
+//     with equivalent-but-different registries. The local document still supplies
+//     its two DATA sections (`objects:` and `attributes:`) and the ROUTE for each
+//     connection name the manifest declares — and it may ADD an object type or an
+//     attribute slot the database never declared, which is what lets a Go host
+//     with its own hand-written providers read a pushed wiring at all. A local
+//     entry for a type or slot the database DOES declare fails the boot with
+//     APERTURE_WIRING_LOCAL_COLLISION; see wiringDocument's file header.
 //   - wiring rows EMPTY -> the local seed file's wiring is used exactly as it
 //     always was. An empty set is an answer, not a failure, and it is the answer
 //     every existing single-instance deployment gives: no flag, no configuration,
@@ -189,17 +193,25 @@ func buildDecisionStack(ctx context.Context, cmd *ucli.Command, store model.Stor
 		return decisionStack{}, err
 	}
 	doc := local
+	// buildOpts is empty on the file-only path, deliberately: a DB-wired boot
+	// builds under seed.StrictProviderCollision() because its document was
+	// ASSEMBLED from two sources that two people edit, and the silent type-level
+	// discard that is an ordinary migration step within one file is a push on
+	// another host switching off metadata checked into this one. See
+	// wiringBuildOptions.
+	var buildOpts []seed.BuildOption
 	if !wiring.IsEmpty() {
 		doc, err = wiringDocument(wiring, local)
 		if err != nil {
 			return decisionStack{}, err
 		}
+		buildOpts = wiringBuildOptions()
 	}
 	// The two-return form, always: the seed may declare `connections:`, whose
 	// pools outlive the build and have to be closed by whoever owns the stack.
 	// The one-return BuildRegistry refuses such a document precisely because it
 	// cannot hand the pools back.
-	reg, conns, err := doc.BuildRegistryWithConnections(seedBaseDir(seedPath))
+	reg, conns, err := doc.BuildRegistryWithConnections(seedBaseDir(seedPath), buildOpts...)
 	if err != nil {
 		// bootError, not a bare wrap, and for the reason spelled out on the
 		// attribute build below: a provider declaration fails with
