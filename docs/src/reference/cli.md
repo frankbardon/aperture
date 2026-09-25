@@ -681,6 +681,61 @@ they carry inline DATA rather than a pointer to data.
 aperture wiring <command>
 ```
 
+### `aperture wiring diff`
+
+Report how the deployed shared wiring differs from a seed document's four wiring sections, exiting non-zero on drift
+
+Compares the wiring DEPLOYED in --store against the four shared wiring sections of
+--seed — `connections:`, `providers:`, `field_types:` and `attribute_providers:` —
+and names, per section and per entry, what is only deployed, what is only local,
+and what differs. The `section` column is the document's own section key, so a
+reported entry is one you can go and find.
+
+IT IS MEANT FOR A PIPELINE. Identical wiring prints a clean report and exits 0;
+drift exits 2. Every coded refusal this binary makes exits 1, so the three
+outcomes stay apart: 0 is "the deployment matches the repository", 2 is "it does
+not", and 1 is "I could not tell" — an unreadable document, a --store that names
+nothing, a schema this build cannot read. A gate that failed closed on 1 and 2
+alike would report drift for a typo in its own DSN.
+
+DRIFT IS NOT AN ERROR and carries no error code. The two sides really do differ;
+which of them is wrong is your call, and `aperture wiring push --seed &lt;file&gt;
+--store &lt;dsn&gt;` is how you make the deployment agree with the document.
+
+FORMATTING IS NEVER DRIFT. Both sides are compared as WIRING, in the one
+canonical order a read returns, so re-ordering the document's entries, re-ordering
+a `fields:` or `references:` map, or re-indenting the file changes nothing in this
+report. The push timestamps are excluded too: a stamp is a fact about the last
+push and not about the wiring.
+
+A `kind: csv` ENTRY IS REPORTED AS LOCAL-ONLY BY DESIGN, not as drift and not as
+an error. Its only data source is a filesystem path, `wiring push` refuses it, and
+so no push can ever make the deployment match it. Counting it as drift would leave
+a permanently red gate on every deployment that legitimately keeps a local csv
+provider, and a gate that cannot go green is a gate somebody switches off.
+
+A STORE WITH NOTHING DEPLOYED IS AN ANSWER, not a refusal, and this is the one
+place a diff disagrees with `aperture wiring pull`. A pull refuses an empty store,
+because the document it would write is one that, pushed back, replaces the
+deployment's wiring with nothing. A diff writes no file and pushes nothing, so it
+reports every local entry as only-local and says plainly that nothing is deployed
+— which is also what a mistyped --store looks like, so check the DSN before
+concluding a push was lost.
+
+No actor is required, and none is accepted, for the reason `wiring show` accepts
+none: this restates wiring the --store credential already grants full write access
+to. It contacts no provider, opens no host connection, and prints no account,
+principal or object identity, because the shared wiring holds none.
+
+```
+aperture wiring diff [options]
+```
+
+| Name | Aliases | Type | Default | Usage |
+| --- | --- | --- | --- | --- |
+| `--seed` | — | string | — | path to the JSON/YAML seed document whose four SHARED wiring sections the deployment is compared against (required; nothing is applied, pushed or written, and there is no embedded-example fallback) |
+| `--store` | — | string | — | DSN for the shared store the wiring lives in: a postgres:// or postgresql:// URL for PostgreSQL, any other value as a SQLite path (required — there is nothing to share about an in-memory store). Set APERTURE_POSTGRES_SCHEMA to place Aperture's tables in a named PostgreSQL schema |
+
 ### `aperture wiring pull`
 
 Write the store's deployed shared wiring out as the four seed sections, for diffing against version control

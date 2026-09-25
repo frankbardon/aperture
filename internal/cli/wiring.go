@@ -82,6 +82,7 @@ func wiringCommand() *ucli.Command {
 			wiringPushCommand(),
 			wiringShowCommand(),
 			wiringPullCommand(),
+			wiringDiffCommand(),
 		},
 	}
 }
