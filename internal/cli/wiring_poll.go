@@ -39,24 +39,23 @@ import (
 // A tick re-reads the shared wiring (the same readSharedWiring a boot takes, for
 // the same reason: ONE atomic snapshot, never five List* calls) and compares a
 // DIGEST of it against the digest the running stack was built from. A change is
-// REPORTED. Nothing is rebuilt and nothing is swapped: the registries, the pools
-// and the engine this process decides through are the ones it booted with until
-// E4-S2 lands the rebuild. The report says so in as many words, because an
-// operator told "the wiring changed" and left to assume it was adopted is worse
-// off than one told nothing.
+// ADOPTED: the tick hands the set to the swapper, which rebuilds every registry
+// this process decides through and installs the result as one immutable version
+// (wiring_swap.go). The digest advances only once that has SUCCEEDED, so a failed
+// rebuild leaves the change outstanding and the next tick tries again.
 //
 // The seams the rest of the epic builds on are named where they are:
 //
-//   - E4-S2 (rebuild + swap) replaces the report in wiringPoll.tick's change
-//     branch, and is the reason tick returns whether it observed a change rather
-//     than only logging it.
-//   - E4-S3 (the frozen connection-name set) belongs in the same branch, BEFORE
-//     a swap: a set whose connections: manifest differs from the one this
+//   - E4-S3 (the frozen connection-name set) belongs in liveWiring.swap, BEFORE
+//     the rebuild: a set whose connections: manifest differs from the one this
 //     instance resolved routes for at boot cannot be adopted by a process that
-//     has already opened pools.
-//   - E4-S4 (last-good on failure, and the alarm) owns tick's two failure
-//     branches and the question the digest advance below deliberately settles the
-//     easy way for now.
+//     has already opened pools. Today such a set is refused by borrowBootPools as
+//     an ordinary rebuild failure — correct and last-good, but reported as a log
+//     line rather than as the surfaced "restart required" condition that story
+//     owes an operator.
+//   - E4-S4 (last-good on failure, and the alarm) owns tick's THREE failure
+//     branches: the read, the digest and now the swap. Last-good is already the
+//     behaviour in all three; the alarm is what is missing.
 //
 // # Why the change check is a digest of a full read
 //
@@ -379,6 +378,12 @@ func wiringWithoutStamps(set model.WiringSet) model.WiringSet {
 type wiringPoll struct {
 	store model.Storage
 	every time.Duration
+	// swap adopts a changed set: it rebuilds everything a decision reads and
+	// installs it as one version, or installs nothing and says why
+	// (liveWiring.swap). It is REQUIRED — a poller with nothing to swap into is a
+	// periodic read of five tables whose answer is discarded, which is the one thing
+	// the default-off design above exists to avoid.
+	swap wiringSwapper
 	// log is where a change, and a failure to look for one, are reported. It is
 	// stderr under `serve` — the same writer reportCollisions uses — because this
 	// is operational narration and stdout is a surface's output.
@@ -400,8 +405,32 @@ type wiringPoll struct {
 	// atomics is that the loop writes them while a test reads them. They are what
 	// lets the default-off case be asserted on OBSERVED BEHAVIOUR rather than on
 	// configuration, alongside the store-read count.
+	//
+	// changes counts ADOPTED changes, not detected ones. A change detected and then
+	// refused by the rebuild is not a change this instance made, and counting it
+	// would make the counter agree with the digest — which does not advance either —
+	// rather than with what the instance is deciding through.
 	ticks   atomic.Int64
 	changes atomic.Int64
+}
+
+// wiringSwapper adopts a wiring set a tick has just read: rebuild everything a
+// decision reads, install it as ONE immutable version, and report what stopped it
+// if anything did. liveWiring.swap is the implementation; see wiring_swap.go for
+// why the unit installed is a whole version and not a set of fields.
+//
+// digest is passed in rather than recomputed so that the value the tick compared,
+// the set the version is built from and the digest the version records are one
+// read of the database.
+type wiringSwapper func(ctx context.Context, set model.WiringSet, digest string) error
+
+// noWiringSwap is the swapper a poller falls back to when it was started without
+// one. It refuses every change, which keeps the instance deciding through the
+// wiring it has and keeps the digest from advancing, so the condition is reported
+// on every tick rather than becoming a silently stale instance.
+func noWiringSwap(context.Context, model.WiringSet, string) error {
+	return aerr.New(aerr.APERTURE_BOOT,
+		"cli: this process was started with no way to adopt a wiring change; restart it to pick one up")
 }
 
 // startWiringPoll starts the background re-reader, or returns nil when polling is
@@ -421,23 +450,37 @@ type wiringPoll struct {
 // epic exists to close, so the baseline is the one thing the loop is not allowed
 // to decide for itself.
 //
+// swap is how a detected change is adopted. It is required whenever polling is on
+// — see the field's comment — and is not consulted at all on the off path, which is
+// why the nil-interval return above comes first.
+//
 // ctx governs the loop's lifetime as well as Close does: under `serve` it is the
 // signal context, so a SIGINT stops the reader at once and the deferred Close then
 // only waits for it.
-func startWiringPoll(ctx context.Context, store model.Storage, every time.Duration, booted string, log io.Writer) *wiringPoll {
+func startWiringPoll(ctx context.Context, store model.Storage, every time.Duration, booted string, swap wiringSwapper, log io.Writer) *wiringPoll {
 	if every <= 0 {
 		return nil
+	}
+	if swap == nil {
+		// Defaulted rather than left nil, because the alternative is a nil call in a
+		// background goroutine the first time somebody pushes — and a panic there takes
+		// the whole process down, which for an embedded access engine means the host
+		// stops deciding. The fallback refuses loudly on every tick instead: E4-S4's
+		// contract is that an instance keeps deciding and that staleness is never
+		// silent, and both halves survive a caller's omission this way.
+		swap = noWiringSwap
 	}
 	loopCtx, cancel := context.WithCancel(ctx)
 	p := &wiringPoll{
 		store:  store,
 		every:  every,
+		swap:   swap,
 		log:    log,
 		digest: booted,
 		cancel: cancel,
 		done:   make(chan struct{}),
 	}
-	p.report("wiring poll: re-reading the shared wiring every %s; a change will be reported here", every)
+	p.report("wiring poll: re-reading the shared wiring every %s; a change will be adopted and reported here", every)
 	go p.run(loopCtx)
 	return p
 }
@@ -480,19 +523,20 @@ func (p *wiringPoll) run(ctx context.Context) {
 	}
 }
 
-// tick performs one re-read and reports whether the deployed wiring has changed
-// since the digest this poller holds.
+// tick performs one re-read and reports whether the deployed wiring changed AND
+// was adopted.
 //
-// It returns the answer as well as reporting it, which is what makes it the seam
-// E4-S2 attaches the rebuild to and what lets a test assert the detection
-// synchronously instead of racing a ticker.
+// It returns the answer as well as reporting it, which is what lets a test assert
+// the adoption synchronously instead of racing a ticker.
 //
-// The digest ADVANCES when a change is seen, so a change is reported once and not
-// once per tick from then on. That is the right default for a story that only
-// reports, and it is the exact question E4-S4 has to reopen: once a change is
-// ADOPTED by a rebuild, an advance that happened before a failed rebuild would
-// mean the instance forgets there was ever anything to pick up. The advance
-// belongs after a successful swap once there is one.
+// The digest advances AFTER a successful swap, and only then. That ordering is the
+// whole of last-good: a digest advanced before the rebuild would mean an instance
+// whose rebuild failed forgets there was ever anything to pick up, and it would
+// then sit on its old wiring for the rest of its life reporting nothing — the
+// silently stale instance this epic exists to close. Advancing after means a
+// refused change is re-detected and re-reported on every tick until it is adopted
+// or the push is corrected, which is noisy in exactly the direction an operator
+// needs. E4-S4 turns that repetition into an alarm with a staleness duration.
 func (p *wiringPoll) tick(ctx context.Context) bool {
 	p.ticks.Add(1)
 
@@ -515,14 +559,26 @@ func (p *wiringPoll) tick(ctx context.Context) bool {
 		return false
 	}
 	previous := p.digest
+	// The rebuild happens HERE, on the poll goroutine, and not on any decision's
+	// path: it reads the seed file, projects the set into a document and constructs
+	// two registries, a rules engine, a decision engine and a facade, while every
+	// decision in flight goes on answering through the version this process already
+	// has. Only the final pointer store is visible to a reader, and it is atomic.
+	if err := p.swap(ctx, set, digest); err != nil {
+		// Last-good, and the digest deliberately does NOT advance — see the doc
+		// comment. The error is reported verbatim because it is already an
+		// APERTURE_*-coded refusal naming the entry to go and fix (an unconstructable
+		// kind, a connection name this process has no pool for, a seed file that has
+		// since been edited into an invalid one). E4-S4 adds the alarm; this line is
+		// the whole of the reporting until then.
+		p.report("wiring poll: the deployed wiring CHANGED (%s -> %s) but this instance could not adopt it, so it keeps "+
+			"the wiring it has and goes on deciding: %v", shortDigest(previous), shortDigest(digest), err)
+		return false
+	}
 	p.digest = digest
 	p.changes.Add(1)
-	// E4-S2 replaces this line with the rebuild, and E4-S3 puts the frozen
-	// connection-name check in front of it. Until then the report says plainly that
-	// nothing was adopted: an operator told "the wiring changed" who assumes it
-	// took effect is worse off than one told nothing at all.
-	p.report("wiring poll: the deployed wiring CHANGED (%s -> %s). This instance is still running the wiring "+
-		"it booted on; restart it to pick the change up", shortDigest(previous), shortDigest(digest))
+	p.report("wiring poll: the deployed wiring CHANGED (%s -> %s) and this instance ADOPTED it; decisions already in "+
+		"flight finish on the wiring they started with", shortDigest(previous), shortDigest(digest))
 	return true
 }
 

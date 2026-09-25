@@ -45,7 +45,7 @@ Press `Ctrl-C` to trigger a graceful shutdown (`shutting down...`).
   `APERTURE_ENFORCE_MEMBERSHIP`.
 - `--wiring-poll` — re-read the [shared wiring tables](../concepts/storage.md) on
   an interval instead of only at startup, so a `aperture wiring push` from another
-  host is *noticed* without a restart. **Omitted means off**, and off means off:
+  host is *picked up* without a restart. **Omitted means off**, and off means off:
   no background reader is started and no periodic query is made. Also settable via
   `APERTURE_WIRING_POLL`; the flag wins when both are given. See
   [Noticing a push without a restart](#noticing-a-push-without-a-restart) below.
@@ -160,21 +160,47 @@ When it is on, the instance reports it on stderr at startup and reports each
 change it sees:
 
 ```text
-wiring poll: re-reading the shared wiring every 30s; a change will be reported here
-wiring poll: the deployed wiring CHANGED (3f9a1c72 -> 8b40e5de). This instance is
-still running the wiring it booted on; restart it to pick the change up
+wiring poll: re-reading the shared wiring every 30s; a change will be adopted and reported here
+wiring poll: the deployed wiring CHANGED (3f9a1c72 -> 8b40e5de) and this instance
+ADOPTED it; decisions already in flight finish on the wiring they started with
 ```
 
-**Today it detects and reports; it does not yet adopt.** The registries, the
-connection pools and the engine this process decides through stay the ones it
-booted with, which is why the report says so rather than leaving you to assume
-otherwise.
+#### What a swap replaces, and what it does not
+
+An adopted change rebuilds **everything a decision reads**: the object provider
+registry, the field-type declarations folded into it, the attribute providers, the
+rules engine over them, the decision engine and the service facade. They are built
+as one **version** and installed with a single pointer store, so a decision either
+sees all of a push or none of it — never half.
+
+- **A request pins one version at its entry** and finishes on it. A push landing
+  mid-request does not change what that request decides.
+- **A decision never blocks on a wiring read.** The rebuild happens on the poll
+  goroutine; a request pays one atomic load.
+- **Attribute caches do not survive a swap.** Each version gets fresh per-slot
+  caches, so a rebuilt slot never answers from an entry fetched under the old
+  configuration's [`ttl:`](../concepts/providers.md) — which is the window a
+  *revoked* clearance would otherwise keep authorizing for.
+- **The connection *name set* is frozen for the life of the process.** A route is a
+  per-instance fact this instance resolved once, at boot, so the pools are reused
+  and a push that names a connection this process opened no pool for is **not**
+  adopted. It is reported and left outstanding for a restart to pick up.
+- **A failed rebuild installs nothing.** The instance keeps the wiring it has and
+  goes on deciding, the digest does not advance, and the next tick tries again:
+
+```text
+wiring poll: the deployed wiring CHANGED (3f9a1c72 -> 8b40e5de) but this instance
+could not adopt it, so it keeps the wiring it has and goes on deciding: [...]
+```
+
+The listener, the authenticator and the HTTP server itself are built once and are
+untouched by a swap; only what sits beneath them is replaced.
 
 #### Choosing an interval
 
 The interval is the window a fleet is allowed to **disagree with itself**: from
-the push until this instance re-reads, it is still answering from the wiring it
-booted on. That makes it the same kind of number as an attribute slot's
+the push until this instance re-reads and adopts, it is still answering from the
+wiring it booted on. That makes it the same kind of number as an attribute slot's
 [`ttl:`](../concepts/providers.md) — a bound on how long a revoked thing keeps
 being honoured — and not a performance knob.
 

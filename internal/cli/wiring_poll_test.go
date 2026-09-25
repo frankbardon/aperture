@@ -14,6 +14,7 @@ import (
 
 	aerr "github.com/frankbardon/aperture/errors"
 	"github.com/frankbardon/aperture/model"
+	"github.com/frankbardon/aperture/seed"
 
 	ucli "github.com/urfave/cli/v3"
 )
@@ -28,10 +29,12 @@ import (
 //     anything, so the assertion is on OBSERVED STORE READS through a counting
 //     fake — never on the configuration, which would pass just as well if the
 //     loop read the database and threw the answer away.
-//   - CONFIGURED -> the deployed wiring is re-read on the interval and a CHANGE is
-//     detected, without rebuilding anything. The rebuild is E4-S2; a test here
-//     that asserted a swapped registry would be asserting a story that has not
-//     landed.
+//   - CONFIGURED -> the deployed wiring is re-read on the interval, a CHANGE is
+//     detected, and it is ADOPTED through the swapper (E4-S2). The digest advances
+//     only once the swap has succeeded, which is what keeps a refused change
+//     outstanding instead of forgotten. What a swap INSTALLS, and the
+//     one-version-per-decision property it rests on, are held in
+//     wiring_swap_test.go; this file holds the loop and the digest.
 //
 // The digest is tested harder than the loop is, deliberately. A loop that stops
 // ticking is a visible failure — nothing is ever reported again. A digest that
@@ -88,8 +91,13 @@ func (c *pollingWiringReads) ListWiringAttributeProviders(ctx context.Context) (
 type pollProbe struct {
 	counting *pollingWiringReads
 	stack    decisionStack
-	poll     *wiringPoll
-	out      *bytes.Buffer
+	// live is the swappable version holder the poller adopts through — the same
+	// type `serve` mounts, minus the HTTP handler no test here drives. It is real
+	// rather than a stub so a case that asserts adoption asserts the rebuild that
+	// actually runs in production (buildWiredStack + borrowBootPools).
+	live *liveWiring
+	poll *wiringPoll
+	out  *bytes.Buffer
 }
 
 // newPollProbe boots a stack and starts the poll exactly as runServe does: parse
@@ -125,7 +133,10 @@ func newPollProbe(t *testing.T, ctx context.Context, storeDSN, seedPath string, 
 				return err
 			}
 			probe.stack = stack
-			probe.poll = startWiringPoll(ctx, probe.counting, every, stack.wiringDigest, probe.out)
+			probe.live = newLiveWiring(
+				&wiringVersion{stack: stack, svc: stack.newService(), digest: stack.wiringDigest},
+				probeRebuild(cmd.String("store"), probe.counting, cmd.String("seed"), stack.conns))
+			probe.poll = startWiringPoll(ctx, probe.counting, every, stack.wiringDigest, probe.live.swap, probe.out)
 			return nil
 		},
 	}
@@ -142,6 +153,22 @@ func newPollProbe(t *testing.T, ctx context.Context, storeDSN, seedPath string, 
 		_ = probe.stack.Close()
 	})
 	return probe
+}
+
+// probeRebuild is the rebuild a probe adopts through: the very buildWiredStack
+// `serve` refreshes with, over the pools the boot opened, minus only the facade
+// extras (the gate, delegation, impersonation, audit) that no case in this file
+// drives. Writing a stub here instead would prove the poller calls something and
+// nothing about what a real instance installs.
+func probeRebuild(storeDSN string, store model.Storage, seedPath string, conns *seed.Connections) wiringRebuild {
+	pools := borrowBootPools(conns)
+	return func(_ context.Context, set model.WiringSet, digest string) (*wiringVersion, error) {
+		next, err := buildWiredStack(storeDSN, store, seedPath, set, pools, nil, nil)
+		if err != nil {
+			return nil, err
+		}
+		return &wiringVersion{stack: next, svc: next.newService(), digest: digest}, nil
+	}
 }
 
 // waitFor polls cond until it holds or the deadline passes. The loop is here
@@ -409,15 +436,20 @@ func TestAMalformedIntervalIsRefusedBeforeAnyConnectionIsMade(t *testing.T) {
 
 // TestTheLoopStopsOnContextCancellationAndLeaksNoGoroutine proves the shutdown
 // half four ways, because each one alone is weak: a Close that returns proves only
-// that Close returned, a read count that stops could be a store that stopped
-// answering, and a goroutine count is noisy on a shared test binary.
+// that Close returned, and a read count that stops could be a store that stopped
+// answering.
 //
-// The poller is started by hand here rather than through the flag, which is what
-// makes the goroutine count usable at all: newPollProbe OPENS A STORE, and a
-// SQLite pool brings goroutines of its own, so a baseline taken before the boot
-// could never be returned to and one taken after it is the only honest place to
-// stand. The interval and the baseline digest are the same values the flag path
-// would have produced.
+// The goroutine half counts THIS LOOP's goroutines by NAME, never
+// runtime.NumGoroutine(). A process-wide count is a statistic about the whole test
+// binary: unrelated goroutines from other packages drain across the window, so a
+// "the count rose" control fails at random and a "the count came back down" leak
+// check passes for the wrong reason. Counting stack frames naming
+// (*wiringPoll).run is exact regardless of what else the binary is doing, and it
+// lets step 4 assert EXACTLY ZERO rather than "no more than a baseline".
+//
+// The poller is started by hand rather than through the flag so the case owns the
+// interval and can drive it fast. The interval and the baseline digest are the same
+// values the flag path would have produced.
 func TestTheLoopStopsOnContextCancellationAndLeaksNoGoroutine(t *testing.T) {
 	dsn := "file:" + filepath.Join(t.TempDir(), "shutdown.db")
 	pushWiring(t, dsn, sharedWiringSet(time.Now().UTC()))
@@ -429,17 +461,19 @@ func TestTheLoopStopsOnContextCancellationAndLeaksNoGoroutine(t *testing.T) {
 		t.Fatal("the unconfigured probe started a poller")
 	}
 
-	before := runtime.NumGoroutine()
-	poll := startWiringPoll(ctx, probe.counting, 5*time.Millisecond, probe.stack.wiringDigest, probe.out)
+	if n := pollLoopGoroutines(); n != 0 {
+		t.Fatalf("%d poll loops were already running before this case started one, so the count below "+
+			"proves nothing", n)
+	}
+	poll := startWiringPoll(ctx, probe.counting, 5*time.Millisecond, probe.stack.wiringDigest, probe.live.swap, probe.out)
 	if poll == nil {
 		t.Fatal("a 5ms interval started no poller")
 	}
 	waitFor(t, "the loop to be running", 5*time.Second, func() bool {
 		return poll.ticks.Load() >= 2
 	})
-	if runtime.NumGoroutine() <= before {
-		t.Fatalf("the goroutine count did not rise when the loop started (%d -> %d), so the count below "+
-			"proves nothing", before, runtime.NumGoroutine())
+	if n := pollLoopGoroutines(); n != 1 {
+		t.Fatalf("%d poll loop goroutines are running, want exactly 1", n)
 	}
 
 	// 1. Cancelling the CONTEXT is enough on its own — Close is the caller's
@@ -473,12 +507,38 @@ func TestTheLoopStopsOnContextCancellationAndLeaksNoGoroutine(t *testing.T) {
 		t.Errorf("a second Close returned %v; it must be idempotent", err)
 	}
 
-	// 4. And the goroutine is actually gone, against the baseline taken after the
-	//    store was open — the rise asserted above is what makes this the same
-	//    goroutine and not an accounting coincidence.
-	waitFor(t, "the goroutine count to return to its baseline", 5*time.Second, func() bool {
-		return runtime.NumGoroutine() <= before
+	// 4. And the goroutine is actually gone — exactly zero of them, named, rather
+	//    than "no more than a baseline" that a drain elsewhere in the binary could
+	//    have satisfied on its own.
+	waitFor(t, "the poll loop goroutine to be gone", 5*time.Second, func() bool {
+		return pollLoopGoroutines() == 0
 	})
+}
+
+// pollLoopGoroutines counts the goroutines currently inside the poll loop, by the
+// one frame only it has: (*wiringPoll).run.
+//
+// It replaces runtime.NumGoroutine() because that number is a property of the whole
+// test binary and this assertion is about one goroutine. Other packages' goroutines
+// start and drain across the window, which made the positive control fail at random
+// and made the leak check lenient in the same breath — a drain elsewhere satisfied
+// "back to baseline" whether or not the loop had returned. A named frame cannot be
+// fooled either way.
+//
+// The dump is taken with all=true, which stops the world briefly. That is acceptable
+// here — it happens a handful of times in one test — and is why it is not used
+// anywhere on a hot path.
+func pollLoopGoroutines() int {
+	buf := make([]byte, 1<<20)
+	for {
+		n := runtime.Stack(buf, true)
+		if n < len(buf) {
+			return strings.Count(string(buf[:n]), "(*wiringPoll).run(")
+		}
+		// A truncated dump would undercount, which is the direction that turns a leak
+		// into a pass, so grow and retake rather than reporting what fitted.
+		buf = make([]byte, 2*len(buf))
+	}
 }
 
 // TestAClosedPollerIsNilSafe: "polling is off" is a nil *wiringPoll, so every
@@ -490,21 +550,21 @@ func TestAClosedPollerIsNilSafe(t *testing.T) {
 	if err := p.Close(); err != nil {
 		t.Errorf("(*wiringPoll)(nil).Close() = %v, want nil", err)
 	}
-	if got := startWiringPoll(context.Background(), nil, 0, "", nil); got != nil {
+	if got := startWiringPoll(context.Background(), nil, 0, "", nil, nil); got != nil {
 		t.Errorf("startWiringPoll with a zero interval returned %v, want nil — off means no goroutine", got)
 	}
-	if got := startWiringPoll(context.Background(), nil, -time.Second, "", nil); got != nil {
+	if got := startWiringPoll(context.Background(), nil, -time.Second, "", nil, nil); got != nil {
 		t.Errorf("startWiringPoll with a negative interval returned %v, want nil", got)
 	}
 }
 
-// TestAWiringChangeIsDetectedOnceAndNothingIsRebuilt is the story's last criterion
-// and the boundary with E4-S2: the loop notices, says so, and swaps NOTHING.
+// TestAWiringChangeIsDetectedOnceAndAdopted is the seam between E4-S1 and E4-S2:
+// the loop notices, adopts, and says so exactly once.
 //
 // tick is driven directly rather than through the ticker, which is what makes the
 // assertions about WHAT was detected deterministic instead of a race with a timer.
 // The loop itself is covered by the cases above.
-func TestAWiringChangeIsDetectedOnceAndNothingIsRebuilt(t *testing.T) {
+func TestAWiringChangeIsDetectedOnceAndAdopted(t *testing.T) {
 	dsn := "file:" + filepath.Join(t.TempDir(), "changed.db")
 	pushWiring(t, dsn, sharedWiringSet(time.Now().UTC()))
 	routeSharedMain(t)
@@ -542,18 +602,34 @@ func TestAWiringChangeIsDetectedOnceAndNothingIsRebuilt(t *testing.T) {
 		t.Errorf("%d changes reported for one push, want 1", got)
 	}
 
-	// The E4-S2 boundary, asserted rather than assumed: this story DETECTS.
+	// Adopted: the version the holder now hands a request is a DIFFERENT object graph
+	// from the one the boot built. The boot's own stack is deliberately left alone —
+	// a swap installs a new version, it does not mutate the one decisions may still
+	// be holding.
+	adopted := probe.live.current()
+	if adopted.stack.registry == registryBefore {
+		t.Error("the installed version still holds the object registry the boot built: nothing was " +
+			"rebuilt, so a push is not reflected in this instance's decisions")
+	}
 	if probe.stack.registry != registryBefore {
-		t.Error("the stack's object registry was replaced. E4-S1 detects and reports; the rebuild and the " +
-			"swap are E4-S2, and a swap that arrives early arrives without the frozen connection-name " +
-			"check (E4-S3) or the last-good handling (E4-S4)")
+		t.Error("the BOOT stack's registry field was mutated. A swap installs a new immutable version; " +
+			"mutating the old one is exactly the torn read one-version-per-decision exists to prevent")
+	}
+	if adopted.digest != probe.poll.digest {
+		t.Errorf("the installed version records digest %q but the poller advanced to %q: the digest a "+
+			"tick compared, the set the version was built from and the digest it records must be one read",
+			shortDigest(adopted.digest), shortDigest(probe.poll.digest))
 	}
 	report := probe.out.String()
-	for _, want := range []string{"CHANGED", "still running the wiring", "restart"} {
+	for _, want := range []string{"CHANGED", "ADOPTED"} {
 		if !strings.Contains(report, want) {
-			t.Errorf("the change report does not mention %q: an operator told the wiring changed who "+
-				"assumes it was adopted is worse off than one told nothing. Report:\n%s", want, report)
+			t.Errorf("the change report does not mention %q: an operator has no other way to know a push "+
+				"took effect. Report:\n%s", want, report)
 		}
+	}
+	if strings.Contains(report, "restart it to pick the change up") {
+		t.Errorf("the change report still tells the operator to restart, which is the one thing a "+
+			"hot swap removes. Report:\n%s", report)
 	}
 }
 
@@ -605,8 +681,27 @@ func TestTheFirstEverPushToAnUnwiredDatabaseIsAChange(t *testing.T) {
 	if err := probe.counting.ReplaceWiring(ctx, sharedWiringSet(time.Now().UTC())); err != nil {
 		t.Fatalf("the first push failed: %v", err)
 	}
-	if !probe.poll.tick(ctx) {
-		t.Error("the first ever push to an unwired database was not detected")
+	baseline := probe.poll.digest
+	// tick reports ADOPTION, and this push cannot be adopted — deliberately. The
+	// instance booted on a seed file declaring no connections:, so it opened no pool,
+	// and the pushed set names one. A connection NAME SET is a boot-time contract
+	// against the routes this process resolved once (borrowBootPools), so the change
+	// is detected, refused, and left outstanding for a restart to pick up. That is the
+	// behaviour E4-S3 turns into a surfaced "restart required" condition.
+	if probe.poll.tick(ctx) {
+		t.Error("a first push that introduces a connection name was ADOPTED by a process that opened no " +
+			"pool for it: a route is resolved once, at boot, and a registry cannot read through a pool " +
+			"that does not exist")
+	}
+	// Detected, though — which is the property this case exists for, and the one a ""
+	// sentinel for "no wiring" would have lost.
+	report := probe.out.String()
+	if !strings.Contains(report, "CHANGED") {
+		t.Errorf("the first ever push to an unwired database was not detected. Report:\n%s", report)
+	}
+	if probe.poll.digest != baseline {
+		t.Error("the digest advanced although nothing was adopted: the change would then be forgotten " +
+			"and the instance stale for the rest of its life with nothing saying so")
 	}
 }
 

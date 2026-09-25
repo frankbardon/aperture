@@ -239,6 +239,26 @@ func (c *Connections) get(name string) (Pool, bool) {
 	return e.pool, true
 }
 
+// Pool reports the live pool this set opened for name, or false when it holds
+// none. It is the exported half of get, and it exists for exactly one kind of
+// caller: one that has to build a SECOND registry over the pools a FIRST one
+// already opened.
+//
+// A process that re-reads its wiring while it is serving is that caller. It
+// cannot dial a fresh pool per refresh — that would double every deployment's
+// connections on every push, and half of them would be held by a registry nobody
+// has a handle to Close — so it supplies WithConnectionOpener returning what this
+// reports, and the rebuilt registry SHARES the pools instead of duplicating them.
+//
+// The pool stays OWNED by this set. Close is what ends its lifetime, and a
+// borrower must not close it: wrap it in a type whose Close is a no-op, or the
+// second registry's shutdown takes the first one's database access with it.
+//
+// Names only, never a DSN — the same rule Names obeys.
+func (c *Connections) Pool(name string) (Pool, bool) {
+	return c.get(name)
+}
+
 // queryTimeout returns the statement budget resolved for name, or zero when the
 // name is unknown — which sqlprovider reads as its own default, and which
 // buildSQLProvider has already rejected before it can be reached.
