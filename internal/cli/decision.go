@@ -114,6 +114,13 @@ type decisionStack struct {
 //
 // It is idempotent, so a `serve` that closes explicitly on shutdown may also
 // defer it.
+//
+// A stack a wiring refresh SUPERSEDED must not be closed, and is not: its pools are
+// borrowed from the boot's (borrowBootPools) and everything else it holds is
+// memory. Closing one would be harmless today only because the borrowed wrapper's
+// Close is a no-op — and relying on that is how the serving instance's database
+// access gets closed by the next person who changes the wrapper. The BOOT stack is
+// the one with the pools, and serve's defer is where its lifetime ends.
 func (s decisionStack) Close() error {
 	if s.conns == nil {
 		return nil
@@ -231,22 +238,55 @@ func (s decisionStack) reportCollisions(w io.Writer) {
 // them to "unset", which is the library's own default and the behaviour this
 // builder had before they existed.
 func buildDecisionStack(ctx context.Context, cmd *ucli.Command, store model.Storage, seedPath string, engOpts ...engine.Option) (decisionStack, error) {
-	// Resolved FIRST, before a seed is read or a connection pool is opened: a
-	// malformed configured value is an operator typo, and it must fail the command
-	// rather than fail it later holding resources this function would then have to
-	// unwind.
+	// Resolved FIRST, before a seed is read, a wiring row is read or a connection
+	// pool is opened: a malformed configured value is an operator typo, and it must
+	// fail the command rather than fail it later holding resources this function
+	// would then have to unwind.
 	shared, err := sharedEngineOptions(cmd)
-	if err != nil {
-		return decisionStack{}, err
-	}
-
-	local, err := seedDocument(seedPath, classifyStore(cmd.String("store")))
 	if err != nil {
 		return decisionStack{}, err
 	}
 	// After Setup, before anything is built: the shared wiring decides which
 	// document the two registry builders are handed. See the header comment.
 	wiring, err := readSharedWiring(ctx, store)
+	if err != nil {
+		return decisionStack{}, err
+	}
+	return buildWiredStack(cmd.String("store"), store, seedPath, wiring, nil, shared, engOpts)
+}
+
+// buildWiredStack is the whole of buildDecisionStack from the wiring read
+// onwards, split out so a process that re-reads the wiring WHILE IT IS SERVING
+// can build its next stack through the very same code the boot built the first
+// one with (wiring_swap.go). Two builders would be two answers to "how is this
+// instance wired", and a divergence between them does not error — it authorizes
+// differently before and after a push.
+//
+// It takes the wiring set rather than reading one, which is the property the swap
+// rests on: the digest the poller COMPARED, the set the stack is BUILT FROM and
+// the digest the poller ADVANCES TO are all the same single read. A rebuild that
+// re-read would install wiring whose digest it never computed, and a push landing
+// between the two reads would be adopted while the digest said otherwise —
+// silently stale, with nothing saying so.
+//
+// pools, when non-nil, is the ConnectionOpener the build resolves `connections:`
+// through. Nil means seed's default, which dials a fresh pool per declared name
+// and is what a boot wants. A REBUILD passes an opener over the pools the boot
+// already opened, because a process cannot open a second set per push: see
+// borrowBootPools.
+//
+// shared and engOpts arrive already resolved, and in that order, for the reason
+// the caller's comment gives: a malformed configured value must fail before any
+// resource is held, and a refresh must not re-parse flags whose command has long
+// since finished parsing.
+//
+// It takes the STORE DSN rather than the *ucli.Command for the same reason. A
+// refresh runs on a background goroutine for as long as the process lives, and a
+// closure over a command whose flags were parsed once, at startup, would be reading
+// parse state nothing promises is still there. Only classifyStore needs the DSN, so
+// the DSN is what it takes.
+func buildWiredStack(storeDSN string, store model.Storage, seedPath string, wiring model.WiringSet, pools seed.ConnectionOpener, shared, engOpts []engine.Option) (decisionStack, error) {
+	local, err := seedDocument(seedPath, classifyStore(storeDSN))
 	if err != nil {
 		return decisionStack{}, err
 	}
@@ -268,12 +308,18 @@ func buildDecisionStack(ctx context.Context, cmd *ucli.Command, store model.Stor
 	// another host switching off metadata checked into this one. See
 	// wiringBuildOptions.
 	var buildOpts []seed.BuildOption
+	if pools != nil {
+		// FIRST in the list, so a caller reading the build's options sees the pool
+		// seam before the posture. It is the one option a REFRESH adds and a boot
+		// never does.
+		buildOpts = append(buildOpts, seed.WithConnectionOpener(pools))
+	}
 	if !wiring.IsEmpty() {
 		doc, err = wiringDocument(wiring, local)
 		if err != nil {
 			return decisionStack{}, err
 		}
-		buildOpts = wiringBuildOptions()
+		buildOpts = append(buildOpts, wiringBuildOptions()...)
 	}
 	// The two-return form, always: the seed may declare `connections:`, whose
 	// pools outlive the build and have to be closed by whoever owns the stack.

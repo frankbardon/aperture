@@ -133,11 +133,15 @@ The read above happens at startup and **only** at startup. A `aperture wiring pu
 from another host is picked up by restarting the instances — which is what a deploy
 pipeline does anyway, and it is the whole story for a deployment with one instance.
 
-A long-lived instance can be told to notice a push instead, with
+A long-lived instance can be told to notice a push and **adopt** it instead, with
 [`serve --wiring-poll`](serve.md#noticing-a-push-without-a-restart) or
 `APERTURE_WIRING_POLL`. It is **off unless configured**, and off means no
 background reader and no periodic query, so an instance that cannot use it pays
-nothing for it.
+nothing for it. When it is on, an adopted push rebuilds the provider registry, the
+field types and the attribute providers as one version, a request pins one version
+at its entry, and the connection *name set* stays frozen for the life of the
+process — see
+[What a swap replaces](serve.md#what-a-swap-replaces-and-what-it-does-not).
 
 Unlike `--enumerate-limit`, it is **not** carried by every command that decides:
 it configures a process that outlives a decision, and there is no tick in the life
