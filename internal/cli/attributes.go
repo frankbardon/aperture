@@ -57,7 +57,7 @@ func attributeStack(ctx context.Context, cmd *ucli.Command) (decisionStack, func
 	if err != nil {
 		return decisionStack{}, nil, err
 	}
-	stack, err := buildDecisionStack(cmd, store, cmd.String("seed"))
+	stack, err := buildDecisionStack(ctx, cmd, store, cmd.String("seed"))
 	if err != nil {
 		_ = store.Close()
 		return decisionStack{}, nil, err
@@ -127,14 +127,22 @@ func attributesSlotsCommand() *ucli.Command {
 		Description: "Prints one row per slot — user, machine, account — with the source the seed\n" +
 			"declares for it (csv, sql, or inline), the cache freshness window, the cached-bag\n" +
 			"cap, and how many bags this process currently holds.\n\n" +
+			"A SLOT CAN HAVE TWO SOURCES, AND THE SOURCE COLUMN NAMES THE WINNER. An\n" +
+			"`attribute_providers:` entry is the slot's SHARED layer and an `attributes:` block\n" +
+			"is its LOCAL one; a fetch reads their merge and the shared layer wins every key\n" +
+			"both serve, so nothing is discarded and the inline bags still contribute the keys\n" +
+			"the external source does not carry. A slot declared both ways therefore reports\n" +
+			"csv or sql — the source a contested key is answered from — and `ttl` is that\n" +
+			"layer's window, since each layer caches on its own declaration.\n\n" +
 			"THE TTL COLUMN IS THE REVOCATION WINDOW. A slot's cached bag keeps authorizing\n" +
 			"until it expires, so `ttl` is the longest a removed clearance can keep working.\n" +
 			"`never` means a bag, once fetched, is only dropped by eviction or by an explicit\n" +
 			"`aperture attributes invalidate` — correct for a fixed inline block, dangerous\n" +
 			"for a live directory.\n\n" +
-			"The `cached` column counts THIS process's cache. A one-shot invocation starts\n" +
-			"cold, so it reads 0; it is the number that matters in a long-running\n" +
-			"`aperture serve`.\n\n" +
+			"The `cached` column counts THIS process's cache, summed across a slot's layers —\n" +
+			"a subject both layers serve is held twice, because it is cached twice. A one-shot\n" +
+			"invocation starts cold, so it reads 0; it is the number that matters in a\n" +
+			"long-running `aperture serve`.\n\n" +
 			"No actor is required: this reports the wiring in the seed file you passed and\n" +
 			"the configuration this process built from it. It contacts no provider and prints\n" +
 			"no subject key and no attribute value.",
@@ -144,12 +152,20 @@ func attributesSlotsCommand() *ucli.Command {
 }
 
 func runAttributeSlots(ctx context.Context, cmd *ucli.Command) error {
-	// The document is the only source for a slot's SOURCE: providers:, objects:,
-	// attributes: and attribute_providers: are runtime wiring that Apply never
-	// writes to storage, so the file is their source of truth. The precedence
-	// between the two attribute sections is seed's own rule, asked of the
-	// document rather than re-derived here (seed.Document.AttributeSlotSources).
-	doc, err := seedDocument(cmd.String("seed"))
+	// The LOCAL document is the source for a slot's SOURCE: attributes: and
+	// attribute_providers: are runtime wiring that Apply never writes to storage,
+	// so the file is the source of truth for the half of the wiring that is
+	// file-local. The precedence between the two sections is seed's own rule, asked
+	// of the document rather than re-derived here
+	// (seed.Document.AttributeSlotSources).
+	//
+	// A slot filled from the SHARED wiring reports no source here, because this
+	// document does not declare it — the ttl, max-size and cached columns below
+	// still describe it, since they are read off the registry the stack actually
+	// built. Naming the database as a source is a listing change with its own
+	// story; reporting the embedded acme fixture's sources for a store that never
+	// saw it, which is what passing no kind did, was simply wrong.
+	doc, err := seedDocument(cmd.String("seed"), classifyStore(cmd.String("store")))
 	if err != nil {
 		return err
 	}

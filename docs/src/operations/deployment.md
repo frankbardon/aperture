@@ -25,10 +25,18 @@ forces the listener closed.
 |---|---|---|---|
 | `--addr` | `:8080` | — | TCP address to listen on. |
 | `--store` | *(in-memory)* | — | SQLite DSN for the backing store. Empty ⇒ ephemeral in-memory store. |
-| `--seed` | *(embedded example)* | — | Path to a JSON/YAML seed model. Empty ⇒ the embedded `acme` example fixture. |
+| `--seed` | *(see below)* | — | Path to a JSON/YAML seed model, applied in full on **every** boot. Empty ⇒ the embedded `acme` example fixture **with no `--store`**, and **nothing at all** with one. |
 | `--auth` | `dev` | `APERTURE_AUTH_MODE` | Authenticator adapter: `dev`, `oidc`, or `parsec`. The flag **overrides** the env var. |
 | `--enforce-membership` | off | `APERTURE_ENFORCE_MEMBERSHIP` | Deny any decision whose principal is not a member of the active account, before grants are consulted. |
 | `--enumerate-limit` | `1000` | `APERTURE_ENUMERATE_LIMIT` | Ceiling one enumeration is bounded by — the number a request with a non-positive `limit` receives, and the number a larger `limit` is clamped down to. Bounds the scope member gather too, so one value governs both. The flag **overrides** the env var; a value that is not a whole number greater than zero — `banana`, `0`, `-5` — fails the boot with `APERTURE_CONFIG_INVALID` naming the setting and the value. |
+
+**A durable `--store` with no `--seed` seeds nothing.** `serve` runs `Setup`,
+reads the model that is already in the database, and writes no model rows on
+startup. That is what lets a deployment restart without overwriting itself, and
+what lets two instances share one database. Passing a `--seed` alongside a
+durable `--store` still applies that whole document on every boot — accounts,
+principals, roles, groups, grants, rules — so it is a provisioning step, and two
+instances pointed at the same database must not both carry it.
 
 `--enumerate-limit` is the one row in that table that is **not** a `serve` flag.
 It configures the deployment, so `check`, `enumerate`, `identifiers`, `explain`
@@ -77,6 +85,14 @@ The seed **model** itself is authored as YAML (or JSON) and supplied with
 `--seed`; that document also carries the `connections:` and `providers:` wiring
 the server turns into a live object-provider registry. Model YAML is data, not
 process config — the two are separate.
+
+A seed file is no longer the only home for that wiring. Four of its six wiring
+sections — `connections:` (names only), `providers:`, `field_types:` and
+`attribute_providers:` — can be pushed into the store every instance of a deployment
+shares, with [`aperture wiring`](../cli/wiring.md); where those rows exist the
+database is authoritative and a local file may only add to it. That is how an
+instance with no `--seed` at all is wired. See
+[Two instances, one store](two-instance-topology.md).
 
 One deployment consequence of that split: a `kind: sql` provider names its
 database through `dsn_env:`, and a **literal `dsn:` in a seed file is refused at
@@ -141,6 +157,12 @@ the constructor order in `internal/cli/serve.go` *is* the deployment topology.
 ## Related
 
 - [serve](../cli/serve.md) — the command page, with the flag walkthrough.
+- [Two instances, one store](two-instance-topology.md) — standing up a second
+  instance against a database that already has one: one model, one pushed wiring,
+  per-instance connection routes.
+- [Refreshing wiring on a live fleet](wiring-refresh.md) — what a `wiring push`
+  does to instances that are already running, what needs a restart anyway, and how
+  a stale instance surfaces.
 - [Performance & NFR](performance.md) — the decision hot-path budget and how to
   assert it.
 - [Troubleshooting](troubleshooting.md) — reading and acting on `APERTURE_*`

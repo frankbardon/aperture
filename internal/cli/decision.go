@@ -1,12 +1,12 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"strings"
 
 	"github.com/frankbardon/aperture/engine"
-	aerr "github.com/frankbardon/aperture/errors"
 	"github.com/frankbardon/aperture/model"
 	"github.com/frankbardon/aperture/provider"
 	"github.com/frankbardon/aperture/rules"
@@ -62,12 +62,66 @@ type decisionStack struct {
 	// reports the fact and the caller surfaces it (reportCollisions).
 	collisions []string
 	// attributeCollisions are the attribute SLOTS declared in BOTH the seed's
-	// `attribute_providers:` and `attributes:` sections. The external source wins
-	// and the inline bags for those slots are discarded entirely — the same
-	// documented default, at slot granularity — and it is reported for the same
-	// reason: discarding data silently would be hostile, and `seed` has no logging
-	// path of its own.
+	// `attribute_providers:` and `attributes:` sections. Unlike collisions above,
+	// this is NOT a discard: the `attribute_providers:` entry becomes the slot's
+	// SHARED layer, the inline block becomes its LOCAL layer, and a fetch reads
+	// their merge with the shared layer winning every key both serve
+	// (`provider.AttributeLayer`). Nothing is dropped.
+	//
+	// It is still reported, for a different reason than the object case. There the
+	// warning says data was discarded; here it says which layer answers a
+	// contested key — which is exactly what an operator debugging an unexpected
+	// attribute value needs told, and which no verdict, trace or note says.
 	attributeCollisions []string
+	// wiringDigest is the content digest of the SHARED wiring set this stack was
+	// built from — the value a background poll compares a later read against to
+	// answer "would this instance be wired differently now?" (wiring_poll.go).
+	//
+	// It is recorded here, at the boot, rather than taken by the poller from its own
+	// first read, and that is load-bearing: a push landing between the boot read and
+	// the first tick would become a self-baselining loop's baseline, so the change
+	// would never be reported and the instance would be stale for its whole lifetime
+	// with nothing saying so.
+	//
+	// It is always set, including for an EMPTY wiring set, whose digest is an
+	// ordinary value like any other. That is what makes the FIRST ever push to a
+	// database detectable: an instance booted on empty tables holds the empty set's
+	// digest, and the push changes it. A "" sentinel for "no wiring" would have made
+	// the one transition that turns a file-wired fleet into a shared-wiring fleet
+	// the single transition nothing noticed.
+	wiringDigest string
+	// wiringConnections is the CONNECTION NAME SET of the shared wiring this stack
+	// was built from, sorted — the manifest half of a boot-time contract a running
+	// process cannot renegotiate, and therefore the baseline liveWiring.swap
+	// compares a later push against (wiring_swap.go).
+	//
+	// It is the MANIFEST's names and deliberately NOT conns.Names(). The pools this
+	// process opened cover the whole of the LOCAL seed file's connections: block as
+	// well, because that block is a ROUTE TABLE and not wiring (connectionRoutes),
+	// so a name only the local file declares has a pool and was never in the
+	// manifest. A swap that compared a push against the POOL set would read every
+	// locally-routed name as one the push removed, and would then refuse every swap
+	// for the life of any deployment that routes a connection from its own file —
+	// the whole feature off, on a condition nobody configured.
+	//
+	// Recorded here, from the same single read wiringDigest is taken over, for the
+	// same reason: the boot owns both values, and a later reader that derived either
+	// one for itself could disagree with what this instance is actually wired with.
+	//
+	// It is nil for a stack built from empty wiring, which is an answer like any
+	// other: an instance booted on empty tables is frozen on the EMPTY name set, so
+	// the first push that introduces a connection is detected as the add it is.
+	wiringConnections []string
+	// declaredKeys is the DECLARED ATTRIBUTE KEY SET of every shared slot this
+	// instance is wired with — the keys a rule may read off `principal` and
+	// `account`. It is handed to the facade, which refuses a rule naming anything
+	// else at validation (service.WithDeclaredAttributeKeys), and it reaches no
+	// decision: an already-stored rule decides exactly as it did.
+	//
+	// A slot absent from the map declares nothing and is not enforced, so a
+	// deployment that has declared nothing — every one that has not opted in — is
+	// unaffected. See declaredAttributeKeySets for where the two sources are.
+	declaredKeys map[provider.AttributeSlot]model.DeclaredKeys
 	// conns are the database pools BuildRegistryWithConnections opened for the
 	// seed's `connections:` block — one per named connection, shared by every
 	// `kind: sql` provider entry referencing it. It is the only part of the stack
@@ -82,6 +136,13 @@ type decisionStack struct {
 //
 // It is idempotent, so a `serve` that closes explicitly on shutdown may also
 // defer it.
+//
+// A stack a wiring refresh SUPERSEDED must not be closed, and is not: its pools are
+// borrowed from the boot's (borrowBootPools) and everything else it holds is
+// memory. Closing one would be harmless today only because the borrowed wrapper's
+// Close is a no-op — and relying on that is how the serving instance's database
+// access gets closed by the next person who changes the wrapper. The BOOT stack is
+// the one with the pools, and serve's defer is where its lifetime ends.
 func (s decisionStack) Close() error {
 	if s.conns == nil {
 		return nil
@@ -91,8 +152,18 @@ func (s decisionStack) Close() error {
 
 // reportCollisions writes a warning naming every object type whose inline
 // `objects:` entries were discarded because a `providers:` entry claimed the same
-// type, and every attribute SLOT whose inline `attributes:` entries were
-// discarded because an `attribute_providers:` entry claimed the same slot.
+// type, and every attribute SLOT that is filled from both `attribute_providers:`
+// and `attributes:`.
+//
+// The two are no longer the same fact and the warning no longer says they are.
+// The object rule is a DISCARD: the `providers:` entry wins the type and the
+// inline entries for it are dropped. The attribute rule is a LAYERING: the
+// `attribute_providers:` entry is the slot's shared layer, the inline block is its
+// local layer, and a fetch reads their merge with the shared layer winning every
+// key both serve (`provider.AttributeLayer`). It is still worth a line, because
+// which layer answers a contested key is exactly what an operator debugging an
+// unexpected attribute value needs told.
+//
 // Nothing is written when there is no collision, so a normal boot stays silent.
 // Only object TYPES and slot NAMES are named — never ids, never keys — so the
 // warning cannot leak cross-account data or a directory's contents.
@@ -107,7 +178,8 @@ func (s decisionStack) reportCollisions(w io.Writer) {
 	}
 	if len(s.attributeCollisions) > 0 {
 		fmt.Fprintf(w, "warning: seed declares %d attribute slot(s) in both attribute_providers: and attributes: — "+
-			"the attribute_providers: entry wins and the inline bags were discarded: %s\n",
+			"the attribute_providers: entry is the shared layer and wins every key both serve; "+
+			"the inline bags layer under it: %s\n",
 			len(s.attributeCollisions), strings.Join(s.attributeCollisions, ", "))
 	}
 }
@@ -115,9 +187,51 @@ func (s decisionStack) reportCollisions(w io.Writer) {
 // buildDecisionStack wires the decision graph over an already-seeded store.
 //
 // seedPath is the same --seed value buildStore was given: the seed file is read a
-// second time as a Document because several of its sections — `providers:`,
-// `objects:` and `attributes:` — are runtime WIRING that Apply never writes to
-// storage, so the file is their only source of truth.
+// second time as a Document because six of its sections are runtime WIRING that
+// Apply never writes to storage. Two of them — `objects:` and `attributes:` — are
+// LOCAL, and the file really is their only source of truth; the other four
+// (`providers:`, `field_types:`, `connections:`, `attribute_providers:`) are
+// SHARED, and the store's wiring tables are read first (see below).
+//
+// # Where the wiring comes from
+//
+// The file is no longer the only place it can come from. buildStore has already
+// run Setup, so the store's five shared-wiring tables are readable, and this
+// builder reads them (readSharedWiring) before it builds anything:
+//
+//   - wiring rows PRESENT -> the DATABASE is authoritative. The rows are projected
+//     back into the four wiring sections of a Document (wiringDocument) and handed
+//     to the same two builders the file path uses, so two instances cannot end up
+//     with equivalent-but-different registries. The local document still supplies
+//     its two DATA sections (`objects:` and `attributes:`) and the ROUTE for each
+//     connection name the manifest declares — and it may ADD an object type or an
+//     attribute slot the database never declared, which is what lets a Go host
+//     with its own hand-written providers read a pushed wiring at all. A local
+//     entry for a type or slot the database DOES declare fails the boot with
+//     APERTURE_WIRING_LOCAL_COLLISION; see wiringDocument's file header.
+//   - wiring rows EMPTY -> the local seed file's wiring is used exactly as it
+//     always was. An empty set is an answer, not a failure, and it is the answer
+//     every existing single-instance deployment gives: no flag, no configuration,
+//     no behaviour change.
+//
+// # Wiring this instance cannot construct or route fails the boot HERE
+//
+// Nothing below this function degrades gracefully, because nothing below it can:
+// an object type with no working provider yields absent metadata, which a rule
+// reads as a missing path, and an attribute slot with no working provider yields a
+// NIL BAG, which widens an exclusive grant instead of denying. So every one of the
+// refusals this builder can meet takes the whole boot with it and the process exits
+// non-zero — two from wiringDocument (a stored kind no second host can construct,
+// naming the object type or the slot; a connection NAME this instance has no route
+// for, naming the connection), and the rest from seed's own builders, which already
+// name the entry they refused. What this function owes all of them is the
+// pass-through guard below: bootError re-stamps nothing that already carries a
+// code, because the code and its registry fixups ARE the remedy. See
+// wiring_boot.go's "Refusing to start beats degrading".
+//
+// ctx is the boot's context, and it is here rather than on a package-level
+// convenience because reading the wiring is a database read on the same store the
+// rest of this function decides through: a cancelled boot must stop at it.
 //
 // Both sections feed ONE *provider.Registry, which in turn feeds BOTH the rules
 // engine's metadata fetcher (so a rule can read object.category_id) AND the scope
@@ -147,27 +261,110 @@ func (s decisionStack) reportCollisions(w io.Writer) {
 // the shared flags (or a bare &ucli.Command{} in a test) resolves every one of
 // them to "unset", which is the library's own default and the behaviour this
 // builder had before they existed.
-func buildDecisionStack(cmd *ucli.Command, store model.Storage, seedPath string, engOpts ...engine.Option) (decisionStack, error) {
-	// Resolved FIRST, before a seed is read or a connection pool is opened: a
-	// malformed configured value is an operator typo, and it must fail the command
-	// rather than fail it later holding resources this function would then have to
-	// unwind.
+func buildDecisionStack(ctx context.Context, cmd *ucli.Command, store model.Storage, seedPath string, engOpts ...engine.Option) (decisionStack, error) {
+	// Resolved FIRST, before a seed is read, a wiring row is read or a connection
+	// pool is opened: a malformed configured value is an operator typo, and it must
+	// fail the command rather than fail it later holding resources this function
+	// would then have to unwind.
 	shared, err := sharedEngineOptions(cmd)
 	if err != nil {
 		return decisionStack{}, err
 	}
-
-	doc, err := seedDocument(seedPath)
+	// After Setup, before anything is built: the shared wiring decides which
+	// document the two registry builders are handed. See the header comment.
+	wiring, err := readSharedWiring(ctx, store)
 	if err != nil {
 		return decisionStack{}, err
+	}
+	return buildWiredStack(cmd.String("store"), store, seedPath, wiring, nil, shared, engOpts)
+}
+
+// buildWiredStack is the whole of buildDecisionStack from the wiring read
+// onwards, split out so a process that re-reads the wiring WHILE IT IS SERVING
+// can build its next stack through the very same code the boot built the first
+// one with (wiring_swap.go). Two builders would be two answers to "how is this
+// instance wired", and a divergence between them does not error — it authorizes
+// differently before and after a push.
+//
+// It takes the wiring set rather than reading one, which is the property the swap
+// rests on: the digest the poller COMPARED, the set the stack is BUILT FROM and
+// the digest the poller ADVANCES TO are all the same single read. A rebuild that
+// re-read would install wiring whose digest it never computed, and a push landing
+// between the two reads would be adopted while the digest said otherwise —
+// silently stale, with nothing saying so.
+//
+// pools, when non-nil, is the ConnectionOpener the build resolves `connections:`
+// through. Nil means seed's default, which dials a fresh pool per declared name
+// and is what a boot wants. A REBUILD passes an opener over the pools the boot
+// already opened, because a process cannot open a second set per push: see
+// borrowBootPools.
+//
+// shared and engOpts arrive already resolved, and in that order, for the reason
+// the caller's comment gives: a malformed configured value must fail before any
+// resource is held, and a refresh must not re-parse flags whose command has long
+// since finished parsing.
+//
+// It takes the STORE DSN rather than the *ucli.Command for the same reason. A
+// refresh runs on a background goroutine for as long as the process lives, and a
+// closure over a command whose flags were parsed once, at startup, would be reading
+// parse state nothing promises is still there. Only classifyStore needs the DSN, so
+// the DSN is what it takes.
+func buildWiredStack(storeDSN string, store model.Storage, seedPath string, wiring model.WiringSet, pools seed.ConnectionOpener, shared, engOpts []engine.Option) (decisionStack, error) {
+	local, err := seedDocument(seedPath, classifyStore(storeDSN))
+	if err != nil {
+		return decisionStack{}, err
+	}
+	// The digest of what this instance is ABOUT TO BE WIRED WITH, taken before the
+	// set is projected into a document and therefore over exactly the rows that were
+	// read. A background poll (--wiring-poll) compares a later read against it; with
+	// polling off it is computed and never looked at, which costs one hash of a
+	// snapshot already in memory. See decisionStack.wiringDigest for why the boot and
+	// not the poller owns this value.
+	digest, err := wiringDigest(wiring)
+	if err != nil {
+		return decisionStack{}, err
+	}
+	doc := local
+	// buildOpts is empty on the file-only path, deliberately: a DB-wired boot
+	// builds under seed.StrictProviderCollision() because its document was
+	// ASSEMBLED from two sources that two people edit, and the silent type-level
+	// discard that is an ordinary migration step within one file is a push on
+	// another host switching off metadata checked into this one. See
+	// wiringBuildOptions.
+	var buildOpts []seed.BuildOption
+	if pools != nil {
+		// FIRST in the list, so a caller reading the build's options sees the pool
+		// seam before the posture. It is the one option a REFRESH adds and a boot
+		// never does.
+		buildOpts = append(buildOpts, seed.WithConnectionOpener(pools))
+	}
+	if !wiring.IsEmpty() {
+		doc, err = wiringDocument(wiring, local)
+		if err != nil {
+			return decisionStack{}, err
+		}
+		buildOpts = append(buildOpts, wiringBuildOptions()...)
 	}
 	// The two-return form, always: the seed may declare `connections:`, whose
 	// pools outlive the build and have to be closed by whoever owns the stack.
 	// The one-return BuildRegistry refuses such a document precisely because it
 	// cannot hand the pools back.
-	reg, conns, err := doc.BuildRegistryWithConnections(seedBaseDir(seedPath))
+	reg, conns, err := doc.BuildRegistryWithConnections(seedBaseDir(seedPath), buildOpts...)
 	if err != nil {
-		return decisionStack{}, aerr.Wrap(aerr.APERTURE_BOOT, "cli: building object providers failed", err)
+		// bootError, not a bare wrap, and for the reason spelled out on the
+		// attribute build below: a provider declaration fails with
+		// APERTURE_CONFIG_INVALID (naming the object type and what was wrong with
+		// its statement set, its kind or its ttl) or with
+		// APERTURE_SQL_PROVIDER_CONNECTION (naming the connection and the
+		// environment variable it reads its DSN from), and re-stamping either
+		// APERTURE_BOOT hands the operator "aperture failed to start" instead of
+		// the remedy.
+		//
+		// It matters more now than it did when the wiring could only come from a
+		// file: a DB-wired instance is refused here for wiring that lives in a
+		// database somebody else pushed, so the code and its context are the only
+		// thing pointing at which entry to go and fix.
+		return decisionStack{}, bootError("cli: building object providers failed", err)
 	}
 
 	var fetcher rules.MetadataFetcher // nil => empty object metadata (unchanged default)
@@ -267,7 +464,14 @@ func buildDecisionStack(cmd *ucli.Command, store model.Storage, seedPath string,
 		collisions: doc.ProviderCollisions(),
 
 		attributeCollisions: doc.AttributeCollisions(),
-		conns:               conns,
+		wiringDigest:        digest,
+		// From the wiring, never from doc or from conns: see the field's comment for
+		// why the pool set is the wrong baseline.
+		wiringConnections: wiringConnectionNames(wiring),
+		// From the WIRING and the LOCAL document, not from doc: the DB-wired
+		// projection does not carry a declared set. See declaredAttributeKeySets.
+		declaredKeys: declaredAttributeKeySets(wiring, local),
+		conns:        conns,
 	}, nil
 }
 
@@ -284,9 +488,16 @@ func buildDecisionStack(cmd *ucli.Command, store model.Storage, seedPath string,
 // any actor without system-admin authority and refuses outright when no gate is
 // wired — which is exactly the one-shot decision commands, so passing the
 // registry to them changes nothing they can do.
+//
+// The DECLARED KEY SETS are wired here for the same reason, and the same way: they
+// are a definition-time gate on what a rule may read, so `serve`'s editor and a
+// one-shot command's validation have to apply the identical one. It is not a grant
+// or a denial of anything — a deployment that declares nothing passes every rule it
+// passed before — and it never reaches a decision.
 func (s decisionStack) newService(opts ...service.Option) *service.Service {
-	all := make([]service.Option, 0, len(opts)+2)
-	all = append(all, service.WithProviders(s.registry), service.WithAttributes(s.attributes))
+	all := make([]service.Option, 0, len(opts)+3)
+	all = append(all, service.WithProviders(s.registry), service.WithAttributes(s.attributes),
+		service.WithDeclaredAttributeKeys(s.declaredKeys))
 	all = append(all, opts...)
 	return service.New(s.eng, all...)
 }

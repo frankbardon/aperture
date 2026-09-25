@@ -18,6 +18,7 @@ import (
 	aerr "github.com/frankbardon/aperture/errors"
 	"github.com/frankbardon/aperture/impersonation"
 	"github.com/frankbardon/aperture/internal/server"
+	"github.com/frankbardon/aperture/model"
 	"github.com/frankbardon/aperture/service"
 
 	ucli "github.com/urfave/cli/v3"
@@ -43,7 +44,7 @@ func serveCommand() *ucli.Command {
 			},
 			&ucli.StringFlag{
 				Name:  "seed",
-				Usage: "path to a JSON/YAML seed model (defaults to the embedded example)",
+				Usage: "path to a JSON/YAML seed model to apply on startup (when omitted: the embedded example for the in-memory store, and nothing at all for a --store DSN)",
 			},
 			&ucli.StringFlag{
 				Name:  "store",
@@ -64,6 +65,11 @@ func serveCommand() *ucli.Command {
 			// `identifiers` / `explain` / `mcp` carry, and buildDecisionStack — not
 			// serveEngineOptions — is what applies it. See enumerate_limit.go.
 			enumerateLimitFlag(),
+			// Serve-only, and the one deliberate difference from --enumerate-limit
+			// above: a poll interval describes a process that OUTLIVES a decision, and
+			// there is no tick in the life of `aperture check` for one to happen on.
+			// See wiringPollFlag.
+			wiringPollFlag(),
 			&ucli.BoolFlag{
 				Name:  "manage-accounts",
 				Value: true,
@@ -148,6 +154,43 @@ func serveEngineOptions(cmd *ucli.Command) ([]engine.Option, error) {
 	return opts, nil
 }
 
+// serveFacadeOptions are the serve-only facade dependencies layered over a decision
+// stack: storage for the mutation path, the authority gate, the delegation and
+// impersonation services, the audit recorder, the editor's rule source and the
+// deployment's entity-management posture.
+//
+// It is a function rather than a literal in runServe because it is composed TWICE
+// over the life of a process: once at boot, and again for every wiring version a
+// refresh installs. Four of the seven options are built over the stack's ENGINE, so
+// a refresh that re-composed them by hand — or failed to re-compose them at all —
+// would leave the authority gate, delegation and impersonation deciding through the
+// superseded engine while Check answered through the new one. That is not a torn
+// read inside one decision; it is two engines in one process, which is worse and
+// harder to see. One function, two call sites.
+//
+// store, rec and managed outlive every version and are passed through unchanged:
+// the database, the audit trail and which entities this deployment owns are
+// properties of the process, not of its wiring.
+func serveFacadeOptions(store model.Storage, stack decisionStack, rec *audit.Recorder, managed service.ManagedEntities, health *service.WiringHealth) []service.Option {
+	eng := stack.eng
+	return []service.Option{
+		service.WithStorage(store),
+		service.WithGate(authz.NewGate(eng)),
+		service.WithDelegation(delegation.New(store, eng)),
+		service.WithImpersonation(impersonation.New(store, eng)),
+		service.WithAudit(rec),
+		service.WithRuleSource(stack.ruleSource, stack.fetcher),
+		service.WithManagedEntities(managed),
+		// The staleness recorder is one pointer for the process, threaded through
+		// HERE rather than composed per call site, for the same reason every other
+		// extra is: a REBUILT facade that took a fresh recorder would answer for a
+		// loop that never writes to it and report a permanently healthy instance no
+		// matter what the loop observed. That is the silent staleness this epic
+		// exists to close, reintroduced one swap later.
+		service.WithWiringHealth(health),
+	}
+}
+
 func runServe(ctx context.Context, cmd *ucli.Command) error {
 	// Resolve the deployment's entity-management posture FIRST, before anything is
 	// opened or created: a malformed APERTURE_MANAGE_* value must fail the boot
@@ -167,14 +210,30 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 		return err
 	}
 
-	// The SHARED configuration is read here too, and the result is thrown away.
-	// buildDecisionStack is what applies it — the enumeration bound governs every
-	// command that decides, so it cannot be wired on serve — but that runs after
-	// the store has been opened and seeded. A malformed --enumerate-limit /
-	// APERTURE_ENUMERATE_LIMIT must fail the boot before a store file is written,
-	// so serve pays for one extra parse of a string it already holds rather than
-	// leaving a database behind on a refused configuration.
-	if _, err := sharedEngineOptions(cmd); err != nil {
+	// The SHARED configuration is read here too. buildDecisionStack is what applies
+	// it — the enumeration bound governs every command that decides, so it cannot be
+	// wired on serve — but that runs after the store has been opened and seeded. A
+	// malformed --enumerate-limit / APERTURE_ENUMERATE_LIMIT must fail the boot
+	// before a store file is written, so serve pays for one extra parse of a string
+	// it already holds rather than leaving a database behind on a refused
+	// configuration.
+	//
+	// The result is KEPT, because a wiring refresh has to build its next stack under
+	// the same options the boot built this one under and cannot re-parse a command
+	// whose flags were parsed once, at startup. Resolving them twice with two
+	// results would be two answers to one question — see buildWiredStack.
+	shared, err := sharedEngineOptions(cmd)
+	if err != nil {
+		return err
+	}
+
+	// And the wiring poll interval, for the same reason and in the same breath: a
+	// malformed --wiring-poll / APERTURE_WIRING_POLL must fail the boot BEFORE a
+	// connection is made, not once a database file has been created and a pool
+	// opened. Nothing is started here — the loop cannot begin until there is a stack
+	// for it to have a baseline digest from — this is only the parse.
+	pollEvery, _, err := wiringPollInterval(cmd)
+	if err != nil {
 		return err
 	}
 
@@ -204,12 +263,25 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 	// `check` / `enumerate` / `identifiers` / `explain` use, so no surface can
 	// answer a question differently from another (see decision.go). The
 	// serve-specific engine options resolved above are layered on last.
-	stack, err := buildDecisionStack(cmd, store, cmd.String("seed"), engOpts...)
+	stack, err := buildDecisionStack(ctx, cmd, store, cmd.String("seed"), engOpts...)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = stack.Close() }()
 	stack.reportCollisions(cmd.ErrWriter)
+
+	// The staleness recorder is built HERE, between the stack and the facade, for
+	// the one reason that matters: the facade and the poller must share ONE
+	// pointer. The facade answers WiringPosture from it and the poller writes to
+	// it, and a facade holding a recorder of its own would report a permanently
+	// healthy instance no matter what the loop observed — silent staleness, which
+	// is precisely what the alarm exists to prevent (see wiring_stale.go).
+	//
+	// It is constructed unconditionally, including when polling is off. A
+	// non-positive interval yields a recorder that reports Polling false and can
+	// never report stale, which is the honest posture for a boot-only instance and
+	// saves every call site below a condition.
+	wiringHealth := service.NewWiringHealth(pollEvery, stack.wiringDigest, nil)
 
 	// Wire the append-only audit trail (E4-S2) through the same store so the
 	// mutation/impersonation/delegation record is durable and the E6-S4 audit
@@ -225,18 +297,46 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 	// These are the serve-only extras layered on top of the shared stack; the
 	// rule source is handed over as well so the editor's live what-if can preview
 	// an UNSAVED rule read-only (E7-S3).
-	eng := stack.eng
-	svc := stack.newService(
-		service.WithStorage(store),
-		service.WithGate(authz.NewGate(eng)),
-		service.WithDelegation(delegation.New(store, eng)),
-		service.WithImpersonation(impersonation.New(store, eng)),
-		service.WithAudit(rec),
-		service.WithRuleSource(stack.ruleSource, stack.fetcher),
-		service.WithManagedEntities(managed),
-	)
+	svc := stack.newService(serveFacadeOptions(store, stack, rec, managed, wiringHealth)...)
 
-	handler := server.Authenticate(authn, server.New(svc))
+	// The wiring this process answers through, as ONE swappable version: the stack,
+	// the facade over it, and the HTTP handler over that. Everything ABOVE this line
+	// — the authenticator, the listener, the http.Server — is built once and survives
+	// a swap; everything below it is rebuilt wholesale when one lands, so no decision
+	// can observe half of a push. See wiring_swap.go.
+	//
+	// The rebuild goes through buildWiredStack and serveFacadeOptions, the very
+	// functions the boot above used, because two builders would be two answers to
+	// "how is this instance wired" and a divergence between them does not error — it
+	// authorizes differently before and after a push.
+	// Captured by VALUE, not read off cmd inside the closure: the refresh runs on a
+	// background goroutine for as long as the process lives, and reaching into a
+	// command whose flags were parsed once, at startup, would be reading state nothing
+	// promises is still there.
+	storeDSN, seedPath, errOut := cmd.String("store"), cmd.String("seed"), cmd.ErrWriter
+	live := newLiveWiring(
+		&wiringVersion{stack: stack, svc: svc, handler: server.New(svc), digest: stack.wiringDigest},
+		func(_ context.Context, set model.WiringSet, digest string) (*wiringVersion, error) {
+			// The pools are BORROWED from the boot, never re-dialled: one pool per
+			// declared connection for the life of the process, however many pushes it
+			// sees. See borrowBootPools.
+			next, err := buildWiredStack(storeDSN, store, seedPath, set, borrowBootPools(stack.conns), shared, engOpts)
+			if err != nil {
+				return nil, err
+			}
+			// Reported for the rebuild exactly as for the boot: which layer answers a
+			// contested attribute key, and which inline object entries a shared
+			// providers: row discarded, are facts an operator needs after a push for
+			// the same reason they need them after a restart.
+			next.reportCollisions(errOut)
+			nextSvc := next.newService(serveFacadeOptions(store, next, rec, managed, wiringHealth)...)
+			return &wiringVersion{stack: next, svc: nextSvc, handler: server.New(nextSvc), digest: digest}, nil
+		})
+
+	// live is the handler, not svc's: it resolves the version ONCE per request and
+	// answers the whole request through it, which is what makes "one coherent wiring
+	// version per decision" true of every surface the server exposes at once.
+	handler := server.Authenticate(authn, live)
 
 	addr := cmd.String("addr")
 	httpServer := &http.Server{
@@ -249,6 +349,22 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 	// graceful shutdown.
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Opt-in, and OFF unless configured: with no --wiring-poll this returns nil,
+	// starts no goroutine and makes no periodic read, so an instance that cannot use
+	// the feature pays nothing for it. Started here, after the signal context exists,
+	// so a SIGINT stops the reader at once and the deferred Close only waits for it;
+	// both calls are nil-safe, which is why neither needs a condition.
+	//
+	// The baseline is the digest the STACK was built from, never the loop's own first
+	// read — see startWiringPoll for what a self-baselining loop silently loses —
+	// and live.swap is what a detected change is adopted through.
+	//
+	// The recorder handed over here is the SAME pointer the facade above holds, so
+	// a refresh that fails is readable through the gated WiringPosture read and not
+	// only on stderr.
+	poll := startWiringPoll(ctx, store, pollEvery, stack.wiringDigest, live.swap, cmd.ErrWriter, wiringHealth)
+	defer func() { _ = poll.Close() }()
 
 	serveErr := make(chan error, 1)
 	go func() {

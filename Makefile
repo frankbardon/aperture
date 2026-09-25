@@ -38,16 +38,27 @@ clean:
 #   export APERTURE_PG_DSN='postgres://user:pass@localhost:5432/db?sslmode=disable'
 #   $(GO) test -run TestPostgresIntegration ./seed/
 #   $(GO) test -run TestPostgresLive ./storage/postgres/
+#   $(GO) test -run TestPostgresLive ./internal/cli/
 #
 # The second is the storage backend's conformance run: the WHOLE storagetest
 # contract against a real server, once unqualified and once pinned to a
 # configured schema. CI has no service containers, so it is the only evidence
 # storage/postgres behaves like storage/sqlite.
 #
+# The third is the shared-wiring surface against a real server: the
+# `aperture wiring push -> pull -> push` fixed point, the two backends pulling
+# and diffing one wiring as the SAME document, the DB-wired boot's refusals, and
+# the two-instance proof that an instance wired from the database and one wired
+# from the equivalent seed file decide identically. The dialect-parity gates
+# cannot reach any of it — they prove the two schemas describe the same database,
+# not that a write-then-read through one of them builds the same registries.
+#
 # The gate is deliberately fail-loud: with APERTURE_PG_INTEGRATION on and no
-# APERTURE_PG_DSN the tests FAIL rather than skip, so asking for the run and
-# silently not getting one cannot happen. Never put a DSN in a file — pass it in
-# the environment.
+# APERTURE_PG_DSN the tests FAIL rather than skip, and a value of it that is
+# neither on nor off FAILS too, so asking for the run and silently not getting
+# one cannot happen. Each suite creates and drops its own schema, so one exported
+# DSN drives all three in one shell and leaves no residue. Never put a DSN in a
+# file — pass it in the environment.
 test:
 	$(GO) test ./...
 

@@ -36,7 +36,7 @@
 --     is BIGINT, carrying the same unit, for the same reason.
 --
 -- Referential integrity:
---   * Nine relationship columns carry a REAL foreign key, declared as a table
+--   * Eleven relationship columns carry a REAL foreign key, declared as a table
 --     constraint next to the PRIMARY KEY, so a row can never name a parent that
 --     does not exist and a parent can never be deleted out from under a child
 --     that still points at it. Three columns deliberately carry none, each for a
@@ -45,16 +45,17 @@
 --     enforced in the application layer instead, on identical terms and in every
 --     backend -- see storage/sqlite/integrity.go. "No foreign key" does not mean
 --     "no integrity"; it means SQL could not express this one.
---   * ON DELETE CASCADE appears on exactly THREE edges -- the ones where an
---     entity owns its own join rows: apt_principal_roles.principal_id,
---     apt_role_permissions.role_id, apt_group_members.group_id. There the join
---     row has no meaning without its owner, so deleting the owner deletes it.
+--   * ON DELETE CASCADE appears on exactly FOUR edges -- the ones where an
+--     entity owns its own child rows: apt_principal_roles.principal_id,
+--     apt_role_permissions.role_id, apt_group_members.group_id, and
+--     apt_wiring_provider_references.object_type. There the child row has no
+--     meaning without its owner, so deleting the owner deletes it.
 --     The schema is the ONLY thing that performs this cleanup. The Go delete
 --     methods used to repeat it by hand in the same transaction, and the two
 --     halves covered for each other -- breaking either one alone left the
 --     conformance suite green, so neither was proven. The hand-written half is
 --     gone; do not put it back.
---   * ON DELETE RESTRICT everywhere else (the other six edges). Deleting a
+--   * ON DELETE RESTRICT everywhere else (the other seven edges). Deleting a
 --     permission a grant still cites, a role a principal still holds, or a
 --     principal that is still in a group is refused with
 --     APERTURE_STORAGE_CONSTRAINT. That refusal is the point: before these keys
@@ -68,8 +69,9 @@
 --     forces _pragma=foreign_keys(1) into every DSN it opens, whatever the
 --     caller passed, and Setup verifies it and refuses a connection that is not
 --     enforcing. See Open/Setup in sqlite.go.
---   * JSON value columns take no foreign keys: apt_object_types.apt_actions and
---     apt_templates.apt_grants are value lists, not relationships.
+--   * JSON value columns take no foreign keys: apt_object_types.apt_actions,
+--     apt_templates.apt_grants and apt_wiring_attribute_providers.declared_keys
+--     are value lists, not relationships.
 --
 -- The two account_id columns, and why they carry no foreign key:
 --   * apt_memberships.account_id and apt_grants.account_id look like plain
@@ -115,6 +117,11 @@
 --   * apt_grants rows carry account_id (the cross-account isolation stamp) and
 --     are indexed by (account_id, subject_kind, subject_id) for the decision
 --     engine's hot-path GrantsForSubjects query.
+--   * The five apt_wiring_* tables at the END of this file are RUNTIME WIRING,
+--     not model state: they say where a decision's object metadata and attribute
+--     bags are read FROM, never who may do what. They are described together in
+--     their own banner comment down there; read it before adding a column to one
+--     of them, because what may NOT go in them is the load-bearing part.
 
 CREATE TABLE IF NOT EXISTS apt_accounts (
     id          TEXT PRIMARY KEY,
@@ -338,3 +345,195 @@ CREATE INDEX IF NOT EXISTS idx_apt_audit_occurred_at ON apt_audit_log (occurred_
 CREATE INDEX IF NOT EXISTS idx_apt_audit_actor ON apt_audit_log (actor);
 CREATE INDEX IF NOT EXISTS idx_apt_audit_account ON apt_audit_log (account);
 CREATE INDEX IF NOT EXISTS idx_apt_audit_event_type ON apt_audit_log (event_type);
+
+-- ---------------------------------------------------------------------------
+-- Shared wiring (FR-9/FR-10/FR-11/FR-14): the five tables that let a second
+-- instance boot with NO seed file and decide identically.
+--
+-- These rows are runtime WIRING, not model state. They say where a decision's
+-- object metadata and attribute bags come FROM; they never say who may do what.
+-- They are the database-backed home for the seed document's connections:,
+-- providers:, field_types: and attribute_providers: sections, normalized one
+-- table per section -- plus one child table for a provider's references: map --
+-- rather than kept as one snapshot blob, so that the object-type edge below can
+-- be a REAL foreign key and so an operator can read one row without parsing a
+-- document.
+--
+-- NO WIRING TABLE HAS A COLUMN CAPABLE OF CARRYING A SECRET. That is a
+-- requirement, not an observation about the columns that happen to be here: a
+-- connection's DSN is named by an environment VARIABLE each instance resolves
+-- for itself, so there is nothing in this database to leak, nothing to rotate,
+-- and no credential in a backup of it. It is also why apt_wiring_connections
+-- holds names and nothing else -- see its comment.
+--
+-- There is deliberately NO path COLUMN anywhere here. kind: csv is refused in
+-- shared wiring: a filesystem path is machine-local, both loaders resolve a
+-- relative one against the SEED FILE's directory, and a stored path is a guess
+-- about the other instance's filesystem. csv stays a local-file affordance.
+--
+-- A ttl is stored as the Go duration TEXT the operator wrote ("30s", "5m"), not
+-- as an integer. This is wiring an operator pushes and reads back, and the read
+-- back has to be re-pushable byte for byte; an integer would round-trip "30s"
+-- as 30000000000. Same reason apt_rules.ast is TEXT. A duration is NOT an
+-- instant: the Time section above governs created_at and updated_at here exactly
+-- as it does everywhere else, and governs nothing else in these tables.
+-- ---------------------------------------------------------------------------
+
+-- apt_wiring_connections is the MANIFEST OF NAMES a provider entry may cite in
+-- its apt_connection column: one row per connection, and nothing but the name.
+-- No DSN, no dsn_env variable name, no pool tuning, no statement timeout.
+--
+-- Every one of those is a PER-INSTANCE fact. Each instance resolves its own
+-- credentials, sizes its own pool for its own workload, and may reach the same
+-- logical database through a different host entirely. Sharing them would either
+-- put a secret in this table or make one instance's tuning the other's. What
+-- must be shared is exactly the NAME, because the name is what a provider entry
+-- refers to and what an instance matches its own connection settings against.
+CREATE TABLE IF NOT EXISTS apt_wiring_connections (
+    name       TEXT PRIMARY KEY,
+    created_at INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0
+);
+
+-- apt_wiring_providers is one row per OBJECT TYPE whose metadata an external
+-- source serves: the database-backed form of a providers: entry. object_type is
+-- the primary key because a type may be served at most once -- the rule the seed
+-- loader already applies -- so a second entry for it is a key violation rather
+-- than a last-one-wins merge.
+--
+-- apt_connection, get_one, get_all and id_column are the EMPTY STRING for a kind
+-- that does not use them, never NULL. This schema encodes "absent" as the zero
+-- value throughout, so no Go scan target has to be a pointer; that choice is
+-- also what rules out a foreign key on apt_connection, below.
+CREATE TABLE IF NOT EXISTS apt_wiring_providers (
+    object_type    TEXT PRIMARY KEY,
+    kind           TEXT NOT NULL,
+    -- apt_connection names an apt_wiring_connections row. It is spelled apt_
+    -- because CONNECTION is a reserved word (SQL-92, ODBC) and its WHOLE name
+    -- is that word -- the rule is in the Naming section above.
+    --
+    -- It carries NO foreign key, and the reason is the empty string: a kind that
+    -- reads no database names no connection, so an edge would demand either a
+    -- NULL-encoded absence -- the one encoding this schema does not use anywhere
+    -- -- or a fake '' connection row in every deployment. The name is resolved
+    -- when the wiring is BUILT, where an unknown one is a coded error naming the
+    -- typo and the manifest it is missing from; SQLSTATE 23503 could not say
+    -- that.
+    apt_connection TEXT NOT NULL DEFAULT '',
+    get_one        TEXT NOT NULL DEFAULT '',
+    get_all        TEXT NOT NULL DEFAULT '',
+    id_column      TEXT NOT NULL DEFAULT '',
+    ttl            TEXT NOT NULL DEFAULT '',
+    max_size       INTEGER NOT NULL DEFAULT 0,
+    created_at     INTEGER NOT NULL DEFAULT 0,
+    updated_at     INTEGER NOT NULL DEFAULT 0,
+    -- The object type is what this entry SERVES, and a provider for a type the
+    -- model no longer has is wiring nothing can reach: every decision arrives
+    -- here through a permission, which is itself keyed to an object type by the
+    -- same edge for the same reason (apt_permissions.object_type).
+    --
+    -- RESTRICT rather than CASCADE: deleting a type a provider entry still
+    -- serves is refused with APERTURE_STORAGE_CONSTRAINT, so the operator
+    -- removes the wiring on purpose instead of discovering afterwards that a
+    -- push-and-read-back round trip quietly lost an entry.
+    FOREIGN KEY (object_type) REFERENCES apt_object_types (name) ON DELETE RESTRICT ON UPDATE RESTRICT
+);
+
+-- apt_wiring_provider_references is a provider's references: map, flattened:
+-- one row per (object_type, field), each naming the object type whose identities
+-- that metadata field holds. A map has no order, so there is no seq column here
+-- -- a read back sorts by field name, which is what makes the round trip
+-- byte-stable -- and no timestamps either, for the reason the other owned child
+-- tables have none: a reference row's history is its provider entry's.
+--
+-- target_type carries NO foreign key, unlike the owner's object_type. A
+-- reference target is resolved against the REGISTRY the wiring builds, not
+-- against this table and not against the model: the target must be a type that
+-- registry serves, and an inline objects: type belongs to that set without
+-- appearing in either table. An unknown target is
+-- APERTURE_PROVIDER_REFERENCE_INVALID at build, naming the field and the target.
+CREATE TABLE IF NOT EXISTS apt_wiring_provider_references (
+    object_type TEXT NOT NULL,
+    field       TEXT NOT NULL,
+    target_type TEXT NOT NULL,
+    PRIMARY KEY (object_type, field),
+    -- CASCADE on the OWNER, and the FOURTH cascading edge in this schema: a
+    -- provider entry owns its references: map exactly as a principal owns its
+    -- role list, and a reference row means nothing without the entry that
+    -- declares it. As with the other three, the schema is the ONLY thing that
+    -- performs this cleanup -- do not write the DELETE by hand as well, or the
+    -- two halves cover for each other and neither is ever proven.
+    FOREIGN KEY (object_type) REFERENCES apt_wiring_providers (object_type) ON DELETE CASCADE ON UPDATE RESTRICT
+);
+
+-- apt_wiring_field_types is the field_types: section, flattened the same way:
+-- one row per (object_type, field) naming that field's declared type -- "date"
+-- or "datetime", the CSV loader's column-suffix vocabulary with the colon
+-- removed. It is a DATE-TYPE declaration and nothing more: there is no
+-- required:, no default:, no enum:, no int/float/bool, so one type column is the
+-- whole of it, and declaring a type never makes the field mandatory.
+--
+-- object_type carries NO foreign key here, and the asymmetry with
+-- apt_wiring_providers.object_type above is deliberate rather than an oversight.
+-- A field-type declaration may name a type a provider entry serves OR a type
+-- whose objects a seed document lists inline, and an inline type needs no
+-- object_types: row at all -- so the parent an edge would require may
+-- legitimately not exist, and the edge would refuse a declaration the loader
+-- accepts.
+CREATE TABLE IF NOT EXISTS apt_wiring_field_types (
+    object_type   TEXT NOT NULL,
+    field         TEXT NOT NULL,
+    declared_type TEXT NOT NULL,
+    created_at    INTEGER NOT NULL DEFAULT 0,
+    updated_at    INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (object_type, field)
+);
+
+-- apt_wiring_attribute_providers is one row per attribute SLOT: the
+-- database-backed form of an attribute_providers: entry. subject is the slot
+-- name ("user", "machine" or "account") and is the primary key because the set
+-- is closed -- it is the parties a decision has -- and each slot may be declared
+-- at most once. It is spelled subject rather than slot or kind for the reason
+-- the seed key is: "account" is a slot but not a principal KIND, and kind is
+-- already this row's implementation selector.
+--
+-- get_all is legitimately EMPTY here where an object provider must declare it.
+-- A slot with no enumeration statement is FETCH-ONLY: every decision path works
+-- unchanged and only the system-tier admin read refuses, because attribute
+-- enumeration never participates in scope resolution. That is a feature -- it
+-- lets a host serve the attributes of the principal currently being decided
+-- about without exposing its whole user table to an enumeration.
+CREATE TABLE IF NOT EXISTS apt_wiring_attribute_providers (
+    subject        TEXT PRIMARY KEY,
+    kind           TEXT NOT NULL,
+    -- apt_connection: the same name, the same reserved word and the same
+    -- deliberate absence of a foreign key as apt_wiring_providers.apt_connection
+    -- above. One connection row is one pool, however many entries of either kind
+    -- name it.
+    apt_connection TEXT NOT NULL DEFAULT '',
+    get_one        TEXT NOT NULL DEFAULT '',
+    get_all        TEXT NOT NULL DEFAULT '',
+    id_column      TEXT NOT NULL DEFAULT '',
+    ttl            TEXT NOT NULL DEFAULT '',
+    max_size       INTEGER NOT NULL DEFAULT 0,
+    -- declared_keys is the OPTIONAL declared key set: the attribute keys this
+    -- shared slot GUARANTEES, carried as a JSON array of names in the same shape
+    -- apt_object_types.apt_actions carries a verb set (a value list, not a
+    -- relationship, so no foreign key). The simplest shape that round-trips was
+    -- chosen -- a plain list of names, with NO per-key type information --
+    -- because the value model already governs shape, and a second typing
+    -- mechanism is a second place for two declarations to disagree.
+    --
+    -- '' means NOT DECLARED and '[]' means DECLARED EMPTY, and those are
+    -- different answers rather than two spellings of nothing: the first opts the
+    -- slot OUT of enforcement, so it behaves exactly as a slot did before this
+    -- column existed; the second opts IN and permits no keys at all. Do not
+    -- collapse them into one value.
+    --
+    -- Nothing reads this column yet. It is here NOW because Setup creates and
+    -- never migrates, so adding it later would be a second hard schema break for
+    -- every deployment.
+    declared_keys  TEXT NOT NULL DEFAULT '',
+    created_at     INTEGER NOT NULL DEFAULT 0,
+    updated_at     INTEGER NOT NULL DEFAULT 0
+);

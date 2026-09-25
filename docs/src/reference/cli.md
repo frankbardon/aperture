@@ -33,6 +33,7 @@
 | [`search`](#aperture-search) | Rank the objects a principal may act on by a free-text name |
 | [`serve`](#aperture-serve) | Run the Aperture HTTP server |
 | [`template`](#aperture-template) | Manage and apply provisioning templates |
+| [`wiring`](#aperture-wiring) | Manage the shared wiring a deployment keeps in its database |
 
 ## `aperture attributes`
 
@@ -108,7 +109,7 @@ aperture attributes invalidate [options] <slot>
 | `--all` | — | bool | — | clear EVERY slot's cache; takes no &lt;slot&gt; argument and no --id |
 | `--id` | — | string | — | drop only this subject's cached bag (a bare principal or account id); omit to clear the whole slot |
 | `--principal` | — | string | — | authenticated principal performing the mutation (env: `APERTURE_PRINCIPAL`) |
-| `--seed` | — | string | — | path to a JSON/YAML seed model (defaults to the embedded example) |
+| `--seed` | — | string | — | path to a JSON/YAML seed model to apply on startup (when omitted: the embedded example for the in-memory store, and nothing at all for a --store DSN) |
 | `--store` | — | string | — | DSN for the backing store: a postgres:// or postgresql:// URL for PostgreSQL, any other value as a SQLite path (defaults to in-memory). Set APERTURE_POSTGRES_SCHEMA to place Aperture's tables in a named PostgreSQL schema; unset uses the connection's search_path |
 
 ### `aperture attributes query`
@@ -155,7 +156,7 @@ aperture attributes query [options] <slot>
 | `--fields-json` | — | string | — | object-metadata predicates as a JSON object, for values that are genuinely a number, bool, or list (e.g. '{"seats":5,"active":true,"tags":["a"]}'). Merged first; --field entries then override by key |
 | `--limit` | — | int | `0` | cap the number of returned records (&lt;=0 means the default; the registry clamps it regardless) |
 | `--principal` | — | string | — | authenticated principal performing the mutation (env: `APERTURE_PRINCIPAL`) |
-| `--seed` | — | string | — | path to a JSON/YAML seed model (defaults to the embedded example) |
+| `--seed` | — | string | — | path to a JSON/YAML seed model to apply on startup (when omitted: the embedded example for the in-memory store, and nothing at all for a --store DSN) |
 | `--store` | — | string | — | DSN for the backing store: a postgres:// or postgresql:// URL for PostgreSQL, any other value as a SQLite path (defaults to in-memory). Set APERTURE_POSTGRES_SCHEMA to place Aperture's tables in a named PostgreSQL schema; unset uses the connection's search_path |
 
 ### `aperture attributes slots`
@@ -166,15 +167,24 @@ Prints one row per slot — user, machine, account — with the source the seed
 declares for it (csv, sql, or inline), the cache freshness window, the cached-bag
 cap, and how many bags this process currently holds.
 
+A SLOT CAN HAVE TWO SOURCES, AND THE SOURCE COLUMN NAMES THE WINNER. An
+`attribute_providers:` entry is the slot's SHARED layer and an `attributes:` block
+is its LOCAL one; a fetch reads their merge and the shared layer wins every key
+both serve, so nothing is discarded and the inline bags still contribute the keys
+the external source does not carry. A slot declared both ways therefore reports
+csv or sql — the source a contested key is answered from — and `ttl` is that
+layer's window, since each layer caches on its own declaration.
+
 THE TTL COLUMN IS THE REVOCATION WINDOW. A slot's cached bag keeps authorizing
 until it expires, so `ttl` is the longest a removed clearance can keep working.
 `never` means a bag, once fetched, is only dropped by eviction or by an explicit
 `aperture attributes invalidate` — correct for a fixed inline block, dangerous
 for a live directory.
 
-The `cached` column counts THIS process's cache. A one-shot invocation starts
-cold, so it reads 0; it is the number that matters in a long-running
-`aperture serve`.
+The `cached` column counts THIS process's cache, summed across a slot's layers —
+a subject both layers serve is held twice, because it is cached twice. A one-shot
+invocation starts cold, so it reads 0; it is the number that matters in a
+long-running `aperture serve`.
 
 No actor is required: this reports the wiring in the seed file you passed and
 the configuration this process built from it. It contacts no provider and prints
@@ -186,7 +196,7 @@ aperture attributes slots [options]
 
 | Name | Aliases | Type | Default | Usage |
 | --- | --- | --- | --- | --- |
-| `--seed` | — | string | — | path to a JSON/YAML seed model (defaults to the embedded example) |
+| `--seed` | — | string | — | path to a JSON/YAML seed model to apply on startup (when omitted: the embedded example for the in-memory store, and nothing at all for a --store DSN) |
 | `--store` | — | string | — | DSN for the backing store: a postgres:// or postgresql:// URL for PostgreSQL, any other value as a SQLite path (defaults to in-memory). Set APERTURE_POSTGRES_SCHEMA to place Aperture's tables in a named PostgreSQL schema; unset uses the connection's search_path |
 
 ## `aperture bestow`
@@ -202,7 +212,7 @@ aperture bestow [options]
 | `--delegator` | — | string | — | principal bestowing the grant (env: `APERTURE_PRINCIPAL`) (**required**) |
 | `--file` | — | string | — | path to a JSON grant body |
 | `--json` | — | string | — | grant body as inline JSON |
-| `--seed` | — | string | — | path to a JSON/YAML seed model (defaults to the embedded example) |
+| `--seed` | — | string | — | path to a JSON/YAML seed model to apply on startup (when omitted: the embedded example for the in-memory store, and nothing at all for a --store DSN) |
 | `--store` | — | string | — | DSN for the backing store: a postgres:// or postgresql:// URL for PostgreSQL, any other value as a SQLite path (defaults to in-memory). Set APERTURE_POSTGRES_SCHEMA to place Aperture's tables in a named PostgreSQL schema; unset uses the connection's search_path |
 
 ## `aperture bulk`
@@ -227,7 +237,7 @@ aperture bulk grant [options]
 | `--file` | — | string | — | path to a JSON array of grant bodies |
 | `--json` | — | string | — | a JSON array of grant bodies |
 | `--principal` | — | string | — | authenticated principal performing the mutation (env: `APERTURE_PRINCIPAL`) |
-| `--seed` | — | string | — | path to a JSON/YAML seed model (defaults to the embedded example) |
+| `--seed` | — | string | — | path to a JSON/YAML seed model to apply on startup (when omitted: the embedded example for the in-memory store, and nothing at all for a --store DSN) |
 | `--store` | — | string | — | DSN for the backing store: a postgres:// or postgresql:// URL for PostgreSQL, any other value as a SQLite path (defaults to in-memory). Set APERTURE_POSTGRES_SCHEMA to place Aperture's tables in a named PostgreSQL schema; unset uses the connection's search_path |
 
 ### `aperture bulk revoke`
@@ -243,7 +253,7 @@ aperture bulk revoke [options] [<grant-id>...]
 | `--account` | — | string | — | active account (required for system-tier authority resolution) |
 | `--grant` | — | string | — | grant id to revoke (repeatable) |
 | `--principal` | — | string | — | authenticated principal performing the mutation (env: `APERTURE_PRINCIPAL`) |
-| `--seed` | — | string | — | path to a JSON/YAML seed model (defaults to the embedded example) |
+| `--seed` | — | string | — | path to a JSON/YAML seed model to apply on startup (when omitted: the embedded example for the in-memory store, and nothing at all for a --store DSN) |
 | `--store` | — | string | — | DSN for the backing store: a postgres:// or postgresql:// URL for PostgreSQL, any other value as a SQLite path (defaults to in-memory). Set APERTURE_POSTGRES_SCHEMA to place Aperture's tables in a named PostgreSQL schema; unset uses the connection's search_path |
 
 ## `aperture check`
@@ -258,7 +268,7 @@ aperture check [options] <principal> <action> <object>
 | --- | --- | --- | --- | --- |
 | `--account` | — | string | `"acme"` | active account the decision is scoped to |
 | `--enumerate-limit` | — | string | — | maximum number of object ids one enumeration returns, and the ceiling a larger request limit is clamped down to. It configures the PROCESS, not the command: serve and every one-shot decision command honour the same value (a whole number greater than zero; default 1000; overrides APERTURE_ENUMERATE_LIMIT) (env: `APERTURE_ENUMERATE_LIMIT`) |
-| `--seed` | — | string | — | path to a JSON/YAML seed model (defaults to the embedded example) |
+| `--seed` | — | string | — | path to a JSON/YAML seed model to apply on startup (when omitted: the embedded example for the in-memory store, and nothing at all for a --store DSN) |
 | `--store` | — | string | — | DSN for the backing store: a postgres:// or postgresql:// URL for PostgreSQL, any other value as a SQLite path (defaults to in-memory). Set APERTURE_POSTGRES_SCHEMA to place Aperture's tables in a named PostgreSQL schema; unset uses the connection's search_path |
 
 ## `aperture delete`
@@ -275,7 +285,7 @@ aperture delete [options] <kind> [<id>]
 | `--account-id` | — | string | — | membership account id (kind=membership) |
 | `--principal` | — | string | — | authenticated principal performing the mutation (env: `APERTURE_PRINCIPAL`) |
 | `--principal-id` | — | string | — | membership principal id (kind=membership) |
-| `--seed` | — | string | — | path to a JSON/YAML seed model (defaults to the embedded example) |
+| `--seed` | — | string | — | path to a JSON/YAML seed model to apply on startup (when omitted: the embedded example for the in-memory store, and nothing at all for a --store DSN) |
 | `--store` | — | string | — | DSN for the backing store: a postgres:// or postgresql:// URL for PostgreSQL, any other value as a SQLite path (defaults to in-memory). Set APERTURE_POSTGRES_SCHEMA to place Aperture's tables in a named PostgreSQL schema; unset uses the connection's search_path |
 
 ## `aperture enumerate`
@@ -327,7 +337,7 @@ aperture enumerate [options] <principal> <action> <pattern>
 | `--field` | — | string | — | object-metadata predicate as key=value, repeatable; the value is ALWAYS a string, so --field seats=5 matches the string "5" and never the number 5 (use --fields-json for that). Overrides --fields-json on a key collision |
 | `--fields-json` | — | string | — | object-metadata predicates as a JSON object, for values that are genuinely a number, bool, or list (e.g. '{"seats":5,"active":true,"tags":["a"]}'). Merged first; --field entries then override by key |
 | `--limit` | — | int | `0` | cap the number of returned object ids for THIS request, clamped down to the deployment's --enumerate-limit ceiling (&lt;=0 means that ceiling, which is 1000 unless configured) |
-| `--seed` | — | string | — | path to a JSON/YAML seed model (defaults to the embedded example) |
+| `--seed` | — | string | — | path to a JSON/YAML seed model to apply on startup (when omitted: the embedded example for the in-memory store, and nothing at all for a --store DSN) |
 | `--store` | — | string | — | DSN for the backing store: a postgres:// or postgresql:// URL for PostgreSQL, any other value as a SQLite path (defaults to in-memory). Set APERTURE_POSTGRES_SCHEMA to place Aperture's tables in a named PostgreSQL schema; unset uses the connection's search_path |
 | `--via` | — | string | — | restrict the result to the objects a holder's declared reference field names, as &lt;holder-identity&gt;.&lt;field&gt; (e.g. --via account:acme/dataset:x.current_brands); repeatable, and several edges are ANDed. The FIELD is everything after the LAST '.' |
 
@@ -343,7 +353,7 @@ aperture explain [options] <principal> <action> <object>
 | --- | --- | --- | --- | --- |
 | `--account` | — | string | `"acme"` | active account the decision is scoped to |
 | `--enumerate-limit` | — | string | — | maximum number of object ids one enumeration returns, and the ceiling a larger request limit is clamped down to. It configures the PROCESS, not the command: serve and every one-shot decision command honour the same value (a whole number greater than zero; default 1000; overrides APERTURE_ENUMERATE_LIMIT) (env: `APERTURE_ENUMERATE_LIMIT`) |
-| `--seed` | — | string | — | path to a JSON/YAML seed model (defaults to the embedded example) |
+| `--seed` | — | string | — | path to a JSON/YAML seed model to apply on startup (when omitted: the embedded example for the in-memory store, and nothing at all for a --store DSN) |
 | `--store` | — | string | — | DSN for the backing store: a postgres:// or postgresql:// URL for PostgreSQL, any other value as a SQLite path (defaults to in-memory). Set APERTURE_POSTGRES_SCHEMA to place Aperture's tables in a named PostgreSQL schema; unset uses the connection's search_path |
 
 ## `aperture export`
@@ -360,7 +370,7 @@ aperture export [options]
 | `--format` | — | string | — | output format: json (default) or yaml |
 | `--out` | — | string | — | write the state file to this path (default: stdout) |
 | `--principal` | — | string | — | authenticated principal performing the mutation (env: `APERTURE_PRINCIPAL`) |
-| `--seed` | — | string | — | path to a JSON/YAML seed model (defaults to the embedded example) |
+| `--seed` | — | string | — | path to a JSON/YAML seed model to apply on startup (when omitted: the embedded example for the in-memory store, and nothing at all for a --store DSN) |
 | `--store` | — | string | — | DSN for the backing store: a postgres:// or postgresql:// URL for PostgreSQL, any other value as a SQLite path (defaults to in-memory). Set APERTURE_POSTGRES_SCHEMA to place Aperture's tables in a named PostgreSQL schema; unset uses the connection's search_path |
 
 ## `aperture get`
@@ -373,7 +383,7 @@ aperture get [options] <kind> <id>
 
 | Name | Aliases | Type | Default | Usage |
 | --- | --- | --- | --- | --- |
-| `--seed` | — | string | — | path to a JSON/YAML seed model (defaults to the embedded example) |
+| `--seed` | — | string | — | path to a JSON/YAML seed model to apply on startup (when omitted: the embedded example for the in-memory store, and nothing at all for a --store DSN) |
 | `--store` | — | string | — | DSN for the backing store: a postgres:// or postgresql:// URL for PostgreSQL, any other value as a SQLite path (defaults to in-memory). Set APERTURE_POSTGRES_SCHEMA to place Aperture's tables in a named PostgreSQL schema; unset uses the connection's search_path |
 
 ## `aperture identifiers`
@@ -388,7 +398,7 @@ aperture identifiers [options] <object_type>
 | --- | --- | --- | --- | --- |
 | `--enumerate-limit` | — | string | — | maximum number of object ids one enumeration returns, and the ceiling a larger request limit is clamped down to. It configures the PROCESS, not the command: serve and every one-shot decision command honour the same value (a whole number greater than zero; default 1000; overrides APERTURE_ENUMERATE_LIMIT) (env: `APERTURE_ENUMERATE_LIMIT`) |
 | `--exclude` | — | string | — | id to omit from the result (repeatable); expands an exclusive allowance |
-| `--seed` | — | string | — | path to a JSON/YAML seed model (defaults to the embedded example) |
+| `--seed` | — | string | — | path to a JSON/YAML seed model to apply on startup (when omitted: the embedded example for the in-memory store, and nothing at all for a --store DSN) |
 | `--store` | — | string | — | DSN for the backing store: a postgres:// or postgresql:// URL for PostgreSQL, any other value as a SQLite path (defaults to in-memory). Set APERTURE_POSTGRES_SCHEMA to place Aperture's tables in a named PostgreSQL schema; unset uses the connection's search_path |
 
 ## `aperture impersonate`
@@ -404,7 +414,7 @@ aperture impersonate [options]
 | `--account` | — | string | — | active account (**required**) |
 | `--mode` | — | string | `"augment"` | augment\|become |
 | `--operator` | — | string | — | operator principal (env: `APERTURE_PRINCIPAL`) (**required**) |
-| `--seed` | — | string | — | path to a JSON/YAML seed model (defaults to the embedded example) |
+| `--seed` | — | string | — | path to a JSON/YAML seed model to apply on startup (when omitted: the embedded example for the in-memory store, and nothing at all for a --store DSN) |
 | `--store` | — | string | — | DSN for the backing store: a postgres:// or postgresql:// URL for PostgreSQL, any other value as a SQLite path (defaults to in-memory). Set APERTURE_POSTGRES_SCHEMA to place Aperture's tables in a named PostgreSQL schema; unset uses the connection's search_path |
 | `--target` | — | string | — | target principal to impersonate (**required**) |
 
@@ -421,7 +431,7 @@ aperture import [options]
 | `--account` | — | string | — | active account (required for system-tier authority resolution) |
 | `--file` | — | string | — | path to the JSON/YAML state file (default: stdin, treated as JSON) |
 | `--principal` | — | string | — | authenticated principal performing the mutation (env: `APERTURE_PRINCIPAL`) |
-| `--seed` | — | string | — | path to a JSON/YAML seed model (defaults to the embedded example) |
+| `--seed` | — | string | — | path to a JSON/YAML seed model to apply on startup (when omitted: the embedded example for the in-memory store, and nothing at all for a --store DSN) |
 | `--store` | — | string | — | DSN for the backing store: a postgres:// or postgresql:// URL for PostgreSQL, any other value as a SQLite path (defaults to in-memory). Set APERTURE_POSTGRES_SCHEMA to place Aperture's tables in a named PostgreSQL schema; unset uses the connection's search_path |
 
 ## `aperture list`
@@ -435,7 +445,7 @@ aperture list [options] <kind>
 | Name | Aliases | Type | Default | Usage |
 | --- | --- | --- | --- | --- |
 | `--account` | — | string | — | account to list grants for (required for kind=grant) |
-| `--seed` | — | string | — | path to a JSON/YAML seed model (defaults to the embedded example) |
+| `--seed` | — | string | — | path to a JSON/YAML seed model to apply on startup (when omitted: the embedded example for the in-memory store, and nothing at all for a --store DSN) |
 | `--store` | — | string | — | DSN for the backing store: a postgres:// or postgresql:// URL for PostgreSQL, any other value as a SQLite path (defaults to in-memory). Set APERTURE_POSTGRES_SCHEMA to place Aperture's tables in a named PostgreSQL schema; unset uses the connection's search_path |
 
 ## `aperture mcp`
@@ -451,7 +461,7 @@ aperture mcp [options]
 | Name | Aliases | Type | Default | Usage |
 | --- | --- | --- | --- | --- |
 | `--enumerate-limit` | — | string | — | maximum number of object ids one enumeration returns, and the ceiling a larger request limit is clamped down to. It configures the PROCESS, not the command: serve and every one-shot decision command honour the same value (a whole number greater than zero; default 1000; overrides APERTURE_ENUMERATE_LIMIT) (env: `APERTURE_ENUMERATE_LIMIT`) |
-| `--seed` | — | string | — | path to a JSON/YAML seed model (defaults to the embedded example) |
+| `--seed` | — | string | — | path to a JSON/YAML seed model to apply on startup (when omitted: the embedded example for the in-memory store, and nothing at all for a --store DSN) |
 | `--store` | — | string | — | DSN for the backing store: a postgres:// or postgresql:// URL for PostgreSQL, any other value as a SQLite path (defaults to in-memory). Set APERTURE_POSTGRES_SCHEMA to place Aperture's tables in a named PostgreSQL schema; unset uses the connection's search_path |
 
 ## `aperture put`
@@ -468,7 +478,7 @@ aperture put [options] <kind>
 | `--file` | — | string | — | path to a JSON entity body |
 | `--json` | — | string | — | entity body as inline JSON |
 | `--principal` | — | string | — | authenticated principal performing the mutation (env: `APERTURE_PRINCIPAL`) |
-| `--seed` | — | string | — | path to a JSON/YAML seed model (defaults to the embedded example) |
+| `--seed` | — | string | — | path to a JSON/YAML seed model to apply on startup (when omitted: the embedded example for the in-memory store, and nothing at all for a --store DSN) |
 | `--store` | — | string | — | DSN for the backing store: a postgres:// or postgresql:// URL for PostgreSQL, any other value as a SQLite path (defaults to in-memory). Set APERTURE_POSTGRES_SCHEMA to place Aperture's tables in a named PostgreSQL schema; unset uses the connection's search_path |
 
 ## `aperture revoke`
@@ -483,7 +493,7 @@ aperture revoke [options]
 | --- | --- | --- | --- | --- |
 | `--delegator` | — | string | — | principal revoking the grant (env: `APERTURE_PRINCIPAL`) (**required**) |
 | `--grant` | — | string | — | id of the grant to revoke (**required**) |
-| `--seed` | — | string | — | path to a JSON/YAML seed model (defaults to the embedded example) |
+| `--seed` | — | string | — | path to a JSON/YAML seed model to apply on startup (when omitted: the embedded example for the in-memory store, and nothing at all for a --store DSN) |
 | `--store` | — | string | — | DSN for the backing store: a postgres:// or postgresql:// URL for PostgreSQL, any other value as a SQLite path (defaults to in-memory). Set APERTURE_POSTGRES_SCHEMA to place Aperture's tables in a named PostgreSQL schema; unset uses the connection's search_path |
 
 ## `aperture search`
@@ -536,7 +546,7 @@ aperture search [options] <principal> <action> <pattern> <query>
 | `--limit` | — | int | `0` | cap the number of returned MATCHES for THIS request, clamped down to the deployment's --enumerate-limit ceiling (&lt;=0 means that ceiling, which is 1000 unless configured) |
 | `--min-score` | — | float | `0` | drop matches scoring below this, 0 to 1 (&lt;=0 means the default, 0.4) |
 | `--scores` | — | bool | — | print the score and the matching field/value alongside each id |
-| `--seed` | — | string | — | path to a JSON/YAML seed model (defaults to the embedded example) |
+| `--seed` | — | string | — | path to a JSON/YAML seed model to apply on startup (when omitted: the embedded example for the in-memory store, and nothing at all for a --store DSN) |
 | `--store` | — | string | — | DSN for the backing store: a postgres:// or postgresql:// URL for PostgreSQL, any other value as a SQLite path (defaults to in-memory). Set APERTURE_POSTGRES_SCHEMA to place Aperture's tables in a named PostgreSQL schema; unset uses the connection's search_path |
 | `--via` | — | string | — | restrict the result to the objects a holder's declared reference field names, as &lt;holder-identity&gt;.&lt;field&gt; (e.g. --via account:acme/dataset:x.current_brands); repeatable, and several edges are ANDed. The FIELD is everything after the LAST '.' |
 
@@ -557,8 +567,9 @@ aperture serve [options]
 | `--manage-accounts` | — | bool | — | manage the lifecycle of account records — allow account create/update/delete through the API (default true; overrides APERTURE_MANAGE_ACCOUNTS). Pass --manage-accounts=false when accounts are mastered by an upstream system: Aperture then refuses every account write regardless of the caller's authority, while account reads and every decision stay unaffected. Read once at startup; a restart is required to change it |
 | `--manage-memberships` | — | bool | — | manage the lifecycle of principal-to-account memberships — allow membership create/update/delete through the API (default true; overrides APERTURE_MANAGE_MEMBERSHIPS). Independent of the other two, so a deployment can master accounts and principals upstream and still decide who belongs to what, or the reverse. Read once at startup; a restart is required to change it |
 | `--manage-principals` | — | bool | — | manage the lifecycle of principal records — allow principal create/update/delete through the API (default true; overrides APERTURE_MANAGE_PRINCIPALS). Pass --manage-principals=false when principals are mastered by an upstream directory or IdP: Aperture then refuses every principal write regardless of the caller's authority, while principal reads and every decision stay unaffected. Read once at startup; a restart is required to change it |
-| `--seed` | — | string | — | path to a JSON/YAML seed model (defaults to the embedded example) |
+| `--seed` | — | string | — | path to a JSON/YAML seed model to apply on startup (when omitted: the embedded example for the in-memory store, and nothing at all for a --store DSN) |
 | `--store` | — | string | — | DSN for the backing store: a postgres:// or postgresql:// URL for PostgreSQL, any other value as a SQLite path (defaults to in-memory). Set APERTURE_POSTGRES_SCHEMA to place Aperture's tables in a named PostgreSQL schema; unset uses the connection's search_path |
+| `--wiring-poll` | — | string | — | re-read the shared wiring tables on an interval instead of only at startup, so a `wiring push` from another host is noticed without a restart. A Go duration ("30s", "5m"), or on for the default of 30s, or off. Omitted means OFF — the instance is wired once, at boot, and starts no background reader (overrides APERTURE_WIRING_POLL) (env: `APERTURE_WIRING_POLL`) |
 
 ## `aperture template`
 
@@ -583,7 +594,7 @@ aperture template apply [options]
 | `--name` | — | string | — | template name to apply (**required**) |
 | `--param` | — | string | — | parameter as name=value (repeatable) |
 | `--principal` | — | string | — | authenticated principal performing the mutation (env: `APERTURE_PRINCIPAL`) |
-| `--seed` | — | string | — | path to a JSON/YAML seed model (defaults to the embedded example) |
+| `--seed` | — | string | — | path to a JSON/YAML seed model to apply on startup (when omitted: the embedded example for the in-memory store, and nothing at all for a --store DSN) |
 | `--store` | — | string | — | DSN for the backing store: a postgres:// or postgresql:// URL for PostgreSQL, any other value as a SQLite path (defaults to in-memory). Set APERTURE_POSTGRES_SCHEMA to place Aperture's tables in a named PostgreSQL schema; unset uses the connection's search_path |
 | `--version` | — | int | `0` | template version (0 = latest) |
 
@@ -599,7 +610,7 @@ aperture template delete [options] <name>
 | --- | --- | --- | --- | --- |
 | `--account` | — | string | — | active account (required for system-tier authority resolution) |
 | `--principal` | — | string | — | authenticated principal performing the mutation (env: `APERTURE_PRINCIPAL`) |
-| `--seed` | — | string | — | path to a JSON/YAML seed model (defaults to the embedded example) |
+| `--seed` | — | string | — | path to a JSON/YAML seed model to apply on startup (when omitted: the embedded example for the in-memory store, and nothing at all for a --store DSN) |
 | `--store` | — | string | — | DSN for the backing store: a postgres:// or postgresql:// URL for PostgreSQL, any other value as a SQLite path (defaults to in-memory). Set APERTURE_POSTGRES_SCHEMA to place Aperture's tables in a named PostgreSQL schema; unset uses the connection's search_path |
 | `--version` | — | int | `0` | template version to delete (0 = all versions of the name) |
 
@@ -613,7 +624,7 @@ aperture template get [options] <name>
 
 | Name | Aliases | Type | Default | Usage |
 | --- | --- | --- | --- | --- |
-| `--seed` | — | string | — | path to a JSON/YAML seed model (defaults to the embedded example) |
+| `--seed` | — | string | — | path to a JSON/YAML seed model to apply on startup (when omitted: the embedded example for the in-memory store, and nothing at all for a --store DSN) |
 | `--store` | — | string | — | DSN for the backing store: a postgres:// or postgresql:// URL for PostgreSQL, any other value as a SQLite path (defaults to in-memory). Set APERTURE_POSTGRES_SCHEMA to place Aperture's tables in a named PostgreSQL schema; unset uses the connection's search_path |
 | `--version` | — | int | `0` | template version (0 = latest) |
 
@@ -627,7 +638,7 @@ aperture template list [options]
 
 | Name | Aliases | Type | Default | Usage |
 | --- | --- | --- | --- | --- |
-| `--seed` | — | string | — | path to a JSON/YAML seed model (defaults to the embedded example) |
+| `--seed` | — | string | — | path to a JSON/YAML seed model to apply on startup (when omitted: the embedded example for the in-memory store, and nothing at all for a --store DSN) |
 | `--store` | — | string | — | DSN for the backing store: a postgres:// or postgresql:// URL for PostgreSQL, any other value as a SQLite path (defaults to in-memory). Set APERTURE_POSTGRES_SCHEMA to place Aperture's tables in a named PostgreSQL schema; unset uses the connection's search_path |
 
 ### `aperture template put`
@@ -644,6 +655,242 @@ aperture template put [options]
 | `--file` | — | string | — | path to a JSON template body |
 | `--json` | — | string | — | template body as inline JSON |
 | `--principal` | — | string | — | authenticated principal performing the mutation (env: `APERTURE_PRINCIPAL`) |
-| `--seed` | — | string | — | path to a JSON/YAML seed model (defaults to the embedded example) |
+| `--seed` | — | string | — | path to a JSON/YAML seed model to apply on startup (when omitted: the embedded example for the in-memory store, and nothing at all for a --store DSN) |
 | `--store` | — | string | — | DSN for the backing store: a postgres:// or postgresql:// URL for PostgreSQL, any other value as a SQLite path (defaults to in-memory). Set APERTURE_POSTGRES_SCHEMA to place Aperture's tables in a named PostgreSQL schema; unset uses the connection's search_path |
+
+## `aperture wiring`
+
+Manage the shared wiring a deployment keeps in its database
+
+SHARED WIRING is the part of a seed document that belongs to the DEPLOYMENT
+rather than to one instance: which object types are served and by what
+statements (`providers:`), which metadata fields hold dates (`field_types:`),
+the manifest of connection NAMES an entry may cite (`connections:`), and where
+each attribute slot's bags come from (`attribute_providers:`).
+
+Push it once and every instance sharing that database reads the same wiring —
+including an instance that has no seed file at all.
+
+WIRING IS NOT MODEL STATE. The model says who exists and who may do what;
+wiring says where a decision reads object metadata and attribute bags FROM.
+The two are pushed by different commands, and wiring for a model that is not
+there is refused rather than stored.
+
+WHAT IS NEVER STORED: no DSN, no credential, not even the NAME of the
+environment variable holding one, and no filesystem path. Those are
+per-instance facts — each instance resolves its own credentials and sizes its
+own pool — so the manifest carries connection names and nothing else, and
+`kind: csv` is refused because its only data source is a path. A csv entry
+stays legal in the LOCAL seed file, where the path belongs to the instance
+that reads it.
+
+The two remaining sections, `objects:` and `attributes:`, are never shared:
+they carry inline DATA rather than a pointer to data.
+
+```
+aperture wiring <command>
+```
+
+### `aperture wiring diff`
+
+Report how the deployed shared wiring differs from a seed document's four wiring sections, exiting non-zero on drift
+
+Compares the wiring DEPLOYED in --store against the four shared wiring sections of
+--seed — `connections:`, `providers:`, `field_types:` and `attribute_providers:` —
+and names, per section and per entry, what is only deployed, what is only local,
+and what differs. The `section` column is the document's own section key, so a
+reported entry is one you can go and find.
+
+IT IS MEANT FOR A PIPELINE. Identical wiring prints a clean report and exits 0;
+drift exits 2. Every coded refusal this binary makes exits 1, so the three
+outcomes stay apart: 0 is "the deployment matches the repository", 2 is "it does
+not", and 1 is "I could not tell" — an unreadable document, a --store that names
+nothing, a schema this build cannot read. A gate that failed closed on 1 and 2
+alike would report drift for a typo in its own DSN.
+
+DRIFT IS NOT AN ERROR and carries no error code. The two sides really do differ;
+which of them is wrong is your call, and `aperture wiring push --seed &lt;file&gt;
+--store &lt;dsn&gt;` is how you make the deployment agree with the document.
+
+FORMATTING IS NEVER DRIFT. Both sides are compared as WIRING, in the one
+canonical order a read returns, so re-ordering the document's entries, re-ordering
+a `fields:` or `references:` map, or re-indenting the file changes nothing in this
+report. The push timestamps are excluded too: a stamp is a fact about the last
+push and not about the wiring.
+
+A `kind: csv` ENTRY IS REPORTED AS LOCAL-ONLY BY DESIGN, not as drift and not as
+an error. Its only data source is a filesystem path, `wiring push` refuses it, and
+so no push can ever make the deployment match it. Counting it as drift would leave
+a permanently red gate on every deployment that legitimately keeps a local csv
+provider, and a gate that cannot go green is a gate somebody switches off.
+
+A STORE WITH NOTHING DEPLOYED IS AN ANSWER, not a refusal, and this is the one
+place a diff disagrees with `aperture wiring pull`. A pull refuses an empty store,
+because the document it would write is one that, pushed back, replaces the
+deployment's wiring with nothing. A diff writes no file and pushes nothing, so it
+reports every local entry as only-local and says plainly that nothing is deployed
+— which is also what a mistyped --store looks like, so check the DSN before
+concluding a push was lost.
+
+No actor is required, and none is accepted, for the reason `wiring show` accepts
+none: this restates wiring the --store credential already grants full write access
+to. It contacts no provider, opens no host connection, and prints no account,
+principal or object identity, because the shared wiring holds none.
+
+```
+aperture wiring diff [options]
+```
+
+| Name | Aliases | Type | Default | Usage |
+| --- | --- | --- | --- | --- |
+| `--seed` | — | string | — | path to the JSON/YAML seed document whose four SHARED wiring sections the deployment is compared against (required; nothing is applied, pushed or written, and there is no embedded-example fallback) |
+| `--store` | — | string | — | DSN for the shared store the wiring lives in: a postgres:// or postgresql:// URL for PostgreSQL, any other value as a SQLite path (required — there is nothing to share about an in-memory store). Set APERTURE_POSTGRES_SCHEMA to place Aperture's tables in a named PostgreSQL schema |
+
+### `aperture wiring pull`
+
+Write the store's deployed shared wiring out as the four seed sections, for diffing against version control
+
+Reads the deployed wiring in ONE atomic snapshot and writes it to --out as
+`connections:`, `providers:`, `field_types:` and `attribute_providers:` — the same
+four sections `wiring push` reads. The file is a seed document `wiring push`
+accepts unchanged, so `push` then `pull` then `push` deploys the identical wiring,
+and two pulls of an unchanged deployment are byte-identical.
+
+WHAT IT IS FOR is answering "is what is deployed what is in the repository?" with
+a diff. `aperture wiring show` answers "what is deployed?" in words and is the
+better command for reading; this one produces a file for a tool.
+
+THE FILE IS RE-PUSHABLE BUT NOT BOOTABLE, and the difference is the security rule
+made visible. Shared wiring holds a connection's NAME and nothing else — no DSN,
+no credential, not even the NAME of the environment variable holding one, and no
+filesystem path — so every connection comes back with an empty `dsn_env:`. Fill
+those in from your own deployment's environment before booting an instance from
+the file; an instance built from it as written refuses at registry build and names
+the unset variable. Nothing in the output is a secret, and the format has no
+`dsn:` key to put one in.
+
+NO MODEL STATE IS WRITTEN. `aperture export` emits the model and no wiring; this
+emits the wiring and no model. The file carries no accounts, principals, objects
+or inline data, because the shared wiring holds none — and it does not spell the
+model sections out as empty either, since a populated deployment's model is not
+empty and a document that said so is one somebody would import.
+
+AN EXISTING --out FILE IS REFUSED unless --force is given. The likeliest thing at
+that path is the version-controlled document the pull is meant to be compared
+with, and overwriting it silently destroys the left-hand side of the comparison.
+The path is checked before the store is opened, so the refusal reads nothing.
+
+A STORE WITH NO WIRING DEPLOYED IS REFUSED, which is the one place this command
+disagrees with `wiring show`. `show` only describes an empty store, and nothing
+deployed is a useful answer there. A pull produces a file whose purpose is to be
+pushed back, and an empty one pushed back replaces the deployment's wiring with
+nothing — while an empty read is also exactly what a mistyped --store naming a
+database Setup just created looks like.
+
+No actor is required, and none is accepted, for the reason `show` accepts none:
+this restates wiring the --store credential already grants full write access to.
+
+```
+aperture wiring pull [options]
+```
+
+| Name | Aliases | Type | Default | Usage |
+| --- | --- | --- | --- | --- |
+| `--force` | — | bool | — | overwrite the --out file if it already exists |
+| `--format` | — | string | — | output format: json or yaml (default: inferred from the --out extension — .json is JSON, anything else is YAML) |
+| `--out` | — | string | — | write the wiring document to this path (required; an existing file is refused unless --force is given, and there is no stdout default because `aperture wiring show` is the command for reading) |
+| `--store` | — | string | — | DSN for the shared store the wiring lives in: a postgres:// or postgresql:// URL for PostgreSQL, any other value as a SQLite path (required — there is nothing to share about an in-memory store). Set APERTURE_POSTGRES_SCHEMA to place Aperture's tables in a named PostgreSQL schema |
+
+### `aperture wiring push`
+
+Validate a seed document's four shared wiring sections and write them to the store in one transaction
+
+Reads `providers:`, `field_types:`, `connections:` and `attribute_providers:` out
+of --seed, validates every entry, and REPLACES the store's wiring with them in a
+single transaction. The document's other sections are not read: no model state
+is applied, and the two local wiring sections (`objects:`, `attributes:`) are
+untouched.
+
+THE PUSH IS ALL OR NOTHING. Every rule below is checked before anything is
+written, and the write itself replaces the whole set in one transaction, so a
+refusal leaves the deployed wiring exactly as it was. Wiring is only meaningful
+whole — an entry naming a connection the manifest does not list is not half-valid
+wiring, it is broken wiring — and an instance booting against a half-written set
+would build a registry missing exactly the entries whose write failed, while
+reporting nothing.
+
+REPLACE, not merge. What is in the document is what the deployment will run;
+an entry dropped from the document is dropped from the store. Push the whole
+wiring every time.
+
+A push is refused when:
+
+```text
+  * the store holds NO MODEL STATE at all — apply the model first, and check the
+    --store DSN, because a typo names an empty database Setup will create
+  * an entry selects `kind: csv` — its only data source is a filesystem path,
+    and a path is machine-local
+  * a provider serves an `object_type` the store has no row for (named in the
+    refusal)
+  * an entry names a `connection:` the pushed `connections:` manifest does not
+    declare (named in the refusal)
+  * anything carries a literal `dsn:` — only `dsn_env:`, a variable NAME, is ever
+    accepted, and shared wiring stores neither
+```
+
+No actor is required: the store credential is the authority, exactly as it is for
+`aperture import`.
+
+```
+aperture wiring push [options]
+```
+
+| Name | Aliases | Type | Default | Usage |
+| --- | --- | --- | --- | --- |
+| `--seed` | — | string | — | path to the JSON/YAML seed document whose four SHARED wiring sections are pushed (required; no model state is applied from it and there is no embedded-example fallback) |
+| `--store` | — | string | — | DSN for the shared store the wiring lives in: a postgres:// or postgresql:// URL for PostgreSQL, any other value as a SQLite path (required — there is nothing to share about an in-memory store). Set APERTURE_POSTGRES_SCHEMA to place Aperture's tables in a named PostgreSQL schema |
+
+### `aperture wiring show`
+
+Print the shared wiring this store has deployed, one table per section
+
+Reads the five shared-wiring tables and prints them: the connection manifest, the
+provider entries with their reference declarations, the field-type declarations,
+the attribute-provider entries, and the statement set every database-backed entry
+runs. It answers "what is this deployment actually wired to?" without a database
+client.
+
+AN EMPTY STORE IS AN ANSWER, not an error. A store nothing has been pushed to says
+so plainly: every instance booting against it builds its wiring from its own
+--seed file instead. It is also what a mistyped --store looks like, because a DSN
+naming a database that does not exist yet is one Setup creates — so check the DSN
+before concluding a push was lost.
+
+THE COLUMNS AN OPERATOR WOULD OTHERWISE HAVE TO GUESS AT are spelled as words
+rather than left blank. `ttl` and `max-size` read `(default)` when the entry sets
+neither, because the registry's own default applies and `0` would read as
+"caches nothing". `connection` and `id-column` read `-` when the kind does not use
+them. An attribute slot with no `get_all` is reported as FETCH-ONLY: every
+decision path works unchanged and only the system-tier directory read refuses.
+
+THE DECLARED KEY SET distinguishes three states, because two of them are
+different answers a blank column would merge: `(not declared)` is a slot that
+opted out of key enforcement entirely, `(declared empty)` is a slot that opted IN
+and permits no keys at all, and a list is the keys the slot guarantees.
+
+No actor is required, and none is accepted. This restates the wiring that the
+--store credential you just supplied already grants full write access to, so
+requiring an authority on top of it would only mean nobody could diagnose "is
+anything even deployed?" without already holding the authority the diagnosis
+explains — the same reason `aperture attributes slots` is ungated. It contacts no
+provider, opens no host connection, and prints no account, principal or object
+identity, because the shared wiring holds none.
+
+```
+aperture wiring show [options]
+```
+
+| Name | Aliases | Type | Default | Usage |
+| --- | --- | --- | --- | --- |
+| `--store` | — | string | — | DSN for the shared store the wiring lives in: a postgres:// or postgresql:// URL for PostgreSQL, any other value as a SQLite path (required — there is nothing to share about an in-memory store). Set APERTURE_POSTGRES_SCHEMA to place Aperture's tables in a named PostgreSQL schema |
 

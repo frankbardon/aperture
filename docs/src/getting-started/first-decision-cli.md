@@ -36,9 +36,9 @@ Relevant flags:
 
 | Flag | Default | Purpose |
 |---|---|---|
-| `--seed` | embedded example | Path to a JSON/YAML seed model to decide against. |
+| `--seed` | embedded example | Path to a JSON/YAML seed model to decide against. The embedded fixture is the default **because `--store` is omitted here**; with a `--store` DSN, omitting `--seed` seeds nothing. |
 | `--account` | `acme` | The active account the decision is scoped to. |
-| `--store` | in-memory | SQLite DSN for a persistent backing store. |
+| `--store` | in-memory | DSN for a persistent backing store. |
 
 The full flag reference lives in the CLI chapter later in this book; the three
 above are all this walkthrough needs.

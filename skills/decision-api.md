@@ -258,8 +258,9 @@ Metadata is read through the `MetadataFetcher` seam (`engine.WithMetadata`),
 whose signature is `*provider.Registry.Fetch` — and matches
 `rules.MetadataFetcher` — so a deployment wires ONE source for the scope lister,
 the rule evaluator, and the filter, and a candidate is served from the per-type
-cache the enumeration already warmed. The returned map is read-only,
-transitively.
+cache — warmed by the enumeration itself when the provider promises its listed bags
+are its fetched bags (`provider.FetchCompleteLister`), and by the candidate's own
+`Fetch` otherwise. The returned map is read-only, transitively.
 
 Failure is deliberately asymmetric, because an enumeration returning fewer
 objects reads as "no access" while one returning more is an authorization bug:

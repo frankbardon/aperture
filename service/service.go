@@ -125,12 +125,29 @@ type Service struct {
 	// system-admin gate. Nil (the default) makes ListAttributes report
 	// APERTURE_UNIMPLEMENTED. Wired with WithAttributes.
 	attrs *provider.AttributeRegistry
+	// declaredKeys is the deployment's DECLARED ATTRIBUTE KEY SET, collapsed from
+	// the wiring's per-slot declarations onto the two rule roots. It is read by the
+	// definition-time rule gate (validateRule, and so PutRule and ValidateRule) and
+	// by the editor's what-if preview, and by nothing on the decision path. Its
+	// zero value declares nothing, so a facade built without
+	// WithDeclaredAttributeKeys enforces nothing and every rule that validated
+	// before declaring existed still validates.
+	declaredKeys rules.DeclaredAttributeKeys
 	// managed is the deployment's boot-time entity-management posture: which of
 	// accounts / principals / memberships this Aperture owns the lifecycle of.
 	// Read once at construction and never mutated. Its zero value means every
 	// kind is managed, so a facade built without WithManagedEntities behaves
 	// exactly as before the option existed. Wired with WithManagedEntities.
 	managed ManagedEntities
+	// wiring, when non-nil, is the recorder a background shared-wiring refresher
+	// reports its successes and failures to, and is what WiringPosture answers
+	// from. It is the one field here that is MUTABLE RUNTIME STATE rather than a
+	// dependency or boot-time posture — deliberately so, and deliberately kept off
+	// Capabilities, which promises the opposite (see wiring_posture.go). Nil (the
+	// default) makes WiringPosture report the zero posture: not polling, not
+	// stale, which is the truth for a process with no refresher. Wired with
+	// WithWiringHealth.
+	wiring *WiringHealth
 }
 
 // Option configures a Service at construction. Options compose; the mutation

@@ -26,7 +26,13 @@ import (
 //	go test -run TestPostgresIntegration ./seed/
 //
 // Ungated it SKIPS. Gated without a DSN it FAILS — asking for the integration
-// test and silently not getting one is the outcome a gate must never produce.
+// test and silently not getting one is the outcome a gate must never produce. And
+// gated with a value that is neither on nor off it FAILS too: a bare `!= "1"` test
+// turned APERTURE_PG_INTEGRATION=true into a silent skip, which is the same
+// failure wearing a different hat. The decision lives in postgres_gate_test.go as
+// a pure function so all three outcomes are asserted in `make test`, with no
+// server — a gate whose own behaviour is only observable by running it is not a
+// gate.
 //
 // It exists because everything else about the SQL path is proved against a fake
 // driver, and a fake cannot prove the two things that are only true of the real
@@ -39,17 +45,18 @@ const (
 	pgDSNEnv  = "APERTURE_PG_DSN"
 )
 
-// requirePostgres skips unless the gate is set, and returns the DSN.
+// requirePostgres is the one entry point every integration test in this package
+// calls. It applies decideSeedGate's verdict; see postgres_gate_test.go.
 func requirePostgres(t *testing.T) string {
 	t.Helper()
-	if os.Getenv(pgGateEnv) != "1" {
-		t.Skipf("skipping: set %s=1 and %s=<dsn> to run the real-Postgres integration test", pgGateEnv, pgDSNEnv)
+	d := decideSeedGate(os.Getenv(pgGateEnv), os.Getenv(pgDSNEnv))
+	switch {
+	case d.Skip != "":
+		t.Skip(d.Skip)
+	case d.Fail != "":
+		t.Fatal(d.Fail)
 	}
-	dsn := os.Getenv(pgDSNEnv)
-	if dsn == "" {
-		t.Fatalf("%s=1 but %s is empty: the gate is on and there is no database to run against", pgGateEnv, pgDSNEnv)
-	}
-	return dsn
+	return d.DSN
 }
 
 // TestPostgresIntegration_SeedFileAloneServesRealObjects drives the whole story
@@ -130,19 +137,27 @@ providers:
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
-	if md["tier"] != "gold" {
-		t.Errorf("tier = %v (%T), want gold", md["tier"], md["tier"])
-	}
 	// The value model, against a real driver: an int column arrives as a Go
 	// integer, and a date arrives as the canonical UTC text form — never as a
 	// time.Time restated in the reader's zone. sqlprovider always formats a
 	// timestamp at datetime granularity, so a DATE column reads back as midnight
 	// Z rather than as a bare day.
-	if got := fmt.Sprint(md["seats"]); got != "12" {
-		t.Errorf("seats = %v (%T), want 12", md["seats"], md["seats"])
+	//
+	// Each assertion pins the Go TYPE with a type assertion, for the reason spelled
+	// out at the attribute test below: a fmt.Sprint comparison — which the seats
+	// case used to be — cannot tell int64(12) from the string "12", and this test
+	// is the only thing in the repo that watches a real driver hand over a real
+	// result set. A silent stringification is exactly what it exists to catch.
+	if got, ok := md["tier"].(string); !ok || got != "gold" {
+		t.Errorf("tier = %#v (%T), want the string \"gold\"", md["tier"], md["tier"])
 	}
-	if got, want := md["renews_on"], "2026-03-01T00:00:00Z"; got != want {
-		t.Errorf("renews_on = %v (%T), want %q", got, got, want)
+	if got, ok := md["seats"].(int64); !ok || got != 12 {
+		t.Errorf("seats = %#v (%T), want int64(12) — a stringified number compares "+
+			"against nothing a rule can write", md["seats"], md["seats"])
+	}
+	if got, ok := md["renews_on"].(string); !ok || got != "2026-03-01T00:00:00Z" {
+		t.Errorf("renews_on = %#v (%T), want the string \"2026-03-01T00:00:00Z\"",
+			md["renews_on"], md["renews_on"])
 	}
 
 	ids, err := reg.Identifiers(ctx, "brand")
@@ -151,6 +166,36 @@ providers:
 	}
 	if len(ids) != 2 {
 		t.Fatalf("Identifiers = %v, want 2 objects", ids)
+	}
+
+	// The enumerate-then-fetch ORDER is load-bearing, and so is this document's
+	// statement pairing: get_all projects the id plus exactly the columns get_one
+	// projects. That equality is what licenses the Registry to warm its per-type
+	// metadata cache from the listing (provider.FetchCompleteLister, which
+	// sqlprovider answers by comparing the two statements' real column
+	// projections), and brand:2 has never been fetched on its own — so this bag
+	// came out of the listing.
+	//
+	// It is the POSITIVE control for E3-S6 against a real driver: a warmed entry
+	// must be the whole bag, with the same Go types a direct fetch produces. The
+	// narrower pairing — the one that must NOT warm — is proved over the fake
+	// driver in TestBuildRegistry_SQLAnEnumerationDoesNotNarrowTheObjectBag, which
+	// runs in plain `make test`. Do not tidy this read to before the Identifiers
+	// call: after it is the whole point.
+	warmed, err := reg.Fetch(ctx, identity.MustParse("brand:2"))
+	if err != nil {
+		t.Fatalf("Fetch of a listed object: %v", err)
+	}
+	if got, ok := warmed["tier"].(string); !ok || got != "silver" {
+		t.Errorf("tier = %#v (%T), want the string \"silver\"", warmed["tier"], warmed["tier"])
+	}
+	if got, ok := warmed["seats"].(int64); !ok || got != 3 {
+		t.Errorf("seats = %#v (%T), want int64(3) — a listing-warmed entry must carry "+
+			"every column get_one projects, with the same Go type", warmed["seats"], warmed["seats"])
+	}
+	if got, ok := warmed["renews_on"].(string); !ok || got != "2026-09-15T00:00:00Z" {
+		t.Errorf("renews_on = %#v (%T), want the string \"2026-09-15T00:00:00Z\"",
+			warmed["renews_on"], warmed["renews_on"])
 	}
 
 	// An absent object is NOT FOUND, not an operational failure — the distinction
@@ -275,21 +320,34 @@ attribute_providers:
 	// The decision path's fetch. The value model against a real driver: an int
 	// column is a Go integer, a cast array is a real list, and a ::text date is
 	// the bare day it was written as.
+	//
+	// Every assertion pins the Go TYPE as well as the value, with a type
+	// assertion rather than ==, and that is the point of the shape they are
+	// written in. `bag["clearance"] != 3` would compare an any against an
+	// untyped constant and be false for the correct int64(3); a
+	// fmt.Sprint(...) == "3" — which this test used to do — cannot tell int64(3)
+	// from the string "3" at all, so a driver that silently stringified a numeric
+	// column would pass here and then fail `principal.clearance >= 3` with
+	// nothing to point at. In an authorization engine "5" != 5 is load-bearing
+	// (it is the whole argument for pgx over lib/pq, which returns []byte for
+	// numeric and uuid), so the type is the assertion, not a detail of it.
 	bag, err := attrs.Attributes(ctx, "user", "alice")
 	if err != nil {
 		t.Fatalf("Attributes(user, alice): %v", err)
 	}
-	if bag["department"] != "eng" {
-		t.Errorf("department = %v (%T), want eng", bag["department"], bag["department"])
+	if got, ok := bag["department"].(string); !ok || got != "eng" {
+		t.Errorf("department = %#v (%T), want the string \"eng\"", bag["department"], bag["department"])
 	}
-	if got := fmt.Sprint(bag["clearance"]); got != "3" {
-		t.Errorf("clearance = %v (%T), want 3", bag["clearance"], bag["clearance"])
+	if got, ok := bag["clearance"].(int64); !ok || got != 3 {
+		t.Errorf("clearance = %#v (%T), want int64(3) — a stringified number compares "+
+			"against nothing a rule can write", bag["clearance"], bag["clearance"])
 	}
 	if got, want := bag["teams"], []any{"platform", "oncall"}; !reflect.DeepEqual(got, want) {
-		t.Errorf("teams = %#v, want %#v — check the to_jsonb cast", got, want)
+		t.Errorf("teams = %#v (%T), want %#v — check the to_jsonb cast", got, got, want)
 	}
-	if got, want := bag["hired_on"], "2024-03-04"; got != want {
-		t.Errorf("hired_on = %v, want %q", got, want)
+	if got, ok := bag["hired_on"].(string); !ok || got != "2024-03-04" {
+		t.Errorf("hired_on = %#v (%T), want the string \"2024-03-04\" — a ::text date is "+
+			"stored as-is, never routed through the datetime form", bag["hired_on"], bag["hired_on"])
 	}
 
 	// A subject the table does not hold is not a failure: it decides against the
@@ -299,6 +357,16 @@ attribute_providers:
 	}
 
 	// The admin read, keyed by BARE ids.
+	//
+	// Its position in this test is load-bearing and must not be moved below the
+	// verdict. This document's get_all projects three columns where get_one
+	// projects four — the legal pairing, since AttributeConfig.ListQuery is
+	// optional and need only select a bare id — so an Enumerate that wrote the
+	// slot's FETCH cache would replace alice's decision bag with the listing's
+	// narrower one, `principal.teams` would be absent, and the verdict below would
+	// be false. That is the bug this ordering found (E3-S5); the fix is in
+	// provider.AttributeRegistry.Enumerate, and the make-test-catchable version of
+	// this case is TestAttributeProviders_SQLAnEnumerationDoesNotNarrowTheRuleBag.
 	recs, err := attrs.Enumerate(ctx, provider.AttributeSlotUser, provider.AttributeFilter{})
 	if err != nil {
 		t.Fatalf("Enumerate: %v", err)

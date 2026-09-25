@@ -82,7 +82,7 @@ func enumerateUnderFlags(t *testing.T, flags []ucli.Flag, args ...string) []stri
 		Name:  "probe",
 		Flags: flags,
 		Action: func(ctx context.Context, cmd *ucli.Command) error {
-			stack, err := buildDecisionStack(cmd, store, seedPath)
+			stack, err := buildDecisionStack(ctx, cmd, store, seedPath)
 			if err != nil {
 				return err
 			}
@@ -277,7 +277,7 @@ func TestEnumerateLimit_MalformedIsConfigError(t *testing.T) {
 			Name:  "enumerate",
 			Flags: enumerateCommand().Flags,
 			Action: func(_ context.Context, cmd *ucli.Command) error {
-				stack, err := buildDecisionStack(cmd, store, seedPath)
+				stack, err := buildDecisionStack(ctx, cmd, store, seedPath)
 				if err == nil {
 					_ = stack.Close()
 					t.Fatal("a malformed bound built a decision stack; it must fail the command")

@@ -19,6 +19,7 @@
   - [Provisioning](cli/provisioning.md)
   - [Portability](cli/portability.md)
   - [Attributes](cli/attributes.md)
+  - [wiring](cli/wiring.md)
   - [serve](cli/serve.md)
   - [mcp](cli/mcp.md)
 - [Library overview](library/overview.md)
@@ -59,6 +60,8 @@
 # Operations
 
 - [Deployment](operations/deployment.md)
+- [Two instances, one store](operations/two-instance-topology.md)
+- [Refreshing wiring on a live fleet](operations/wiring-refresh.md)
 - [Performance & NFR](operations/performance.md)
 - [Troubleshooting](operations/troubleshooting.md)
 

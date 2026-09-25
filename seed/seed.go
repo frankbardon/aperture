@@ -58,16 +58,42 @@ const (
 // stable order (sorted by id/name) so a round-trip is byte-stable and
 // human-diffable.
 //
-// Six sections are runtime WIRING rather than model state, and are the seed
-// FILE's own source of truth: Connections, Providers, Objects, FieldTypes,
-// Attributes, and AttributeProviders. BuildRegistry turns the first four into a
+// Ten of the sections are MODEL STATE and six are runtime WIRING: Connections,
+// Providers, Objects, FieldTypes, Attributes and AttributeProviders. Model state
+// is who exists and who may do what; wiring is where a decision reads object
+// metadata and subject attribute bags FROM. Apply writes model state and writes
+// no wiring at all; BuildRegistry turns the first four wiring sections into a
 // live *provider.Registry and BuildAttributeRegistry turns the last two into a
-// live *provider.AttributeRegistry; Apply writes none of them to storage, and because
-// Export reads the model back OUT of storage, none is ever reproduced by an
-// export. Live host domain-object metadata is deliberately not exportable state —
-// that is the provider cache, derived and disposable, never source of truth. The
-// same is true of a subject's attribute bag: it belongs to the host's directory,
-// and Aperture has no column for it.
+// live *provider.AttributeRegistry.
+//
+// The six wiring sections split FOUR SHARED and TWO LOCAL, and the split is the
+// contract rather than an implementation detail:
+//
+//   - SHARED — Connections, Providers, FieldTypes and AttributeProviders belong
+//     to the DEPLOYMENT and not to one instance. `aperture wiring push` writes
+//     them to the five apt_wiring_* tables every instance of a deployment already
+//     shares, and `aperture wiring pull` reads them back out through MarshalWiring
+//     below as a document a push accepts unchanged. Where those tables hold rows
+//     the DATABASE is authoritative and a local file may only ADD entries it never
+//     declared; where they are empty — every deployment that has never pushed —
+//     the local file's wiring is used exactly as it always was. A shared
+//     connection carries its NAME and nothing else: no DSN, no credential, not
+//     even the dsn_env: variable name, and no filesystem path, because each
+//     instance resolves its own route for a name.
+//   - LOCAL — Objects and Attributes carry inline DATA rather than a pointer to
+//     data, and neither is ever shared by any command. They belong to the instance
+//     whose seed file lists them, and they layer UNDER whatever the shared wiring
+//     declares for the same type or slot.
+//
+// Export answers a third question, and keeping it separate is the point: Export
+// reads the MODEL back out of storage, so it reproduces no wiring — not the four
+// shared sections and not the two local ones. That is what leaves the read-back
+// reachable over Twirp with an admin-tier token emitting no wiring at all, while
+// the shared read-back stays CLI-only and gated by the store credential. Live host
+// domain-object metadata is deliberately not exportable state either — that is the
+// provider cache, derived and disposable, never source of truth — and the same is
+// true of a subject's attribute bag: it belongs to the host's directory, and
+// Aperture has no column for it.
 type Document struct {
 	Accounts    []Account    `yaml:"accounts" json:"accounts"`
 	Memberships []Membership `yaml:"memberships" json:"memberships"`
@@ -83,23 +109,31 @@ type Document struct {
 	// than a list because the name is the identity a provider entry's
 	// connection: refers to, and a map cannot declare the same name twice. One
 	// pool is opened per entry and shared by every provider entry naming it.
+	//
+	// It is a SHARED wiring section, but only the NAME is shared: `aperture wiring
+	// push` writes the manifest of names and nothing else. The declaration's other
+	// half — dsn_env:, the pool sizes, query_timeout: — is this instance's ROUTE for
+	// that name, and a route is a per-instance fact. See connection.go.
 	Connections map[string]Connection `yaml:"connections,omitempty" json:"connections,omitempty"`
 	Providers   []Provider            `yaml:"providers,omitempty" json:"providers,omitempty"`
 	Objects     []Object              `yaml:"objects,omitempty" json:"objects,omitempty"`
 	FieldTypes  []FieldType           `yaml:"field_types,omitempty" json:"field_types,omitempty"`
 	// Attributes declares the bags a decision's SUBJECTS carry — a principal's
 	// department, an account's plan — inline, served from memory by
-	// BuildAttributeRegistry. It is the fifth wiring section and obeys the same
-	// rule as the other four: Apply writes nothing for it and an export reproduces
-	// none of it. See attribute.go for why it is its own key rather than a
-	// metadata: field on principals:/accounts:.
+	// BuildAttributeRegistry. It is one of the two LOCAL wiring sections: Apply
+	// writes nothing for it, an export reproduces none of it, and `aperture wiring
+	// push` does not share it either, because it carries the bags themselves rather
+	// than a pointer to where they live. See attribute.go for why it is its own key
+	// rather than a metadata: field on principals:/accounts:.
 	Attributes []Attribute `yaml:"attributes,omitempty" json:"attributes,omitempty"`
 	// AttributeProviders declares EXTERNAL sources for those same bags — a CSV of
 	// users, the host's own users table — one entry per attribute slot. It is the
-	// sixth wiring section and the attribute seam's counterpart of Providers:
-	// where Attributes lists bags inline, this points a slot at a file or a
-	// connection. Same rule as the other five: Apply writes nothing for it and an
-	// export reproduces none of it. See attribute_provider.go for why it is its
+	// attribute seam's counterpart of Providers: where Attributes lists bags
+	// inline, this points a slot at a file or a connection — which is exactly why
+	// it is one of the four SHARED wiring sections and Attributes is not. Apply
+	// writes nothing for it and an export reproduces none of it, but `aperture
+	// wiring push` writes it to apt_wiring_attribute_providers and every instance
+	// of the deployment reads it back. See attribute_provider.go for why it is its
 	// own top-level key rather than a discriminated variant of providers:.
 	AttributeProviders []AttributeProvider `yaml:"attribute_providers,omitempty" json:"attribute_providers,omitempty"`
 }

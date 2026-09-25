@@ -183,6 +183,17 @@ Like `providers:`, `objects:`, and `field_types:`, the `connections:` block is
 runtime **wiring, not model state**: `Apply` writes nothing for it, and an export
 never reproduces it.
 
+It is also one of the four **shared** wiring sections — but only its **names** are.
+`aperture wiring push` writes a manifest of connection names to
+`apt_wiring_connections` and nothing else: no DSN, no credential, not even the
+`dsn_env:` variable *name*, and no pool tuning. Everything below the name is this
+instance's **route** for it, supplied one of three ways —
+`seed.WithConnectionOpener`, a local `connections:` entry under the same name, or
+`APERTURE_CONNECTION_<NAME>_DSN` — and a shared name with no route refuses the boot
+with `APERTURE_WIRING_CONNECTION_UNROUTED`. `kind: csv` cannot be shared at all,
+because a filesystem path is machine-local and the tables have no column for one;
+it stays legal in a local file. See [`skills/shared-wiring.md`](shared-wiring.md).
+
 ### There is no `dsn:` key, and writing one is an error
 
 A seed file is a committed artifact. A DSN carries a password, and a password in
@@ -355,6 +366,61 @@ tenancy is decided, disagreeing with the first.
 The id column is the **identity, not a metadata field**: it is removed from the
 row before the remaining columns become metadata. Every other column maps through
 the same table `Fetch` uses.
+
+### Project the same columns in both statements, or the cache stops warming
+
+`FetchQuery` and `ListQuery` are independent, and nothing makes their SELECT lists
+agree. That matters beyond tidiness, because `provider.Registry` warms its per-type
+metadata cache from an enumeration — and every **read** of that cache is a `Fetch`,
+the decision path's authoritative view of an object.
+
+```yaml
+get_one: SELECT tier, seats, renews_on FROM brands WHERE id = $1
+get_all: SELECT 'brand:' || b.id AS id, b.tier FROM brands b   # NARROWER
+```
+
+Warming from that listing would cache a one-field bag under an id whose real bag has
+three, for the whole of the type's TTL. A rule then reads `object.seats` as
+**absent** — not wrong, absent — and every predicate over an absent field is false:
+an inclusive grant **denies**, and an **exclusive** grant stops excluding and
+therefore **widens**. Nothing in any verdict, trace or note says why, because a bag
+of any shape is a legal bag. A listing **wider** than the fetch statement is the
+mirror image: a field `Fetch` would never produce, comparing true until the entry
+expires.
+
+So a `*Provider` answers `provider.FetchCompleteLister`, and it **derives** the
+answer from what the statements really returned:
+
+```go
+func (p *Provider) ListedMetadataMatchesFetch() bool
+// false  until both statements have executed once
+// true   when ListQuery's columns MINUS the id column == FetchQuery's columns, as a set
+// false  otherwise — narrower, wider, or a differently named column either way
+```
+
+Columns, not values, is what makes that sound cheaply: `rows.Columns()` is the SELECT
+list, identical for every row and unaffected by any row's NULLs, where comparing two
+bags would not be — a NULL column omits its field and an omitted field is
+indistinguishable from an unprojected one. There is deliberately **no** `Config`
+field and no YAML key for it: an operator's unchecked promise about two statements is
+exactly what this replaces.
+
+Two things follow for the developer:
+
+- **An unequal pair stays legal and stays correct.** A deliberately narrow display
+  projection over a wide table is a reasonable thing to write. It costs a fetch per
+  candidate per TTL window instead of one per enumeration, and the cost is silent —
+  if one SQL-backed type's enumeration is slower than its sibling's, compare the two
+  SELECT lists first.
+- **Even an equal pair has one cold enumeration per process per type.** The first
+  `List` runs before any `Fetch` has taught the fetch projection, so it cannot warm;
+  its candidates each fetch, which is what teaches it, and every later enumeration
+  warms as before.
+
+The attribute seam has no equivalent, deliberately: `AttributeRegistry.Enumerate`
+never writes the slot's cache at all (E3-S5), because it is an admin listing with no
+`Fetch` behind it, where `Registry.List` is a decision-path call whose `Fetch`
+follows in the same candidate walk.
 
 ### The id column takes text — and `[]byte` means raw text there
 
@@ -592,10 +658,15 @@ configured otherwise. The deadline applies **on top of** whatever the caller's
 context already carries, so the earlier of the two wins and a caller can always
 be stricter than the provider.
 
-A `*Provider` is immutable after `New` — it holds a `Querier` and a few
-configured values and mutates nothing — so it is safe for concurrent use, as the
-`ObjectProvider` contract requires. Concurrency beneath it is the `Querier`'s
-business; a `*sql.DB` is itself concurrency-safe.
+A `*Provider`'s **configuration** is immutable after `New` — a `Querier`, two
+statements, an id column and a timeout, none of which ever change. The one thing that
+does change is the pair of column projections it has observed (above), guarded by the
+provider's own mutex and written idempotently: the same statement has the same columns
+every time, so the lock is about publication rather than contention, and
+`ListedMetadataMatchesFetch` is asked once per enumeration rather than once per row.
+A `*Provider` is therefore safe for concurrent use, as the `ObjectProvider` contract
+requires. Concurrency beneath it is the `Querier`'s business; a `*sql.DB` is itself
+concurrency-safe.
 
 Every returned map is **freshly allocated for that one call**, with fresh nested
 containers from the JSON decoder, and no container is shared with another call or
@@ -697,5 +768,6 @@ same pool, and reading a bag back through `Fetch` and `Enumerate`.
 | `BuildRegistry` / `BuildRegistryWithConnections` behaviour, or `Connections`' lifetime | "BuildRegistry refuses…" above, `docs/src/concepts/seed.md`, and the doc comments in `seed/provider.go` |
 | A `sqlprovider` or connection error code | `errors/codes.go` (`AllCodes` + `Registry` with a Message and Fixups), the error table above, then `make docs-gen` |
 | The `Querier` seam | the interface's doc comment, "The Querier seam" above, and `docs/src/concepts/providers.md` |
+| What licenses an enumeration to warm the Registry's cache (`provider.FetchCompleteLister`, `Provider.ListedMetadataMatchesFetch`, or where the two projections are observed) | "Project the same columns in both statements" above, `typeEntry.warmsFromListing` in `provider/registry.go`, the `sqlprovider` package doc ("Warming the Registry's cache"), `docs/src/concepts/providers.md` ("The listing and the fetch must be the same bag"), and "The object registry had the same bug" in `skills/attribute-providers.md` — behaviour by `provider/list_projection_test.go`, `sqlprovider/list_projection_test.go` and `seed/provider_sql_projection_test.go`; the NFR half is `bench.TestCheckNFREnumerateBound` |
 | The attribute statement contract (`AttributeConfig`, what `Fetch` binds, the bare id in `ListQuery`, `ListQuery` staying optional) | "The attribute seam" above, the `sqlprovider/attributes.go` file doc, `seed.AttributeProvider.GetOne`/`GetAll`, `skills/attribute-providers.md`, `skills/metadata-values.md`, `docs/src/concepts/providers.md` ("Attribute providers"), and `docs/src/concepts/seed.md` ("External attribute sources") — the bare-id contract has **no gate and cannot have one**, so every restatement of it moves together |
 | The gated integration run's env vars | this doc, the `Makefile` comment, and the "Gated, NOT in `make test`" list in `CLAUDE.md` |

@@ -193,10 +193,16 @@ func rendered(t *testing.T, err error) string {
 }
 
 // TestAttributeProviders_CSVWinsTheSlotItClaims exercises the precedence rule
-// against a REAL loader rather than a stub: the external entry takes the slot
-// whole, and every inline attributes: entry for it is discarded — no per-subject
-// merge, no fallback, so an inline id the file happens to lack is simply not
-// resolvable.
+// against a REAL loader rather than a stub: the external entry is the slot's
+// SHARED layer and wins every key both sections serve, while the inline block
+// layers under it and contributes the keys and the subjects it does not carry.
+//
+// It is the seed-level statement of what provider.AttributeLayer guarantees, and
+// it asserts all three halves of it in one document, because each one alone would
+// pass under a wrong implementation: a contested key (the shared value stands), a
+// key only the local layer serves (it is still read), and a SUBJECT only the local
+// layer serves (it resolves — the old rule discarded the whole slot, so it did
+// not).
 func TestAttributeProviders_CSVWinsTheSlotItClaims(t *testing.T) {
 	ctx := context.Background()
 	dir := writeCSV(t, "users.csv", "id,department\nalice,external\n")
@@ -204,7 +210,7 @@ func TestAttributeProviders_CSVWinsTheSlotItClaims(t *testing.T) {
 attribute_providers:
   - {subject: user, kind: csv, path: users.csv}
 attributes:
-  - {subject: user, id: alice, metadata: {department: inline}}
+  - {subject: user, id: alice, metadata: {department: inline, team: atlas}}
   - {subject: user, id: bob, metadata: {department: inline}}
   - {subject: account, id: acme, metadata: {plan: enterprise}}
 `)
@@ -217,14 +223,24 @@ attributes:
 		t.Fatalf("Attributes(user, alice): %v", err)
 	}
 	if bag["department"] != "external" {
-		t.Errorf("department = %#v; want the file's value, not the discarded inline one", bag["department"])
+		t.Errorf("department = %#v; want the file's value — the shared layer wins a contested key", bag["department"])
 	}
-	// bob was declared inline for a slot the file claimed, so bob is not
-	// resolvable at all — the discard is total.
-	if bag, err := reg.Attributes(ctx, "user", "bob"); err != nil || bag != nil {
-		t.Errorf("bob = %#v, %v; want a nil bag — the inline entries for a claimed slot are discarded whole", bag, err)
+	// The local layer's own key survives the merge. This is the reversal: it used
+	// to be discarded with the rest of the slot.
+	if bag["team"] != "atlas" {
+		t.Errorf("team = %#v; want atlas — the local layer contributes keys the shared layer does not serve", bag["team"])
 	}
-	// The slot the file did not claim is still served inline.
+	// bob is declared only in the local layer, and the shared layer's NOT_FOUND for
+	// him is that layer having no record, not the slot having no answer.
+	bobBag, err := reg.Attributes(ctx, "user", "bob")
+	if err != nil {
+		t.Fatalf("Attributes(user, bob): %v", err)
+	}
+	if bobBag["department"] != "inline" {
+		t.Errorf("bob = %#v; want the local layer's bag — a subject only it serves is still resolvable", bobBag)
+	}
+	// The slot the file did not claim has a local layer only, and behaves exactly
+	// as a single-layer slot always did.
 	acct, err := reg.AccountAttributes(ctx, "acme")
 	if err != nil {
 		t.Fatalf("AccountAttributes(acme): %v", err)
@@ -234,5 +250,15 @@ attributes:
 	}
 	if got, want := doc.AttributeCollisions(), []string{"user"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("AttributeCollisions() = %v; want %v", got, want)
+	}
+	// The registry reports the shape it built: two layers on the claimed slot,
+	// shared first, and one on the slot only the inline block filled.
+	if got, want := reg.Layers(provider.AttributeSlotUser),
+		[]provider.AttributeLayer{provider.AttributeLayerShared, provider.AttributeLayerLocal}; !reflect.DeepEqual(got, want) {
+		t.Errorf("Layers(user) = %v; want %v", got, want)
+	}
+	if got, want := reg.Layers(provider.AttributeSlotAccount),
+		[]provider.AttributeLayer{provider.AttributeLayerLocal}; !reflect.DeepEqual(got, want) {
+		t.Errorf("Layers(account) = %v; want %v", got, want)
 	}
 }

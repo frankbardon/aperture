@@ -362,6 +362,14 @@ an unknown variable, rejected at validation:
   directory and no machine directory keeps deciding. Any other failure surfaces
   verbatim and the resolver treats it as a non-decision: an outage must not read
   as "this principal has no attributes".
+  A slot may hold **two layers** — a `shared` one (the deployment's wiring row or
+  `attribute_providers:` entry) and a `local` one (this instance's `attributes:`
+  block or its own Go registration) — and the bag the resolver returns is their
+  merge, with the **shared layer winning every key both serve**. That is beneath the
+  floor, not beside it: the tiers compose in one direction, **floor over shared over
+  local**, so `principal.id` and `principal.kind` are unshadowable by either layer.
+  `skills/attribute-providers.md` ("Precedence: two layers, and the shared layer
+  wins") has the argument.
   `principal.kind` exists because per-kind providers make a rule silently
   kind-dependent — a rule written against the user directory reads nothing for a
   machine principal, which denies safely in an **inclusive** grant but **widens**
@@ -394,7 +402,10 @@ an unknown variable, rejected at validation:
   can satisfy both this seam and `PrincipalResolver`; Go has no overloading, and
   the registry already holds both directories and both caches. The account slot
   with **no registered provider**, and a registered one with no record for the
-  account, both yield the floor and **no error**, exactly as for a principal.
+  account, both yield the floor and **no error**, exactly as for a principal. The
+  account slot layers exactly as a principal slot does — a `shared` layer over a
+  `local` one, the shared winning every contested key, and the floor `{id}` over
+  both.
   **`"*"` is never an attribute fetch key.** It is the all-accounts grant
   sentinel, not an account — `ValidateAccount` refuses to store a row for it, and
   the only bag that could answer "the attributes of every account" is one
@@ -735,6 +746,49 @@ evaluation, surfacing coded errors:
   wrong-shaped, or unparseable **date** operand: both deny with a note.
 - `APERTURE_RULE_NOT_FOUND` — a scope rule reference the `RuleSource` cannot
   resolve.
+- `APERTURE_RULE_UNDECLARED_ATTRIBUTE` — the rule reads an attribute key off
+  `principal` or `account` that the deployment's shared wiring does not **declare**
+  for that root. See "Declared attribute keys" below.
+
+### Declared attribute keys
+
+A deployment's shared wiring may declare, per attribute slot, the keys that slot
+**guarantees** (`declared_keys:` on an `attribute_providers:` entry). When it does,
+`rules.ValidateASTDeclaring` — and so `service.ValidateRule`, `service.PutRule` and
+`service.EvaluateRulePreview` — refuses a rule naming any other key, with
+`APERTURE_RULE_UNDECLARED_ATTRIBUTE` naming the key and the slot.
+
+**It is entirely opt-in.** A slot that declares no key set is not enforced at all,
+so `rules.ValidateAST` (a zero-value `rules.DeclaredAttributeKeys`) refuses nothing
+and every rule that validated before declaring existed still validates.
+
+Why it exists: rules are **model state** and live in the shared database, so every
+instance evaluates the same rules — while an attribute slot's **local** layer may
+add keys the shared directory does not carry. A rule naming one of those decides on
+the instance that has the key and reads a **missing path** on the instance that does
+not, and a missing path neither denies nor errors: it makes every predicate over it
+false, so an inclusive grant denies and an **exclusive grant stops excluding**, with
+nothing in any verdict, trace or note to say why. The declared set makes the extra
+keys **unreachable from any rule the deployment can validate**, so they are inert.
+
+The refusal fires on the paths a rule **NAMES** — `rules.walkVarFields` is the one
+walk, shared with `readsBeyondFloor` and the `attributes_floor_only` note — so a key
+behind a short-circuiting `&&`, inside a list, or under a `not` is still refused. A
+bare `principal` / `account` (a whole-bag read) is refused too, and only the first
+path segment past the root is compared, so a declared `metadata` permits
+`principal.metadata.department`.
+
+**Refused at authoring, never at decision time.** A decision-time refusal would let
+a bad rule ship and then fail in production on some instances and not others — the
+same divergence, wearing an error message — and a rule already stored keeps deciding
+exactly as it did when the declared set later narrows.
+
+The **floor keys** `principal.id`, `principal.kind` and `account.id` are always
+readable and are never part of a declared set: they are stamped last by
+`principalBag` / `accountBag` and are present in every deployment. The `principal`
+root is enforced only when **both** principal slots declare, and then against their
+**union** — `skills/attribute-providers.md` ("The floor sits above the declared set")
+has the full argument for both halves.
 
 Evaluation is pure and deterministic over a fixed metadata snapshot: all of
 `expr-lang`'s builtins are disabled, so no wall-clock or random function is

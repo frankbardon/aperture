@@ -73,8 +73,8 @@ var dialects = []dialect{
 	{
 		name:            "sqlite",
 		path:            "storage/sqlite/schema.sql",
-		tableFloor:      14,
-		foreignKeyFloor: 9,
+		tableFloor:      19,
+		foreignKeyFloor: 11,
 		qualifier:       "",
 		statementSources: []string{
 			"storage/sqlite/sqlite.go",
@@ -85,8 +85,8 @@ var dialects = []dialect{
 	{
 		name:            "postgres",
 		path:            "storage/postgres/schema.sql",
-		tableFloor:      14,
-		foreignKeyFloor: 9,
+		tableFloor:      19,
+		foreignKeyFloor: 11,
 		qualifier:       "apt_schema.",
 		statementSources: []string{
 			"storage/postgres/store.go",
@@ -184,7 +184,7 @@ func TestEveryDialectSchemaIsGoverned(t *testing.T) {
 // gate — nothing here compares one dialect to another; that is
 // schema_parity_test.go's job — it is the anti-vacuity check for the clause
 // reader, which the parity gate depends on: the naming rule never
-// looks at a foreign key, so a parser that quietly stepped over all nine of them
+// looks at a foreign key, so a parser that quietly stepped over all eleven of them
 // would keep passing.
 func TestSchemaForeignKeysAreReadable(t *testing.T) {
 	root := repoRoot(t)

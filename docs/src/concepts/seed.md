@@ -21,13 +21,20 @@ groups:        [ ... ]
 grants:        [{ id: g1, account: acme, subject: { kind: principal, id: alice }, permission: doc.read, object: "account:acme/document:*", effect: allow }]
 templates:     [ ... ]
 rules:         [ ... ]
-connections:   { ... }   # named database connections — runtime wiring (see below)
-providers:     [ ... ]   # runtime wiring, not model state (see below)
-objects:       [ ... ]   # inline object metadata — also wiring, not model state
-field_types:   [ ... ]   # declared types for inline metadata fields — also wiring
-attributes:    [ ... ]   # inline SUBJECT attributes (principal / account) — also wiring
-attribute_providers: [ ... ]  # EXTERNAL sources for those same bags — also wiring
+connections:   { ... }   # named database connections — wiring, SHARED (names only)
+providers:     [ ... ]   # object-metadata providers — wiring, SHARED
+field_types:   [ ... ]   # declared types for metadata fields — wiring, SHARED
+attribute_providers: [ ... ]  # EXTERNAL sources for subject bags — wiring, SHARED
+objects:       [ ... ]   # inline object metadata — wiring, LOCAL
+attributes:    [ ... ]   # inline SUBJECT attributes (principal / account) — wiring, LOCAL
 ```
+
+The first ten sections are **model state** and the last six are runtime **wiring**.
+Of the six, four are **shared** — `aperture wiring push` writes them to the
+database every instance of a deployment already holds — and two are **local** to the
+instance whose file lists them. See
+[What is *not* in the file](#what-is-not-in-the-file) below, and
+[`aperture wiring`](../cli/wiring.md) for the command surface.
 
 `connections:` is a **map** keyed by name, not a list: the name is what a
 provider entry's `connection:` refers to, and a map cannot declare one twice.
@@ -344,6 +351,15 @@ yields the raw array literal as a **string**, and every membership predicate ove
 it then silently matches nothing. See
 [the SQL provider](providers.md#worked-example-sqlprovider).
 
+**Project the same columns in `get_one` and `get_all`** (the id column aside) unless
+you mean not to. The two SELECT lists are what decide whether an enumeration may warm
+the registry's per-type metadata cache, and an unequal pair silently gives that up —
+correctly, because a bag from a narrower listing would make a rule read
+`object.<dropped_field>` as absent, which denies an inclusive grant and stops an
+exclusive one excluding. The pairing is compared from the columns the statements
+really return, so there is no key here to declare it with. See
+[The listing and the fetch must be the same bag](providers.md#the-listing-and-the-fetch-must-be-the-same-bag).
+
 ### There is no `dsn:` key
 
 A seed file is a committed artifact, and a DSN carries a password. Naming an
@@ -475,8 +491,10 @@ an error at all**: metadata fields are discovered at fetch, not declared, so it
 simply resolves to nothing.
 
 Like every other `providers:` key, `references:` is runtime **wiring, not model
-state**: `Apply` writes nothing for it and an export reproduces none of it. See
-[Declared references](providers.md#declared-references) for what a declaration
+state**: `Apply` writes nothing for it and an export reproduces none of it. It is
+shared with the rest of the section — `aperture wiring push` flattens the map into
+`apt_wiring_provider_references` — so a second instance reads the same declarations.
+See [Declared references](providers.md#declared-references) for what a declaration
 buys and the security semantics of enumerating through one.
 
 ## Inline subject attributes
@@ -530,8 +548,8 @@ refused with `APERTURE_ATTRIBUTE_PROVIDER_INVALID`.
 
 `Document.BuildAttributeRegistry(baseDir)` turns the block into a live
 `*provider.AttributeRegistry`, registering one in-memory provider per declared
-slot with a TTL of 0. It always returns a usable registry, so a host wires it
-unconditionally:
+slot — in that slot's **local** layer, with a TTL of 0. It always returns a usable
+registry, so a host wires it unconditionally:
 
 ```go
 attrs, err := doc.BuildAttributeRegistry(filepath.Dir(seedPath))
@@ -548,8 +566,10 @@ deny-safe rather than a non-decision. See
 [Wiring a `*provider.AttributeRegistry`](rules.md#wiring-a-providerattributeregistry).
 
 To back a slot with the host's real directory instead of an inline list, declare
-it under [`attribute_providers:`](#external-attribute-sources) — and note that
-when both sections claim one slot, the external entry wins it outright.
+it under [`attribute_providers:`](#external-attribute-sources). The two sections are
+not exclusive: when both claim one slot, the external entry becomes that slot's
+**shared** layer and the inline bags **layer under it** — see
+[Precedence: two layers, and the shared layer wins](#precedence-two-layers-and-the-shared-layer-wins).
 
 ### Why it is not a `metadata:` field on `principals:`
 
@@ -585,7 +605,10 @@ attribute_providers:
 ```
 
 `subject:` names the slot exactly as it does on `attributes:` — `user`,
-`machine`, or `account` — and each slot may be declared **at most once**.
+`machine`, or `account` — and each slot may be declared **at most once in this
+section**. Declaring it in `attributes:` as well is not a conflict: that block
+becomes the slot's local layer, under this entry
+([Precedence](#precedence-two-layers-and-the-shared-layer-wins)).
 `kind:` is the implementation, `csv` or `sql`; the two words are why the slot is
 spelled `subject:` here rather than `kind:`. Everything Aperture can check
 without reading a file or dialling a database is checked **at build**: the
@@ -599,10 +622,88 @@ genuinely different change rates and cardinalities, and one number covering all
 of them would tune for whichever entry was declared last. `ttl: "0"` never
 expires. A slot's TTL is the window a **revoked** clearance keeps authorizing
 for — see [`aperture attributes`](../cli/attributes.md), which reads it back and
-can close it.
+can close it. It is also per **layer**: a slot with an external source and an inline
+block caches each independently, so this `ttl:` is this source's own window and the
+inline bags' `0` is not averaged into it.
 
 `dsn:` is refused **by name** wherever it appears, here as on a `providers:`
 entry: credentials belong to a `connections:` entry's `dsn_env:`.
+
+### `declared_keys:` — the keys a slot guarantees
+
+An entry may declare the attribute keys it guarantees. The key is **optional**, and
+omitting it is legal:
+
+```yaml
+attribute_providers:
+  - subject: user
+    kind: sql
+    connection: main
+    get_one: SELECT department, clearance FROM users WHERE id = $1
+    declared_keys: [department, clearance]
+```
+
+Declaring opts that slot into **key enforcement**: a rule may then read only the
+keys the set names on that slot. Declaring nothing opts out, and a slot with no
+declared set behaves exactly as every slot did before the key existed.
+
+That is what makes a local attribute layer safe. A slot holds a shared layer and a
+local one, and the shared layer wins every key both serve, so the keys a local layer
+adds on top are unreachable from any rule the deployment can validate — **inert**,
+rather than a second answer to a deployment-wide grant. The declared set therefore
+lives on the shared entry and nowhere else: a local layer able to narrow or widen it
+would be one machine changing which keys a deployment-wide rule may name.
+
+The set is a **plain list of names, with no per-key type information** — the simplest
+form that round-trips, and the right one, because the [metadata value
+model](providers.md) already governs shape and `field_types:` already governs the
+declared date types. A second typing mechanism would be a second place for two
+declarations about one key to disagree.
+
+**There are three states, not two:**
+
+| Written | State | Effect |
+|---|---|---|
+| `declared_keys:` absent (or `null`) | not declared | the slot is opted **out** of key enforcement |
+| `declared_keys: []` | declared empty | the slot is opted **in** and permits **no** key |
+| `declared_keys: [a, b]` | declared | permits `a` and `b` |
+
+The middle row is the one a plain list of strings would lose, since nil is what both
+an absent and an empty list decode to. So the distinction is carried explicitly at
+every layer it crosses — the YAML field is a pointer, the stored row carries a
+`Declared` bit of its own, and `aperture wiring show` prints all three as words
+(`(not declared)`, `(declared empty)`, or the names). Collapsing declared-empty into
+not-declared would silently **un-enforce** a slot.
+
+Names are trimmed; an empty or repeated name is refused with
+`APERTURE_CONFIG_INVALID` naming the slot and the key. The declaration order is
+preserved, so `aperture wiring pull` reproduces the author's
+list rather than a sorted paraphrase, and push → pull → push is a fixed point for a
+slot that declares a set.
+
+#### What a declaring slot refuses
+
+Enforcement is **definition-time**, in rule validation, and never at decision time: a
+rule reading a key the slot does not declare is refused when it is saved or checked
+(`APERTURE_RULE_UNDECLARED_ATTRIBUTE`, naming the key and the slot, shown on the rule
+editor's canvas), while a rule already stored keeps deciding exactly as it did. A
+refusal in production, on some instances and not others, would be the very divergence
+the declared set removes.
+
+Two things a declared set never covers:
+
+- **The floor.** `principal.id`, `principal.kind` and `account.id` are stamped by the
+  engine over every resolver's answer, so they are always readable and are never part
+  of a declared set. Declaring them is redundant, not required.
+- **A whole-bag read.** A bare `principal` or `account` with no path reads whatever
+  the bag carries, so it is refused outright by a declaring root rather than treated
+  as naming nothing.
+
+The `account` root is backed by one slot and is enforced when that slot declares. The
+`principal` root is backed by **two** — user and machine — and `principal.*` resolves
+to one or the other by the asking principal's kind, which validation cannot know: so
+the permitted set is the **union** of the two, and the root is enforced only when
+**both** slots declare. `skills/attribute-providers.md` has the argument for each half.
 
 ### The bare-id contract
 
@@ -674,37 +775,65 @@ lazily on the first decision that needed the database.
 Slots are filled in slot order (`user`, `machine`, `account`), not file order, so
 a document with two bad slots always fails on the same one.
 
-### Precedence: the external source wins, entirely
+### Precedence: two layers, and the shared layer wins
 
-When both sections declare the same slot, the `attribute_providers:` entry
-**wins and every inline `attributes:` entry for that slot is discarded
-entirely**. There is no per-subject merge and no fallback: an inline id the
-external source happens to lack is simply not resolvable, exactly as if the entry
-had never been written. It is the [`providers:` / `objects:`
-rule](#when-both-sections-claim-a-type) at slot granularity, and for the same
-reason — field-level merging is the most useful-sounding behaviour and the most
-impossible to debug, because a rule reading a department the directory silently
-did not override is a support ticket nobody can reproduce.
+When both sections declare the same slot, **nothing is discarded**. The
+`attribute_providers:` entry becomes that slot's **shared** layer, the inline
+`attributes:` block becomes its **local** layer, a fetch reads their **merge**, and
+the shared layer **wins every key both serve**. So an inline id the external source
+lacks *is* resolvable — that is what the local layer is for — while an inline value
+for a key the external source does serve is never read, on any instance.
 
-The discard is **not silent**. `Document.AttributeCollisions()` reports the
-affected slots and the caller surfaces them (`aperture` prints a warning). Only
+This is deliberately **not** the [`providers:` / `objects:`
+rule](#when-both-sections-claim-a-type) at slot granularity. That one really is a
+discard. These two sections are not two candidates for one slot: a shared directory
+the deployment administers and a block in one instance's file are two **layers** of
+it, and refusing the second meant an instance could not add a field the directory
+does not carry without abandoning the directory.
+
+Which section is which layer is not a choice. `attribute_providers:` names a source
+every instance of the deployment reads — a [shared wiring
+row](storage.md) projected back into that section, or a directory — while
+`attributes:` is data written into one instance's file. If the file could override a
+key the directory serves, a file on one machine would change what
+`principal.clearance >= 3` compares against **on that machine only**: the same rule,
+the same grant, a different verdict, with nothing in a verdict, a trace or a note to
+say which layer answered. The precedence is fixed, unconfigurable, and independent of
+the order things were registered in. It mirrors the engine's [floor
+bag](rules.md#the-floor-bag-and-principalkind) one tier down, so the three tiers
+compose in one direction: **floor over shared over local**.
+
+What remains refused is field-level merging with a *configurable* or order-dependent
+winner — a rule reading a department one machine's file silently overrode is a support
+ticket nobody can reproduce. A fixed winner that is the deployment-wide source makes a
+contested key read the same on every instance, and
+[`declared_keys:`](#declared_keys--the-keys-a-slot-guarantees) is the other half: the
+keys only a local layer serves are unreachable from any rule the deployment can
+validate.
+
+The layering is **not silent**. `Document.AttributeCollisions()` reports the affected
+slots and the caller surfaces them (`aperture` prints a warning) — for a different
+reason than the object case. There the warning says data was discarded; here it says
+**which layer answers a contested key**, which is what an operator debugging an
+unexpected attribute value needs told and which no verdict, trace or note says. Only
 slot **names** are reported, never keys, so the warning cannot leak a directory's
-contents. `Document.AttributeSlotSources()` reports where each slot's bags come
-from — `"csv"`, `"sql"`, or `"inline"` — so a surface that displays the wiring
-reads the precedence rule instead of re-deriving it and eventually disagreeing
-with it.
+contents. `Document.AttributeSlotSources()` reports where each slot's bags come from —
+`"csv"`, `"sql"`, or `"inline"` — naming the **winner** for a slot both sections fill,
+so a surface that displays the wiring reads the rule instead of re-deriving it and
+eventually disagreeing with it.
 
 ## What is *not* in the file
 
-Two things are deliberately excluded from the model state file:
+Three things are deliberately excluded from the model state file:
 
 - **Live host domain-object metadata** — that is the [provider](providers.md)
   cache: derived, disposable, never source of truth. Because `Export` reads storage
   back, and a provider produces no model rows, it is never reproduced.
 - **Live subject attributes** — a principal's or an account's bag is the host
-  directory's, for the same reason and with the same consequence: `Apply` writes
-  no row for `attributes:` or `attribute_providers:` and an export reproduces
-  none of either.
+  directory's, for the same reason and with the same consequence: `Apply` writes no
+  row for `attributes:` or `attribute_providers:` and an export reproduces neither.
+  The shared wiring tables hold an `attribute_providers:` entry's **pointer** to a
+  directory; no table anywhere holds a bag.
 - **Runtime *wiring*** — the `connections:`, `providers:`, `objects:`,
   `field_types:`, `attributes:` and `attribute_providers:` sections are runtime
   wiring, not model state. `Apply` never writes any of them to storage; instead
@@ -713,9 +842,8 @@ Two things are deliberately excluded from the model state file:
   `*provider.Registry`, and `Document.BuildAttributeRegistry(baseDir)` — or
   `BuildAttributeRegistryWithConnections` when an attribute source is
   `kind: sql` — turns the last two into a live `*provider.AttributeRegistry`.
-  **The seed file is the source
-  of truth for them**, exactly as auth config is — and an export reproduces none
-  of them. A declared provider names an `object_type`, a `kind` (`csv` or `sql`),
+  An export reproduces none of them. A declared provider names an `object_type`, a
+  `kind` (`csv` or `sql`),
   optional cache `ttl`/`max_size`, and then either a `path` (for `csv`, resolved
   relative to the seed file) or a `connection` plus `get_one` / `get_all`
   statements (for `sql` — see
@@ -728,6 +856,44 @@ Two things are deliberately excluded from the model state file:
   type, `providers:` wins the type outright — see
   [When both sections claim a type](#when-both-sections-claim-a-type).
 
+### The file is not the only home for wiring
+
+"`Apply` writes no wiring" and "an export reproduces no wiring" are both still true,
+and neither means the seed file is the only place a deployment's wiring can live.
+**Four of the six wiring sections are shared**, and `aperture wiring push` writes
+them to the [five `apt_wiring_*` tables](storage.md#the-five-shared-wiring-tables)
+every instance of a deployment already holds:
+
+| Section | Home | Read back by |
+|---|---|---|
+| `connections:` | shared — the manifest of **names**, and nothing else | `aperture wiring pull` |
+| `providers:` (with its `references:`) | shared | `aperture wiring pull` |
+| `field_types:` | shared | `aperture wiring pull` |
+| `attribute_providers:` | shared | `aperture wiring pull` |
+| `objects:` | **local** to the instance whose file lists it | nothing |
+| `attributes:` | **local** to the instance whose file lists it | nothing |
+
+The line between the two halves is **a pointer to data versus the data itself**. A
+`providers:` or `attribute_providers:` entry says *where* to read metadata or an
+attribute bag from, which is a fact about the deployment and safe to copy to a second
+instance. An `objects:` or `attributes:` entry carries the metadata or the bag, and
+Aperture's own database is never the source of truth for a host's domain data — the
+same Non-Goal that keeps the provider cache out of an export.
+
+Three read-backs therefore exist and answer three different questions. `Export`
+emits the **model** and no wiring, and is reachable over Twirp with an admin-tier
+token. `aperture wiring pull` emits the four **shared wiring** sections and no
+model, is CLI-only, and is gated by the store credential alone. Nothing emits the
+two local sections, because nothing put them anywhere but the file.
+
+A pushed row carries **no secret and no path** — not a DSN, not a credential, not
+even the `dsn_env:` variable *name*, and no filesystem path — because a row is copied
+to a second instance that resolves its own credentials and has its own disk. That is
+why `kind: csv` is refused at the push and stays perfectly legal in a local file.
+The whole contract, including what an instance does when both the database and its
+file declare the same entry, is on [`aperture wiring`](../cli/wiring.md) and in
+[Two instances, one store](../operations/two-instance-topology.md).
+
 ## Related
 
 - [The RBAC model](model.md) — the entities the document mirrors.
@@ -737,3 +903,7 @@ Two things are deliberately excluded from the model state file:
 - [Storage](storage.md) — the `Storage` backend `Apply` writes through and `Export`
   reads back.
 - [Portability CLI](../cli/portability.md) — the command surface over import/export.
+- [`aperture wiring`](../cli/wiring.md) — the command surface over the four shared
+  wiring sections.
+- [Two instances, one store](../operations/two-instance-topology.md) — the topology
+  the shared sections exist for.

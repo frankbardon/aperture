@@ -4,10 +4,21 @@
 // human-readable messages.
 //
 // Codes are SCREAMING_SNAKE, namespaced with the APERTURE_ prefix, and each one
-// carries a Message + Fixup metadata entry in Registry (the orbit pattern). An
-// error that already carries an APERTURE_* code passes through Aperture's
-// wrapping verbatim — CodeOf recovers the existing code and it is never
-// re-stamped.
+// carries a Message + Fixup metadata entry in Registry (the orbit pattern).
+//
+// Wrap and Wrapf DO re-stamp. They are not pass-through: coded_error.go builds a
+// fresh CodedError around whatever code it is handed, and CodeOf resolves through
+// errors.As, which reports the OUTERMOST code — so wrapping an already-coded error
+// in a different code observably replaces the code a caller reads, burying a
+// specific remedy under a generic one. Pass-through is therefore a CALL-SITE
+// idiom, and every caller that might be wrapping an already-coded error writes it:
+//
+//	if errors.CodeOf(err) != "" { return err }        // it already says something better
+//	return errors.Wrap(errors.APERTURE_X, "...", err) // only classify what nothing else did
+//
+// A same-code re-stamp is invisible to CodeOf, so the tests that protect this
+// assert CHAIN DEPTH — exactly one Aperture-coded error in the chain — rather than
+// just the code.
 package errors
 
 // Code is a typed identifier for an Aperture-domain error.
@@ -137,11 +148,12 @@ const (
 	// denies silently.
 	APERTURE_ATTRIBUTE_SLOT_UNKNOWN Code = "APERTURE_ATTRIBUTE_SLOT_UNKNOWN"
 	// APERTURE_ATTRIBUTE_PROVIDER_INVALID — an attribute provider registration or
-	// an attribute key is unusable: a nil provider, a second provider for a slot
+	// an attribute key is unusable: a nil provider, a second provider in a LAYER
 	// that already has one, a record declared twice, an empty key, or the account
-	// wildcard "*" as a key. The wildcard is refused at the seam because the only
-	// bag that could answer "the attributes of every account" is one account's
-	// data served as another's.
+	// wildcard "*" as a key. A slot holds one shared and one local provider, so a
+	// third registration is refused whichever layer it names. The wildcard is
+	// refused at the seam because the only bag that could answer "the attributes of
+	// every account" is one account's data served as another's.
 	APERTURE_ATTRIBUTE_PROVIDER_INVALID Code = "APERTURE_ATTRIBUTE_PROVIDER_INVALID"
 	// APERTURE_ATTRIBUTE_PROVIDER_UNREGISTERED — attributes were requested for a
 	// slot that is within the closed set but has no registered provider. It is
@@ -250,6 +262,26 @@ const (
 	// configured rule source cannot resolve. Raised before evaluation when the
 	// rule-backed inclusive/exclusive path looks up its rule.
 	APERTURE_RULE_NOT_FOUND Code = "APERTURE_RULE_NOT_FOUND"
+	// APERTURE_RULE_UNDECLARED_ATTRIBUTE — a rule reads an attribute key off
+	// `principal` or `account` that the deployment's shared wiring does not
+	// DECLARE for that root. Raised by AST validation, never at decision time: the
+	// point is that the rule is refused where it is authored rather than shipped
+	// and then silently wrong somewhere else.
+	//
+	// A slot that declares no key set is not enforced at all, so this code cannot
+	// be raised against a deployment that has declared nothing — which is every
+	// deployment that has not opted in. A `principal` read is enforced only when
+	// BOTH principal slots (user and machine) declare, because a rule cannot know
+	// which kind will ask.
+	//
+	// What it prevents is an over-grant BETWEEN INSTANCES. A local attribute layer
+	// may add keys the shared directory does not carry; a rule naming one of them
+	// decides on the instance that has the key and reads a MISSING PATH on the
+	// instance that does not — and a missing path neither denies nor errors, it
+	// makes every predicate over it false, so an inclusive grant denies and an
+	// EXCLUSIVE grant stops excluding, with nothing in any verdict, trace or note
+	// to say why.
+	APERTURE_RULE_UNDECLARED_ATTRIBUTE Code = "APERTURE_RULE_UNDECLARED_ATTRIBUTE"
 	// APERTURE_DELEGATION_DENIED — a delegator tried to bestow (or revoke) a grant
 	// that exceeds the authority they hold in the active account: it is not a
 	// subset of their own effective allow grants, they hold no "may delegate"
@@ -329,6 +361,209 @@ const (
 	// message says "manage" rather than "create". Reads are unaffected, and the
 	// decision path — Check / Enumerate / Explain — never consults the switches.
 	APERTURE_ENTITY_UNMANAGED Code = "APERTURE_ENTITY_UNMANAGED"
+	// APERTURE_WIRING_NO_MODEL_STATE — `aperture wiring push` was pointed at a
+	// store that holds no model state at all, so there is nothing for the pushed
+	// wiring to be wiring FOR.
+	//
+	// Wiring says where a decision reads object metadata and attribute bags FROM;
+	// the model says who exists and who may do what. An empty store is therefore
+	// almost always the wrong store — a typo'd DSN opens (and Setup creates) a
+	// perfectly valid, perfectly empty database, and without this refusal the
+	// wiring lands there, the push reports success, and the instance that actually
+	// serves decisions never sees it. The refusal is deliberately not conditional
+	// on the pushed set naming an object type: a connection-only push into an
+	// empty database is the same mistake with fewer symptoms.
+	APERTURE_WIRING_NO_MODEL_STATE Code = "APERTURE_WIRING_NO_MODEL_STATE"
+	// APERTURE_WIRING_OBJECT_TYPE_UNKNOWN — a pushed provider entry serves an
+	// object type the model's object-type table has no row for. The message names
+	// the missing type.
+	//
+	// apt_wiring_providers.object_type carries a real foreign key ON DELETE
+	// RESTRICT, so the database would refuse the row anyway — but a raw foreign-key
+	// violation says "constraint failed", not "you have no object type called
+	// dataset", and the operator has to go and read the schema to learn which of
+	// the two names in the statement was the wrong one. This code is that refusal
+	// with the type named.
+	//
+	// It applies to PROVIDER entries only. A field-type declaration may legally
+	// name a type whose objects a seed lists inline, which needs no object-type
+	// row at all, and apt_wiring_field_types.object_type carries no edge for
+	// exactly that reason.
+	APERTURE_WIRING_OBJECT_TYPE_UNKNOWN Code = "APERTURE_WIRING_OBJECT_TYPE_UNKNOWN"
+	// APERTURE_WIRING_CONNECTION_UNDECLARED — a pushed provider or
+	// attribute-provider entry names a connection the pushed connections: manifest
+	// does not declare. The message names the undeclared connection and lists the
+	// ones that were declared.
+	//
+	// The column carries no foreign key on purpose — an entry of a non-database
+	// kind names no connection, and absence is the empty string rather than a NULL
+	// — so nothing below this layer can catch the typo. It has to be caught at the
+	// push, because one connections: entry is one POOL: a name with no manifest
+	// entry does not fall back to a default pool, it fails the registry build on
+	// the next boot of every instance that reads the wiring.
+	APERTURE_WIRING_CONNECTION_UNDECLARED Code = "APERTURE_WIRING_CONNECTION_UNDECLARED"
+	// APERTURE_WIRING_KIND_UNSHAREABLE — a pushed provider or attribute-provider
+	// entry selects a kind that cannot be SHARED wiring, which today means
+	// kind: csv.
+	//
+	// A csv entry's data source is a filesystem path, and a path is a machine-local
+	// fact. A relative one is resolved against the seed FILE's own directory
+	// (seed/provider.go, seed/attribute_provider.go), which database-sourced wiring
+	// has none of; an absolute one is a guess about the other instance's disk. So
+	// the shared-wiring schema has no path column at all, and an entry whose only
+	// data source is a path has nothing to store. It is refused rather than stored
+	// pathless, because a pathless csv entry would read back as wiring and then
+	// serve nothing.
+	//
+	// kind: csv remains entirely legal in a LOCAL seed document. It is this
+	// deployment's own file, and the instance that reads the seed is the instance
+	// the path belongs to.
+	//
+	// It is raised at BOTH ends of the wiring, for the same condition and with the
+	// same remedy: at the push, where the mistake is made, and on the BOOT that
+	// reads the rows back, where a row that got there anyway — written by hand,
+	// written by an older build, or written by a push that predates the check — is
+	// refused before the instance serves a decision. Without the boot half such a
+	// row reaches seed's own builder, which refuses it for the missing path: a true
+	// statement whose remedy ("add a path:") cannot be carried out, because the
+	// shared-wiring schema has no path column to add one to.
+	APERTURE_WIRING_KIND_UNSHAREABLE Code = "APERTURE_WIRING_KIND_UNSHAREABLE"
+	// APERTURE_WIRING_CONNECTION_UNROUTED — the shared wiring declares a connection
+	// NAME this instance has no route for. The message names the connection and the
+	// environment variable the conventional route reads its DSN from.
+	//
+	// The shared tables carry a connection's name and nothing else: which server,
+	// which credential, how big a pool and how long a statement may take are
+	// per-instance facts, and two instances may legitimately reach one logical
+	// database differently. So each name is resolved locally — a host's
+	// seed.WithConnectionOpener, a connections: entry under the same name in this
+	// instance's own seed file, or the conventional APERTURE_CONNECTION_<NAME>_DSN
+	// — and a name none of the three answers for is refused at boot.
+	//
+	// It is distinct from APERTURE_WIRING_CONNECTION_UNDECLARED, and the two are
+	// opposite halves of one question. That one is a PUSH-time refusal: an entry
+	// named a connection the pushed manifest does not list, which is a mistake in
+	// the document being deployed and is the same mistake on every instance. This
+	// one is a BOOT-time refusal: the manifest lists the name perfectly well and
+	// THIS HOST has nowhere to point it, which is a per-instance fact and is
+	// routinely true on one instance of a fleet and false on its peers.
+	//
+	// It is distinct from APERTURE_SQL_PROVIDER_CONNECTION, which seed raises for
+	// an unset dsn_env, because the remedy differs and the remedy is the whole
+	// point: that refusal sends an operator to a document's connections: block, and
+	// a DB-declared name does not appear in this instance's document at all. An
+	// operator told only "connection "main" reads its DSN from a variable that is
+	// unset" greps a seed file that has never mentioned main, because the name came
+	// out of a database somebody else pushed to.
+	//
+	// It is a boot refusal rather than a decision-time one because a connection
+	// that fails under a decision does not fail AS a failure. An object provider
+	// that cannot reach its database yields no metadata, and a rule reading
+	// object.tier against absent metadata reads a missing path; an attribute
+	// provider that cannot reach its database yields a nil bag under the leniency
+	// contract, and a missing bag WIDENS an exclusive grant. Both authorize more
+	// than the deployment asked for, and nothing in either verdict says a route was
+	// missing.
+	APERTURE_WIRING_CONNECTION_UNROUTED Code = "APERTURE_WIRING_CONNECTION_UNROUTED"
+	// APERTURE_WIRING_RESTART_REQUIRED — the deployed wiring changes a RUNNING
+	// instance's connection NAME SET, which is fixed for the life of a process. The
+	// message names which names the push adds and which it drops, and says that
+	// nothing in the push was applied.
+	//
+	// It is the running-process counterpart of
+	// APERTURE_WIRING_CONNECTION_UNROUTED, and the two are deliberately separate
+	// codes rather than one reused twice, because only half of the condition is
+	// shared. A name the push ADDS that this host cannot route is genuinely
+	// "unrouted", and that code's fixups are the remedy. A name the push DROPS is
+	// routed perfectly well — the pool is open and serving — so "this instance has
+	// no route for it" is simply false of it, and none of that code's fixups says
+	// the thing an operator actually has to do. Reusing it would have handed a
+	// correct-sounding message and five inapplicable remedies to half of the cases.
+	//
+	// The remedy is always a restart, and the reason the remedy is not "adopt it
+	// anyway" is that a process cannot open a pool for a name that appeared while
+	// it was running, nor drain one for a name that vanished, without becoming a
+	// second answer to a question the boot already answered.
+	//
+	// Nothing in the push is applied, not even the parts that have nothing to do
+	// with connections: a push is adopted whole or not at all, because a set
+	// applied by halves is a wiring version no operator ever pushed and no
+	// `aperture wiring diff` would describe.
+	APERTURE_WIRING_RESTART_REQUIRED Code = "APERTURE_WIRING_RESTART_REQUIRED"
+	// APERTURE_WIRING_LOCAL_COLLISION — this instance's LOCAL seed file declares
+	// an object type or an attribute slot the shared wiring in its database
+	// already declares. The message names the colliding entries and the two
+	// sections that declare them.
+	//
+	// With wiring rows present the database is AUTHORITATIVE, and a local
+	// declaration may only ADD an object type or a slot the database never
+	// declared — which is the permanent situation of a Go host whose own object
+	// providers no document can describe. A collision is refused rather than
+	// resolved by precedence, in either direction, because both resolutions are
+	// silent and both change what a decision reads: letting the database win
+	// discards wiring somebody checked into this instance's file, and letting the
+	// file win means one instance in a fleet answers from a source the others
+	// cannot see. Neither shows up as an error on any later decision — it shows up
+	// as a different verdict.
+	//
+	// It is distinct from APERTURE_PROVIDER_INVALID, which the registry raises for
+	// the same overlap arriving from Go, because the remedies differ: this one
+	// names two configuration sources an operator can edit, where that one names a
+	// duplicate registration a developer has to remove.
+	APERTURE_WIRING_LOCAL_COLLISION Code = "APERTURE_WIRING_LOCAL_COLLISION"
+	// APERTURE_WIRING_NOTHING_DEPLOYED — `aperture wiring pull` was pointed at a
+	// store that has no shared wiring in it at all.
+	//
+	// An empty set is not an error for `aperture wiring show`, which only DESCRIBES
+	// it: nothing deployed is a real and useful answer, and the listing says so in
+	// words. It is an error here, because a pull produces a FILE whose whole purpose
+	// is to be pushed back — and a document carrying no wiring is a document that,
+	// pushed, REPLACES the deployment's wiring with nothing.
+	//
+	// The two situations behind an empty read are opposites and indistinguishable
+	// from the read alone: either nothing has been pushed to this store yet, or the
+	// --store DSN names a database Setup has just created empty. Writing the file
+	// anyway would commit the first reading of a situation that is usually the
+	// second, and the mistake would only surface as a deployment-wide wiring wipe on
+	// the next push.
+	APERTURE_WIRING_NOTHING_DEPLOYED Code = "APERTURE_WIRING_NOTHING_DEPLOYED"
+	// APERTURE_WIRING_OUTPUT_EXISTS — `aperture wiring pull --out` names a path
+	// that already exists, and --force was not given.
+	//
+	// The file a pull writes is the file an operator diffs against version control,
+	// so the likeliest thing at that path is the very document the pull is meant to
+	// be compared with. Overwriting it silently would destroy the left-hand side of
+	// the comparison and leave nothing to say it had ever been different. The
+	// refusal is the default and --force is the way to say "yes, replace it".
+	APERTURE_WIRING_OUTPUT_EXISTS Code = "APERTURE_WIRING_OUTPUT_EXISTS"
+	// APERTURE_WIRING_REFRESH_FAILED — a running instance's background re-read of
+	// the shared wiring (--wiring-poll) did not complete, so the instance is still
+	// deciding from the wiring it last succeeded with. It is an ALARM, not a
+	// refusal: nothing was rolled back, nothing stopped, and the process keeps
+	// answering decisions.
+	//
+	// Keeping last-good is not a fallback, it is the design. Aperture is embedded
+	// in-process in its first real host, so an access engine that stops deciding
+	// takes the whole host down with it, and a fleet that stops answering because
+	// one operator pushed a row it cannot read is worse than a fleet answering
+	// from wiring one push behind. What the choice costs is staleness — the window
+	// an already-replaced configuration keeps being enforced in, the same class of
+	// hazard as an attribute slot's ttl: — which is why the code exists at all:
+	// silent staleness was explicitly rejected.
+	//
+	// It is the code of LAST RESORT and is deliberately rare. A refresh usually
+	// fails for a reason that already has a code and fixups of its own — the
+	// store's APERTURE_STORAGE_SCHEMA_INCOMPATIBLE, E2-S3's
+	// APERTURE_WIRING_CONNECTION_UNROUTED, APERTURE_WIRING_KIND_UNSHAREABLE,
+	// APERTURE_WIRING_LOCAL_COLLISION, a builder's APERTURE_CONFIG_INVALID — and
+	// the alarm passes those through untouched, because aerr.Wrap RE-STAMPS and an
+	// operator handed a generic alarm code instead of the specific one loses the
+	// remedy. This code is what an UNCODED failure is classified as, so that every
+	// stale instance names some APERTURE_* code and none names none.
+	//
+	// The staleness it announces is also readable without logs, as a duration: the
+	// system-admin-gated service.WiringPosture read, and its WiringPosture RPC.
+	APERTURE_WIRING_REFRESH_FAILED Code = "APERTURE_WIRING_REFRESH_FAILED"
 )
 
 // Metadata describes an Aperture code: the canonical human-readable Message and
@@ -489,7 +724,7 @@ var Registry = map[Code]Metadata{
 	APERTURE_ATTRIBUTE_PROVIDER_INVALID: {
 		Message: "attribute provider registration or attribute key is invalid",
 		Fixups: []string{
-			"Register a non-nil provider, and at most one per slot; a duplicate is refused rather than replaced so one directory cannot silently shadow another.",
+			"Register a non-nil provider, and at most one per LAYER: Register fills a slot's shared layer and RegisterLocal its local one, so a slot holds two and a third is refused. A duplicate within a layer is refused rather than replaced, so one directory cannot silently shadow another.",
 			"Declare each attribute key at most once within a provider.",
 			"Fetch with a real key: a principal id for the user and machine slots, an account id for the account slot. An empty key names nobody.",
 			"Resolve the account wildcard \"*\" to a concrete account before fetching attributes; it is never a legal attribute key.",
@@ -607,6 +842,15 @@ var Registry = map[Code]Metadata{
 			"Confirm the rule reference exists in the configured rule source.",
 		},
 	},
+	APERTURE_RULE_UNDECLARED_ATTRIBUTE: {
+		Message: "rule reads an attribute key the wiring does not declare",
+		Fixups: []string{
+			"Add the key to declared_keys: on the attribute_providers: entry for the slot the message names, then push the wiring again.",
+			"Or stop reading the key in the rule: a key no shared entry declares is served by at most one instance's local layer, so a rule over it decides differently per instance.",
+			"Read individual keys rather than the whole bag — a bare `principal` or `account` reference reads every key the bag happens to carry, which no declared set can cover.",
+			"A slot that declares no key set is not enforced at all; remove declared_keys: from the entry to opt that slot back out.",
+		},
+	},
 	APERTURE_DELEGATION_DENIED: {
 		Message: "the delegator may not bestow this grant",
 		Fixups: []string{
@@ -683,6 +927,96 @@ var Registry = map[Code]Metadata{
 			"This is not a permission problem: no grant, role, or admin tier lifts it, and it refuses a system-admin exactly as it refuses anyone else.",
 		},
 	},
+	APERTURE_WIRING_NO_MODEL_STATE: {
+		Message: "the target store holds no model state, so there is nothing for the pushed wiring to be wiring for",
+		Fixups: []string{
+			"Apply model state to this store first — `aperture import --store <dsn>`, `aperture serve --store <dsn> --seed <file>`, or the mutation commands — and then push the wiring.",
+			"Check the --store DSN: a typo names a database that does not exist yet, Setup creates it empty, and the wiring would land somewhere no instance reads.",
+			"Two instances sharing wiring must share the MODEL too; wiring says where object metadata and attribute bags are read from, not who exists.",
+		},
+	},
+	APERTURE_WIRING_OBJECT_TYPE_UNKNOWN: {
+		Message: "a pushed provider entry serves an object type the model does not declare",
+		Fixups: []string{
+			"Declare the object type named in the message in the store's object_types: (apply the model state, then push the wiring again).",
+			"Check the spelling against `aperture list object-type --store <dsn>`: the wiring's object_type: must equal the object type's name exactly.",
+			"Field-type declarations are exempt — they may name a type whose objects a local seed lists inline — so only providers: entries need a row.",
+		},
+	},
+	APERTURE_WIRING_CONNECTION_UNDECLARED: {
+		Message: "a pushed entry names a connection the wiring's connections: manifest does not declare",
+		Fixups: []string{
+			"Add the connection named in the message to the document's connections: block, with dsn_env: naming the environment variable that holds its DSN.",
+			"Or fix the entry's connection: to match one of the declared names the message lists — one connections: entry is one pool, so a typo opens no pool rather than a second one.",
+			"Only the NAME is shared: every instance resolves that connection's DSN and pool settings from its own environment, so the manifest is a list of names and nothing else.",
+		},
+	},
+	APERTURE_WIRING_KIND_UNSHAREABLE: {
+		Message: "a pushed entry selects a kind that cannot be shared wiring",
+		Fixups: []string{
+			"Replace the kind: csv entry named in the message with kind: sql reading through a connections: entry, so every instance reaches the same data without a shared filesystem.",
+			"Or leave that entry out of the pushed wiring and keep it in the LOCAL seed document, where the path belongs to the instance that reads it.",
+			"A csv entry's only data source is a filesystem path; the shared-wiring schema has no path column, because a relative path resolves against the seed file's own directory and an absolute one is a guess about the other host's disk.",
+			"On a BOOT this refusal means the row is already deployed — written by hand, or by a build that predates the check. Re-push a wiring document without it (`aperture wiring push`), or read the same data through kind: sql; there is no path column to add a path to.",
+		},
+	},
+	APERTURE_WIRING_CONNECTION_UNROUTED: {
+		Message: "the shared wiring declares a connection name this instance has no route for",
+		Fixups: []string{
+			"Export the environment variable the message names — APERTURE_CONNECTION_<NAME>_DSN — with this instance's DSN for that connection. It is the conventional route and needs no seed file.",
+			"Or declare a connections: entry under the same name in this instance's --seed file, with dsn_env: naming a variable of your choosing; a local entry is that name's route, not a competing declaration, and it also carries the pool sizes and query_timeout.",
+			"Or, in a Go host, supply seed.WithConnectionOpener and build the pool for that name yourself — the one seam a host needs, and the only one that never reads a DSN from the environment.",
+			"Check which names this deployment expects with `aperture wiring show --store <dsn>`: the shared tables carry the connection NAME and nothing else, so every instance must supply its own route for each one.",
+			"Do not work around it by removing the entry that uses the connection: an object provider that cannot reach its database yields no metadata, and an attribute provider that cannot yields a nil bag — which widens an exclusive grant rather than denying.",
+		},
+	},
+	APERTURE_WIRING_RESTART_REQUIRED: {
+		Message: "the deployed wiring changes this instance's connection name set, which is fixed for the life of a process",
+		Fixups: []string{
+			"Restart this instance to adopt the push. The connection NAME SET is resolved once, at boot, because a route — which server, which credential, how big a pool — is a per-instance fact the shared tables carry no column for.",
+			"For each name the message says the push ADDS, supply this instance's route first: export APERTURE_CONNECTION_<NAME>_DSN, or declare a connections: entry under the same name in this instance's --seed file, or supply seed.WithConnectionOpener in a Go host. Then restart.",
+			"For each name the message says the push DROPS, nothing needs supplying: the pool stays open and this instance goes on deciding through the wiring it has until it is restarted.",
+			"Nothing else in the push was applied either — a push is adopted whole or not at all — so the providers, field types and attribute providers pushed alongside the connection change are still outstanding and land on the restart.",
+			"Check what the deployment expects with `aperture wiring show --store <dsn>`; the shared tables carry the connection NAME and nothing else, so every instance supplies its own route for each one.",
+		},
+	},
+	APERTURE_WIRING_LOCAL_COLLISION: {
+		Message: "the local seed file declares an object type or attribute slot the shared wiring already declares",
+		Fixups: []string{
+			"Delete the local declaration named in the message: with wiring rows present the database is authoritative, and the local file may only ADD an object type or slot the database never declared.",
+			"Or remove the shared declaration instead — push a wiring document that omits it (`aperture wiring push --store <dsn> --seed <file>`) — if the local one is the wiring you actually want the fleet to use.",
+			"Check which side declares what with `aperture wiring show --store <dsn>`, then read the same section of this instance's --seed file.",
+			"A host registering its own providers in Go gets the same refusal from the registry as APERTURE_PROVIDER_INVALID: the rule is about the registry, not about which syntax declared the entry.",
+		},
+	},
+	APERTURE_WIRING_NOTHING_DEPLOYED: {
+		Message: "the store has no shared wiring deployed, so there is nothing to pull",
+		Fixups: []string{
+			"Check the --store DSN first: a typo names a database that does not exist yet, Setup creates it empty, and an empty read is exactly what that looks like.",
+			"If the DSN is right, nothing has been pushed to this deployment yet — run `aperture wiring push --seed <file> --store <dsn>`, and every instance sharing the database will read it.",
+			"`aperture wiring show --store <dsn>` describes an empty store without refusing, which is the command to use when you only want to know whether anything is deployed.",
+			"A pull is refused rather than writing an empty document because that document, pushed back, would replace the deployment's wiring with nothing.",
+		},
+	},
+	APERTURE_WIRING_OUTPUT_EXISTS: {
+		Message: "the --out path already exists and would be overwritten",
+		Fixups: []string{
+			"Write to a new path and compare the two files yourself — the existing file is usually the version-controlled document the pull is meant to be diffed against.",
+			"Pass --force to replace the file deliberately.",
+			"Nothing was read from the store and nothing was written: the path is checked before the wiring is fetched, so a refusal here leaves both the file and the deployment untouched.",
+		},
+	},
+	APERTURE_WIRING_REFRESH_FAILED: {
+		Message: "a background re-read of the shared wiring failed, so this instance is still deciding from the wiring it has",
+		Fixups: []string{
+			"Nothing is broken about this instance's decisions: it kept the last wiring it successfully read and is still answering. What it has lost is the ability to notice a `aperture wiring push`, so treat it as a deployment that has drifted, not as an outage.",
+			"Read how long it has been stale with the system-admin-gated WiringPosture read (the `WiringPosture` RPC), which reports the duration, the failure count and the code — an alarm minutes old on a restarting database is ordinary, and the same alarm hours old is a fleet enforcing policy somebody already retired.",
+			"The alarm normally carries the underlying failure's OWN code and fixups; follow those first. Seeing this code itself means nothing underneath it was coded, which is worth reporting.",
+			"Check the store is reachable from this host and that its wiring tables match this build (`aperture wiring show --store <dsn>`): an unreachable store and a schema from an older build are the two commonest causes.",
+			"If the push added a connection name, every instance needs its own route for it — export APERTURE_CONNECTION_<NAME>_DSN, or declare the name in this instance's --seed file. See APERTURE_WIRING_CONNECTION_UNROUTED.",
+			"Restarting the instance is the way to force the matter, and it is safe: a boot re-reads the shared wiring from scratch and REFUSES to start on wiring it cannot build, rather than degrading.",
+		},
+	},
 }
 
 // AllCodes is the registry every gate walks. Append new codes here; the
@@ -723,6 +1057,7 @@ var AllCodes = []Code{
 	APERTURE_RULE_TYPE_ERROR,
 	APERTURE_RULE_EVAL,
 	APERTURE_RULE_NOT_FOUND,
+	APERTURE_RULE_UNDECLARED_ATTRIBUTE,
 	APERTURE_DELEGATION_DENIED,
 	APERTURE_DELEGATION_NOT_DELEGATABLE,
 	APERTURE_IMPERSONATION_DENIED,
@@ -733,6 +1068,16 @@ var AllCodes = []Code{
 	APERTURE_TEMPLATE_PARAM,
 	APERTURE_AUTHZ_DENIED,
 	APERTURE_ENTITY_UNMANAGED,
+	APERTURE_WIRING_NO_MODEL_STATE,
+	APERTURE_WIRING_OBJECT_TYPE_UNKNOWN,
+	APERTURE_WIRING_CONNECTION_UNDECLARED,
+	APERTURE_WIRING_KIND_UNSHAREABLE,
+	APERTURE_WIRING_CONNECTION_UNROUTED,
+	APERTURE_WIRING_RESTART_REQUIRED,
+	APERTURE_WIRING_LOCAL_COLLISION,
+	APERTURE_WIRING_NOTHING_DEPLOYED,
+	APERTURE_WIRING_OUTPUT_EXISTS,
+	APERTURE_WIRING_REFRESH_FAILED,
 }
 
 // Message returns the canonical message for a code, or empty when the code has

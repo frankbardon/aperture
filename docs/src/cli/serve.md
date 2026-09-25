@@ -28,7 +28,11 @@ Press `Ctrl-C` to trigger a graceful shutdown (`shutting down...`).
 - `--addr` — the TCP address to listen on (default `:8080`).
 - `--seed` / `--store` — the model to serve, exactly as elsewhere (see
   [Global options](global-options.md)). With no `--store`, the server runs
-  against an in-memory model seeded from `--seed` or the embedded example.
+  against an in-memory model seeded from `--seed` or, when that is omitted too,
+  the embedded example — the zero-flag demo. With a `--store` DSN and no
+  `--seed`, **nothing is seeded**: the server reads the model already in that
+  database and writes no model rows on startup. See
+  [Booting against a database](#booting-against-a-database) below.
 - `--auth` — the authenticator adapter that maps each request to a principal:
   `dev` (the default — the bearer token *is* the principal id, no external IdP),
   `oidc`, or `parsec`. It overrides the `APERTURE_AUTH_MODE` env var. Because the
@@ -39,6 +43,12 @@ Press `Ctrl-C` to trigger a graceful shutdown (`shutting down...`).
   a single shared role (manager, analyst, …) be reused across accounts without
   one account's grants leaking to another's members. Also settable via
   `APERTURE_ENFORCE_MEMBERSHIP`.
+- `--wiring-poll` — re-read the [shared wiring tables](../concepts/storage.md) on
+  an interval instead of only at startup, so a `aperture wiring push` from another
+  host is *picked up* without a restart. **Omitted means off**, and off means off:
+  no background reader is started and no periodic query is made. Also settable via
+  `APERTURE_WIRING_POLL`; the flag wins when both are given. See
+  [Noticing a push without a restart](#noticing-a-push-without-a-restart) below.
 - `--enumerate-limit` — the ceiling one `Enumerate` is bounded by: the number a
   request with a non-positive `limit` receives, and the number a larger request
   `limit` is clamped **down** to. It also bounds the scope member gather, so the
@@ -73,16 +83,216 @@ Press `Ctrl-C` to trigger a graceful shutdown (`shutting down...`).
   while believing otherwise, so the CLI refuses at the boundary what the library
   would have absorbed. To get the default, omit the setting.
 
+## Booting against a database
+
+`serve` with a `--store` DSN and no `--seed` seeds **nothing**. It runs `Setup`
+(which creates missing tables and never migrates), reads the model that is
+already there, and writes no model rows of its own.
+
+```bash
+# A second instance, against a database another process provisioned:
+bin/aperture serve --store 'postgres://aperture@db/aperture'
+```
+
+This is what makes a long-lived deployment safe and what lets two instances
+share one database. Passing a `--seed` alongside a durable `--store` still
+applies that document in full, on **every** boot — which is how you provision a
+database on purpose, and which two instances pointed at the same database must
+not both do, or each restart re-asserts one instance's model over the other's.
+
+```bash
+# Provisioning, deliberately and once:
+bin/aperture serve --store 'postgres://aperture@db/aperture' --seed ./model.yaml
+```
+
+### Where its wiring comes from
+
+Seeding nothing is not the same as being wired by nothing. After `Setup`, `serve`
+reads the [shared wiring tables](../concepts/storage.md) and builds its object
+providers, field types and attribute slots from them — so an instance with a
+`--store` DSN and no seed file on disk at all is a fully wired instance.
+
+When those tables hold no rows — every deployment that has never run
+`aperture wiring push` — the local seed file's wiring is used exactly as it always
+was. There is no flag and nothing to configure; see
+[What an omitted `--seed` means](global-options.md#what-an-omitted---seed-means)
+for the whole rule, including how a shared connection **name** is routed to this
+instance's own DSN.
+
+With both — wiring rows *and* a `--seed` file — the **database is authoritative
+and the local file may only ADD**. A local `providers:`, `field_types:`,
+`attribute_providers:` or `attributes:` entry for an object type or slot the
+database never declared is built normally, which is how a `kind: csv` provider (a
+path cannot be shared wiring) and a Go host's hand-written providers survive a
+push. A local entry for one the database **already declares** fails the boot with
+`APERTURE_WIRING_LOCAL_COLLISION` naming it, rather than one side quietly winning.
+See
+[With both, the database wins and the file may only ADD](global-options.md#with-both-the-database-wins-and-the-file-may-only-add).
+
+### Noticing a push without a restart
+
+The wiring read above happens **once**, at startup. That is the whole behaviour
+unless you ask for more, and for most deployments it is the right one: a
+`wiring push` is picked up by restarting the instances, which is what a deploy
+pipeline already does.
+
+`--wiring-poll` (env `APERTURE_WIRING_POLL`) turns on a background re-read:
+
+```bash
+bin/aperture serve --store 'postgres://aperture@db/aperture' --wiring-poll 30s
+bin/aperture serve --store 'postgres://aperture@db/aperture' --wiring-poll on
+APERTURE_WIRING_POLL=2m bin/aperture serve --store 'postgres://aperture@db/aperture'
+```
+
+| Value | Meaning |
+|---|---|
+| *omitted* | **off** — wired once at boot. No background reader, no periodic query. |
+| `off` | off, said out loud. Useful when a variable is inherited and cannot be unset. |
+| `0`, `0s` | off. A zero interval *is* "never". |
+| `on` | on, at the default interval of **30s**. |
+| a Go duration (`45s`, `2m`) | on, at that interval. |
+
+Anything else — `banana`, `-5m` — fails the command with
+`APERTURE_CONFIG_INVALID` naming the setting and the value it rejected, **before
+any connection is made**, so a typo costs nothing but the typo.
+
+When it is on, the instance reports it on stderr at startup and reports each
+change it sees:
+
+```text
+wiring poll: re-reading the shared wiring every 30s; a change will be adopted and reported here
+wiring poll: the deployed wiring CHANGED (3f9a1c72 -> 8b40e5de) and this instance
+ADOPTED it; decisions already in flight finish on the wiring they started with
+```
+
+#### What a swap replaces, and what it does not
+
+An adopted change rebuilds **everything a decision reads**: the object provider
+registry, the field-type declarations folded into it, the attribute providers, the
+rules engine over them, the decision engine and the service facade. They are built
+as one **version** and installed with a single pointer store, so a decision either
+sees all of a push or none of it — never half.
+
+- **A request pins one version at its entry** and finishes on it. A push landing
+  mid-request does not change what that request decides.
+- **A decision never blocks on a wiring read.** The rebuild happens on the poll
+  goroutine; a request pays one atomic load.
+- **Attribute caches do not survive a swap.** Each version gets fresh per-slot
+  caches, so a rebuilt slot never answers from an entry fetched under the old
+  configuration's [`ttl:`](../concepts/providers.md) — which is the window a
+  *revoked* clearance would otherwise keep authorizing for.
+- **The connection *name set* is frozen for the life of the process** — see below.
+- **A failed rebuild installs nothing.** The instance keeps the wiring it has and
+  goes on deciding, the digest does not advance, and the next tick tries again:
+
+```text
+wiring poll: the deployed wiring CHANGED (3f9a1c72 -> 8b40e5de) but this instance
+could not adopt it, so it keeps the wiring it has and goes on deciding: [...]
+```
+
+The listener, the authenticator and the HTTP server itself are built once and are
+untouched by a swap; only what sits beneath them is replaced.
+
+#### The connection name set needs a restart
+
+The shared tables carry a connection's **name** and nothing else. Which server,
+which credential, how big a pool and how long a statement may take are
+per-instance facts, and this instance resolves them **once**, at boot — from a Go
+host's `seed.WithConnectionOpener`, from a `connections:` entry in its own
+`--seed` file, or from the conventional `APERTURE_CONNECTION_<NAME>_DSN`. See
+[Where its wiring comes from](#where-its-wiring-comes-from).
+
+That makes the name set a **boot-time contract** between the shared manifest and
+the routes this instance can supply locally, and not a runtime one. A running
+process cannot conjure a route for a name that appeared while it was working, and
+draining a pool for a name that vanished is a different problem from adopting
+wiring. So the name set is frozen for the life of the process, and a push that
+changes it in **either** direction is detected, reported, and **not applied**:
+
+```text
+wiring poll: the deployed wiring CHANGED (3f9a1c72 -> 8b40e5de) but this instance
+could not adopt it, so it keeps the wiring it has and goes on deciding:
+[APERTURE_WIRING_RESTART_REQUIRED] cli: the deployed wiring changes this
+instance's connection NAME SET — it adds connection name "replica" — and that set
+is FIXED for the life of a process: [...] RESTART THIS INSTANCE to adopt the push.
+```
+
+Three things follow, and they are the whole of the behaviour:
+
+- **The rest of the push is held, not applied.** A push is adopted whole or not at
+  all, so the providers, field types and attribute providers deployed alongside a
+  connection change stay outstanding with it. Applying the parts that happen to
+  fit would leave this instance running a wiring version that was nobody's.
+- **Nothing is torn down.** A name the push *removed* keeps its pool, and this
+  instance goes on deciding through it. The pools belong to the boot and are
+  closed once, on shutdown.
+- **The instance keeps deciding, and keeps re-reporting.** The digest does not
+  advance, so the condition is re-detected on every tick until the push is adopted
+  or corrected — which is the noisy direction on purpose.
+
+The remedy is a restart, after supplying a route for each **added** name — in that
+order, which is why it is a three-step rollout and not a push:
+[Refreshing wiring on a live fleet](../operations/wiring-refresh.md#what-a-push-cannot-change-without-a-restart).
+Read what the deployment expects with
+[`aperture wiring show`](../reference/cli.md#aperture-wiring-show); the fixups on
+`APERTURE_WIRING_RESTART_REQUIRED` name each added and dropped name, and the ones on
+the boot-time `APERTURE_WIRING_CONNECTION_UNROUTED` list the three routes.
+
+#### Choosing an interval
+
+The interval is the window a fleet is allowed to **disagree with itself**: from
+the push until this instance re-reads and adopts, it is still answering from the
+wiring it booted on. That makes it the same kind of number as an attribute slot's
+[`ttl:`](../concepts/providers.md) — a bound on how long a revoked thing keeps
+being honoured — and not a performance knob.
+
+Longer is the more tempting mistake and the worse one. At five minutes a push
+reads as having had no effect, and the operator reaches for the rolling restart
+that polling exists to remove. Shorter buys nothing measurable: a push is a human
+act at human cadence, and a one-second interval has every instance in the fleet
+query five tables every second, forever, against wiring that changes perhaps
+weekly. The default of `30s` sits where readiness probes do, so "within half a
+minute of the push" needs no new unit of trust.
+
+There is deliberately **no minimum**. A very short interval is a cost you can
+read about here rather than a refusal you cannot override.
+
+#### What a tick costs, and what it cannot miss
+
+A tick is one `GetWiring` — the same single, consistent snapshot of the five
+tables the boot takes — followed by a comparison of a content **digest** against
+the digest this instance was wired from. The read is full and the comparison is
+cheap; nothing is reconstructed to find out whether it needed to be.
+
+A cheaper *probe* was considered and rejected, because every one available can be
+wrong in the direction that matters, and a change an instance does not see is an
+instance that is silently stale while reporting itself healthy:
+
+- A newest-timestamp probe would trust the clock of whichever host ran the push.
+  A push from a host whose clock lags writes rows *older* than the ones it
+  replaced, and the probe reports "unchanged".
+- A row-count probe misses every change that keeps the count — a re-pointed
+  statement, a narrowed declared key set, a renamed connection.
+- Four per-section reads can straddle a concurrent push and compose a wiring set
+  that never existed.
+
+The digest ignores the `created_at` / `updated_at` stamps on purpose. A push
+rewrites every row, so an identical re-push — the same pipeline running twice —
+is **not** a change, and is not reported as one.
+
 Under `serve`, the facade is wired with everything the other surfaces expect: the
 admin gate, delegation and impersonation mutators, the append-only audit trail,
-the rules engine over a storage-backed rule source, and the object providers
-declared in the seed's `providers:` section. A rule saved through the admin UI
-takes effect on the next decision with no separate rule store.
+the rules engine over a storage-backed rule source, and the object providers the
+wiring declares. A rule saved through the admin UI takes effect on the next
+decision with no separate rule store.
 
 Full flags: [`serve`](../reference/cli.md#aperture-serve).
 
 ## Related
 
 - [Global options](global-options.md) — `--seed` / `--store`.
+- [Refreshing wiring on a live fleet](../operations/wiring-refresh.md) — the same
+  machinery from the operator's side: what a push does to a fleet that is already
+  running, how a stale instance surfaces, and what the swap costs.
 - [mcp](mcp.md) — the read-only stdio surface, for MCP clients rather than HTTP.
 - [Command-Line Reference](../reference/cli.md#aperture-serve) — the generated flag table.

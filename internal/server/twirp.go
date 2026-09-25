@@ -115,6 +115,62 @@ func (h *twirpHandler) Capabilities(_ context.Context, _ *rpc.Empty) (*rpc.Capab
 	}, nil
 }
 
+// WiringPosture reports whether this instance's shared wiring is stale, and for
+// how long. It is the deliberate counterpart to Capabilities above: same kind of
+// question ("what is true of this deployment?"), opposite answer about who may
+// ask.
+//
+// It is AUTHENTICATED and system-admin gated, and the facade enforces that — this
+// handler resolves the actor and hands it over, and adds no check of its own, so
+// there is exactly one definition of who may read it (service.requireWiringAdmin).
+//
+// It uses h.actor and not h.readActor, which is the one thing about this handler
+// that is easy to get wrong: system-admin authority is resolved in an ACTIVE
+// ACCOUNT, and readActor deliberately carries none — it serves the account-scoped
+// entity reads, whose target account comes from the read itself. A posture read
+// names no entity, so the account has to arrive on the wire. The principal on the
+// wire is ignored either way: the authenticated one is used, so the field selects
+// an account and can never impersonate.
+//
+// The reason it is not three more booleans on CapabilitiesResponse is written out
+// in service.proto and at length in service/wiring_posture.go. In short: this is
+// mutable runtime state about a FAULT whose useful half is a DURATION, and "this
+// instance has been enforcing configuration its operator already replaced, for
+// four hours" is not a fact for an anonymous caller.
+//
+// Durations leave as Go duration text and instants as RFC3339, empty when the
+// field does not apply, so a healthy instance's response needs no interpretation
+// and a stale one's is readable by the person who has just been paged.
+func (h *twirpHandler) WiringPosture(ctx context.Context, req *rpc.WiringPostureRequest) (*rpc.WiringPostureResponse, error) {
+	actor, err := h.actor(ctx, actorAccount(req.GetActor()))
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	p, err := h.svc.WiringPosture(ctx, actor)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	out := &rpc.WiringPostureResponse{
+		Polling:  p.Polling,
+		Digest:   p.Digest,
+		Stale:    p.Stale,
+		Failures: int32(p.Failures),
+		Code:     p.Code,
+		Reason:   p.Reason,
+	}
+	if p.Every > 0 {
+		out.PollInterval = p.Every.String()
+	}
+	if p.Stale {
+		out.StaleFor = p.StaleFor.String()
+		out.StaleSince = p.Since.UTC().Format(time.RFC3339)
+	}
+	if !p.LastRefresh.IsZero() {
+		out.LastRefresh = p.LastRefresh.UTC().Format(time.RFC3339)
+	}
+	return out, nil
+}
+
 func (h *twirpHandler) CheckBatch(ctx context.Context, req *rpc.CheckBatchRequest) (*rpc.CheckBatchResponse, error) {
 	qs := make([]service.Query, len(req.Queries))
 	for i, q := range req.Queries {
@@ -1321,6 +1377,13 @@ func mapErr(err error) error {
 // and the caller may be fully privileged, but the deployment is not in a state
 // that accepts it, and retrying unchanged never will be.
 //
+// APERTURE_RULE_UNDECLARED_ATTRIBUTE joins its APERTURE_RULE_* siblings at 400,
+// and it is not the default 500 because the fault is in the SUBMITTED RULE: the
+// author named an attribute key the deployment's wiring does not declare, which no
+// retry of the identical request can fix and which the rule editor has to render on
+// the canvas next to the structural and type errors. A 500 would page an on-call
+// for an authoring mistake and tell a retrying client to try again.
+//
 // APERTURE_STORAGE_CONSTRAINT shares that 412 for the same reason, one layer
 // down. It is the storage layer refusing a write that would break referential
 // integrity — overwhelmingly a delete whose children the caller has not removed
@@ -1341,6 +1404,7 @@ func codeToTwirp(code aerr.Code) twirp.ErrorCode {
 		aerr.APERTURE_ACTION_UNDECLARED, aerr.APERTURE_SCOPE_INVALID,
 		aerr.APERTURE_SCOPE_UNKNOWN_STRATEGY, aerr.APERTURE_RULE_INVALID,
 		aerr.APERTURE_RULE_UNKNOWN_VARIABLE, aerr.APERTURE_RULE_TYPE_ERROR,
+		aerr.APERTURE_RULE_UNDECLARED_ATTRIBUTE,
 		aerr.APERTURE_PROVIDER_INVALID, aerr.APERTURE_PROVIDER_REFERENCE_INVALID,
 		aerr.APERTURE_TEMPLATE_INVALID, aerr.APERTURE_TEMPLATE_PARAM:
 		return twirp.InvalidArgument

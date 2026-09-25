@@ -47,8 +47,16 @@ func slotNames() []string {
 // same KIND of thing: runtime WIRING, not model state. BuildAttributeRegistry
 // turns the block into a live *provider.AttributeRegistry backed by an in-memory
 // provider.StaticAttributes per slot; Apply writes no row for it, and because the
-// model is exported by reading storage back, an export does not reproduce it. The
-// seed FILE is the source of truth for it, exactly as auth config is.
+// model is exported by reading storage back, an export does not reproduce it.
+//
+// It is also one of the two LOCAL wiring sections, and the only one of the six for
+// which the seed FILE really is the whole source of truth. `aperture wiring push`
+// shares providers:, field_types:, connections: and attribute_providers:, and
+// shares neither this section nor objects:, because both carry DATA rather than a
+// pointer to data: a bag listed here is the bag, and it belongs to the instance
+// whose file lists it. Where a slot ALSO has a shared attribute_providers: entry
+// these inline bags become the LOCAL LAYER under it — see AttributeSlotSources and
+// skills/attribute-providers.md for which layer wins which key.
 //
 // # Why this is its own key, and not a metadata: field on principals:/accounts:
 //
@@ -121,10 +129,13 @@ func (d *Document) HasAttributeSources() bool {
 //     for the life of the process, so a freshness window would only buy re-reads
 //     of a value that cannot have changed).
 //
-// A slot claimed by BOTH sections is not an error: the attribute_providers:
-// entry WINS and every inline entry for that slot is discarded entirely. The
-// discarded slots are reported by Document.AttributeCollisions, whose doc gives
-// the reasoning — it is Document.ProviderCollisions' rule at slot granularity.
+// A slot claimed by BOTH sections is not an error and not a discard: the two are
+// registered as the slot's two LAYERS — the attribute_providers: entry as the
+// SHARED layer, the inline block as the LOCAL one — and a fetch reads their merge
+// with the shared layer winning every key both serve, so an inline bag can add a
+// key the external source does not carry and can never override one it does. The
+// layered slots are reported by Document.AttributeCollisions and the rule itself
+// is provider.AttributeLayer's.
 //
 // It always returns a usable registry — empty when the document declares neither
 // section — so a caller can wire it unconditionally. An empty registry is not

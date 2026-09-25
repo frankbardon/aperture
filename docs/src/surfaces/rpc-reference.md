@@ -367,6 +367,41 @@ Whole-model portability.
 |---|---|---|
 | `QueryAudit` | `QueryAuditRequest` → `QueryAuditResponse` | The append-only audit events matching a filter, newest first. Records nothing. A **system-admin** may query the whole trail; an **account-admin** must set `account` to their own account (which also gates the read). Filters: `filter_actor`, `account`, `event_type` (`mutation`/`decision`/`impersonation`/`delegation`), `outcome` (`allow`/`deny`/`success`/`failure`), `since`/`until` (RFC3339), `limit`. |
 
+## Deployment posture and health
+
+| RPC | Request → Response | Purpose |
+|---|---|---|
+| `Capabilities` | `Empty` → `CapabilitiesResponse` | Which entity kinds this deployment manages (`manage_accounts` / `manage_principals` / `manage_memberships`), so a client can render a locked control as disabled instead of failing a save. **OPEN** — deliberately unauthenticated, because it is three booleans of immutable boot-time configuration and nothing else. |
+| `WiringPosture` | `WiringPostureRequest` → `WiringPostureResponse` | Whether this instance's background re-read of the **shared wiring** is failing — so it is still deciding from the last wiring it successfully read — and **for how long**. **System-admin.** |
+
+`WiringPosture` is the deliberate counterpart to `Capabilities`: the same kind of
+question, the opposite answer about who may ask. It is gated, and not a field on
+`CapabilitiesResponse`, because it carries mutable runtime state about a FAULT
+whose useful half is a duration — and because "this instance has been enforcing
+configuration its operator already replaced, for four hours" tells an anonymous
+caller that the enforced policy is not the intended policy, and how long the
+window has been open.
+
+It takes an `Actor` rather than `Empty` for the reason every other system-tier
+call does: system-admin authority resolves in the caller's **active account**, and
+only the caller knows which of its accounts that is. The principal on the wire is
+ignored as always.
+
+| Field | Is |
+|---|---|
+| `polling` / `poll_interval` | whether this instance re-reads at all, and how often (a Go duration, `"30s"`). Both empty for a boot-only instance, which cannot be stale in this sense because it never looks again. |
+| `stale` | the most recent refresh attempt FAILED. It does not say the deployed wiring changed — a failed read cannot know, which is exactly why the instance keeps what it has and keeps deciding. |
+| `stale_for` / `stale_since` | how long the current run of failures has lasted (Go duration) and when it began (RFC3339). **`stale_for` is the field to alert on.** |
+| `failures` | consecutive failures in the current run. |
+| `code` / `reason` | the most recent failure's own `APERTURE_*` code and message — the store's `APERTURE_STORAGE_SCHEMA_INCOMPATIBLE`, `APERTURE_WIRING_CONNECTION_UNROUTED`, and only `APERTURE_WIRING_REFRESH_FAILED` when nothing beneath it was coded. |
+| `digest` / `last_refresh` | the digest of the wiring this instance is DECIDING FROM (the last-good set, when stale), and when a refresh last succeeded (RFC3339). |
+
+Every field is empty or false on a healthy instance, so "nothing is wrong" needs
+no interpretation. An instance that does not poll — and a server whose facade was
+built without a recorder — **answers** with `polling: false, stale: false` rather
+than refusing, so the read is usable as a fleet-wide probe. Nothing here carries
+model data: digests, durations, counts and coded errors only.
+
 ## Delegation (own rule)
 
 Not admin-gated; authorized by the delegation subset rule, with the actor = the

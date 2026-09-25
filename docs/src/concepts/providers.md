@@ -304,8 +304,10 @@ The registry serves two other roles by matching contracts from other packages
 - **`List(ctx, objectType, pattern, limit)` is a `scope.ObjectLister`** —
   byte-for-byte the seam the [implicit/exclusive scope resolvers](scopes.md) left
   open, so a `*Registry` is passed as `engine.ScopeDeps{Lister: reg}`. It queries
-  the provider, bounds the result by the pattern and the limit, and
-  opportunistically warms the cache with each returned object's metadata.
+  the provider, bounds the result by the pattern and the limit, and warms the cache
+  with each returned object's metadata **when the provider promises the two bags
+  are the same bag** — see
+  [The listing and the fetch must be the same bag](#the-listing-and-the-fetch-must-be-the-same-bag).
   A **positive caller limit is honoured verbatim**, however large;
   `DefaultListLimit` (= 1000) is the value substituted for a limit `<= 0`, not a
   ceiling. The caller is the authority because the bound on a decision path is set
@@ -318,6 +320,69 @@ Two enumeration variants sit beside the bounded `List`: `Identifiers` returns th
 **complete, unbounded** id set (sorted, for a stable diff — use it to expand an
 exclusive allowance into a positive allow-list), and `IdentifiersExcept` is
 `Identifiers` minus an excluded set.
+
+### The listing and the fetch must be the same bag
+
+Every **read** of the per-type cache is a `Fetch` — the decision path's
+authoritative view of an object, what a rule sees as `object.*` and what an
+`Enumerate`'s `Fields` predicate is tested against. An entry a listing wrote is
+served back through that seam indistinguishably from one `Fetch` produced. So an
+enumeration may only warm the cache when the listed bag is the bag `Fetch` would
+have returned, and nothing in `ObjectProvider` makes that true:
+
+```yaml
+get_one: SELECT tier, seats, renews_on FROM brands WHERE id = $1
+get_all: SELECT 'brand:' || b.id AS id, b.tier FROM brands b   # NARROWER
+```
+
+That is a legal, documented pair — `Config.FetchQuery` and `Config.ListQuery` are
+independent statements, and a deliberately narrow listing over a wide table is a
+reasonable thing to write. Warming from it caches a one-field bag under an id whose
+real bag has three, for the whole of the type's TTL. A rule then reads
+`object.seats` as **absent** — not wrong, absent — and every predicate over an
+absent field is false: an inclusive grant **denies**, and an **exclusive** grant
+stops excluding and therefore **widens**. Nothing in any verdict, trace or note says
+why, because a bag of any shape is a legal bag. A listing **wider** than the fetch
+statement is the mirror image: it caches a field `Fetch` would never produce, which
+compares true until the entry expires and false afterwards.
+
+The promise is therefore explicit and opt-in:
+
+```go
+// Implemented by an ObjectProvider that guarantees the Metadata its List and
+// Query return is the bag its own Fetch would return, for every object.
+type FetchCompleteLister interface {
+	ObjectProvider
+	ListedMetadataMatchesFetch() bool
+}
+```
+
+A provider that does not implement it makes no promise, and a listing through it
+warms **nothing** — the restrictive default. It costs one enumeration's worth of
+fetches per TTL window and stays correct; a slower decision is an operational
+problem, where a decision computed from a bag no statement of the host's produces is
+an authorization one.
+
+| Provider | Answer | Why |
+|---|---|---|
+| `provider.Static` | always `true` | one map per object, handed to `Fetch`, `List` and `Query` alike |
+| `csvprovider` | always `true` | one parse of one file behind all three methods |
+| `sqlprovider` | **derived** | the list statement's columns minus the id column must equal the fetch statement's columns, as a set — `false` until both statements have run once |
+| a host's own | `false` unless it implements the interface | a provider that reads both answers from one row mapper can promise; one serving `Query` from a search index and `Fetch` from the system of record must not |
+
+`sqlprovider` derives rather than declares because it can: `rows.Columns()` is the
+statement's SELECT list, so it is the same for every row and unaffected by any row's
+NULLs — where comparing two *bags* would not be, since a NULL column omits its field
+and an omitted field is indistinguishable from an unprojected one. There is no
+config field and no YAML key for it: an operator's unchecked promise about two
+statements is exactly what this replaces. The practical cost is one cold enumeration
+per process per SQL-backed type — its candidates each fetch, which is what teaches
+the fetch projection — after which every enumeration warms as before.
+
+The registry cannot verify the promise itself, which is why it is asked rather than
+checked. Metadata is opaque host data, one object's bags agreeing proves nothing
+about the next object's, and comparing per object would cost the very `Fetch` the
+warm exists to avoid.
 
 ### Cache tuning and invalidation
 
@@ -403,7 +468,7 @@ normalisation in every loader. There is no second model, so
 `principal.clearance == 3` answers identically whether the bag was authored in
 YAML, read from a CSV `:int` column, or read from a SQL `integer`.
 
-### The registry, the per-slot cache, and the revocation window
+### The registry, the two layers, and the revocation window
 
 `provider.AttributeRegistry` binds each slot to a provider plus **its own**
 cache — its own TTL, size cap, and counters — because the three slots have
@@ -415,11 +480,42 @@ attrs.MustRegister(provider.AttributeSlotUser, dir, provider.WithTTL(60*time.Sec
 attrs.MustRegister(provider.AttributeSlotAccount, tenants)
 ```
 
-Registering a slot twice is **refused**, not replaced: "last writer wins" is how
-one deployment's directory quietly shadows another's during wiring, and the
-failure then surfaces as attributes that are merely *wrong* rather than absent. A
-slot left unregistered is not an error — a deployment with no machine principals
-wires no machine provider.
+A slot holds up to **two** providers, in two named layers, and the method picks the
+layer. `Register` / `MustRegister` fills the **shared** layer
+(`provider.AttributeLayerShared`) — the deployment's own wiring: a shared wiring row,
+a seed `attribute_providers:` entry, the one directory a host administers fleet-wide.
+`RegisterLocal` / `MustRegisterLocal` fills the **local** layer
+(`AttributeLayerLocal`) — this instance's own: a seed `attributes:` block, or a
+provider this binary registers for itself.
+
+A fetch reads the two layers' **merge**, and the **shared layer wins every key both
+serve**. The local layer can only *add* keys the shared layer does not serve, never
+change one it does — because a rule is written against a **deployment**, and if a
+local bag could override a shared key then a file on one machine would change what
+`principal.clearance >= 3` compares against on that machine only: the same rule, a
+different verdict, with nothing in a verdict or a trace to say which layer answered.
+The precedence is fixed and does not depend on registration order. It is the engine's
+[floor bag](rules.md#the-floor-bag-and-principalkind) one tier down, floor included:
+the winner is stamped last over a fresh map and the floor then stamps over both, so
+the tiers compose in one direction — **floor over shared over local**.
+
+A second registration **in the same layer** is still **refused**, not replaced: "last
+writer wins" is how one deployment's directory quietly shadows another's during
+wiring, and the failure then surfaces as attributes that are merely *wrong* rather
+than absent. A slot therefore accepts exactly two providers and a third is
+`APERTURE_ATTRIBUTE_PROVIDER_INVALID` whichever layer it names. A slot with only one
+registration behaves exactly as it always did — one provider, one cache, the bag
+verbatim — whichever layer it sits in, and a slot left unregistered is not an error:
+a deployment with no machine principals wires no machine provider.
+
+Each **layer** caches independently, and that is deliberate: a layer's TTL is its own
+revocation window, declared by whoever declared that layer, so one pooled cache per
+slot could honour at most one of two declarations. Taking the longer window would
+silently lengthen the time a revoked shared attribute keeps authorizing; taking the
+shorter one would silently ignore a declaration an operator made. `CacheConfigFor`
+reports the governing (shared, when filled) layer's configuration,
+`CacheConfigForLayer` one layer's, and `Stats` sums them — so a key both layers serve
+counts twice, because it really is cached twice.
 
 Staleness is not only a tuning knob here. An object's metadata going stale for a
 TTL is usually tolerable: a document's category is a fact about a thing. An
@@ -429,8 +525,11 @@ against access the host may have **already taken away**. Pick a slot's TTL for
 how fast its revocations must land, and close the window explicitly when you
 cannot wait: `Invalidate(slot, id)` drops one subject (and reports whether an
 entry was present), `InvalidateSlot(slot)` a whole directory, `InvalidateAll()`
-everything. Invalidation is **process-local**: it clears the caches of the
-process that runs it and cannot reach a different one.
+everything. All three clear **every layer** of every slot they name — clearing one
+and leaving the other would be worse than not clearing at all, since the operator has
+been told the window is shut while half of it is open. Invalidation is
+**process-local**: it clears the caches of the process that runs it and cannot reach a
+different one.
 
 ### Leniency: a missing bag decides, a broken directory does not
 
@@ -456,6 +555,12 @@ surfaces **verbatim**, keeping its code and its registry fixups, and every
 consumer treats it as a **non-decision**. That distinction is the point of the
 seam: an outage must not read as "this principal has no attributes", because that
 is an authorization change wearing an infrastructure failure's clothes.
+
+Leniency is asked of the **slot**, not of a layer, and two layers do not widen it.
+Inside a fetch, one layer's `APERTURE_NOT_FOUND` means only *this layer* has no record
+for the key, and the other layer's bag is the answer; every other error surfaces
+verbatim from whichever layer raised it, so an unreachable shared directory is never
+quietly answered out of the local file.
 
 Leniency leaves one hazard, and it is accepted rather than solved. An absent
 attribute makes every comparison against it **false**. In an **inclusive** grant
@@ -513,6 +618,40 @@ surfaced as [`aperture attributes query`](../cli/attributes.md). The decision
 path's `Fetch` is not gated and must never be — a decision resolves one bag for a
 subject it already named.
 
+### The listing does not write the decision path's cache
+
+`AttributeRegistry.Enumerate` is read-only all the way down: it never warms the
+slot's cache — neither layer's. `Fetch` still caches its own answer, per layer; only
+the listing's bags are excluded.
+
+On a slot with two layers, `Enumerate` queries both and merges the records **per key**,
+the shared layer winning exactly as a fetch's merge does, so a listing shows the bag a
+fetch of that key would return. `Fields` and the limit are re-enforced on the
+**merged** bag: filtering per layer would drop a record whose merged bag does match,
+and a limit applied per layer would truncate before the merge could finish a record.
+
+`Fetch` and `Query` answer different questions, and nothing in `AttributeProvider`
+makes their bags equal. The SQL loader makes the inequality **legal**:
+`AttributeConfig.ListQuery` is optional and only has to select a bare id, so a
+`get_all` projecting two columns beside a `get_one` projecting four is a correct
+pair in which `Query`'s bag is a strict subset of `Fetch`'s. Warming the fetch
+cache from it substituted the *display* projection for the authoritative bag, for
+the whole of the slot's `ttl`.
+
+That is an access-control change rather than a stale read, because **an absent key
+is not a wrong key**. Every predicate over it goes false, so an inclusive grant
+denies and an **exclusive** grant stops excluding — an operator running
+`aperture attributes query user` would silently widen access until the `ttl`
+expired, with nothing in any verdict or trace to say why.
+
+The object `Registry.List` had the same bug from the same cause and is fixed
+differently — its warm is **conditional** rather than removed, because it is a
+decision-path call whose `Fetch` follows in the same candidate walk. See
+[The listing and the fetch must be the same bag](#the-listing-and-the-fetch-must-be-the-same-bag).
+`Enumerate` has no `Fetch` behind it, so its warm bought nothing and cost the
+decision path its bag; an `AttributeProvider` is therefore given no promise to make
+about the two, deliberately.
+
 ### Where the bags come from
 
 | Implementation | Source | Notes |
@@ -524,7 +663,11 @@ subject it already named.
 Declaratively, a seed document's [`attributes:`](seed.md#inline-subject-attributes)
 block lists bags inline and
 [`attribute_providers:`](seed.md#external-attribute-sources) points a slot at a
-file or a connection. Both are runtime **wiring**, never model state.
+file or a connection. Both are runtime **wiring**, never model state. A slot the
+document fills **both** ways gets both, in the two layers above — the
+`attribute_providers:` entry shared, the inline block local, the shared one winning
+every key both serve, and nothing dropped. See [Precedence: two layers, and the shared
+layer wins](seed.md#precedence-two-layers-and-the-shared-layer-wins).
 
 One asymmetry is worth repeating here because nothing can catch it: an attribute
 provider's keys are **bare** ids. A CSV `id` column holds `alice`, not
@@ -596,7 +739,13 @@ A seed document applies its `references:` blocks in a **second pass, after every
 type is registered**, so a reference may name a target declared further down the
 file or served by the `objects:` section. Like the rest of `providers:`, a
 declaration is runtime wiring: `Apply` writes none of it and an export reproduces
-none of it.
+none of it — and, like the rest of `providers:`, it **is** shared wiring.
+`aperture wiring push` flattens the map into `apt_wiring_provider_references`, one
+row per (`object_type`, `field`), and an instance booting against those rows builds
+the same declarations. The target is still resolved against the registry the wiring
+builds rather than against a table, which is why a declaration may point at a type
+served only by a local `objects:` entry and why that column carries no foreign key.
+See [`aperture wiring`](../cli/wiring.md).
 
 ### What a declaration buys: enumerating through it
 
@@ -967,6 +1116,15 @@ provider's object-type — is `APERTURE_SQL_PROVIDER_ROW_IDENTITY` naming the ro
 position, never a row silently skipped. A short enumeration reads as "no access"
 one layer up, and a wrong-type row would be cached under an identity this
 provider's own `Fetch` could never return.
+
+**Project the same columns in both statements** unless you mean not to. The two
+SELECT lists are what decide whether an enumeration may warm the Registry's cache
+(`ListedMetadataMatchesFetch`, derived from the columns each statement really
+returns — see
+[The listing and the fetch must be the same bag](#the-listing-and-the-fetch-must-be-the-same-bag)).
+An unequal pair stays legal and stays correct; it costs a fetch per candidate per TTL
+window instead of one per enumeration, silently. If one SQL-backed type's enumeration
+is slower than its sibling's, compare the two SELECT lists first.
 
 `Query` applies `Filter.Fields` with `provider.MatchFields`, **in Go** — the
 predicates are never templated into the developer's SQL. Comparison in

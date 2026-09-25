@@ -72,6 +72,16 @@ func (p *fakeProvider) Query(_ context.Context, f Filter) ([]Object, error) {
 	return out, nil
 }
 
+// ListedMetadataMatchesFetch makes the FetchCompleteLister promise, which is what
+// lets a listing through this provider warm the cache. It is honest: all three
+// methods serve p.objects[id], the same map. The cases below that assert a warm are
+// therefore the POSITIVE control for the E3-S6 condition, and the provider that
+// cannot make the promise — and whose listing must warm nothing — lives in
+// list_projection_test.go.
+func (p *fakeProvider) ListedMetadataMatchesFetch() bool { return true }
+
+var _ FetchCompleteLister = (*fakeProvider)(nil)
+
 func (p *fakeProvider) fetchCount() int64 { return atomic.LoadInt64(&p.fetches) }
 func (p *fakeProvider) queryCount() int64 { return atomic.LoadInt64(&p.queries) }
 

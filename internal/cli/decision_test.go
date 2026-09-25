@@ -291,7 +291,7 @@ func TestServeAndOneShotCommandsShareOneStack(t *testing.T) {
 	}
 	defer func() { _ = store.Close() }()
 
-	stack, err := buildDecisionStack(unconfigured(), store, seedPath)
+	stack, err := buildDecisionStack(ctx, unconfigured(), store, seedPath)
 	if err != nil {
 		t.Fatalf("buildDecisionStack: %v", err)
 	}
@@ -326,7 +326,7 @@ func serverService(t *testing.T, ctx context.Context, seedPath string) *service.
 		t.Fatalf("buildStore: %v", err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	stack, err := buildDecisionStack(unconfigured(), store, seedPath)
+	stack, err := buildDecisionStack(ctx, unconfigured(), store, seedPath)
 	if err != nil {
 		t.Fatalf("buildDecisionStack: %v", err)
 	}
