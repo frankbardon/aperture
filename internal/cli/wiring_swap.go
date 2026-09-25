@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -99,17 +101,42 @@ import (
 // resource — and the BOOT version's pools are closed once, by serve's defer, when
 // the process stops.
 //
+// # The connection name set is frozen, and a push that changes it is HELD WHOLE
+//
+// One thing a swap will not do is renegotiate which connections this process can
+// reach. The shared manifest carries connection NAMES and nothing else; a route —
+// which server, which credential, how big a pool, how long a statement may take —
+// is a per-instance fact this process resolves ONCE, at boot (connectionRoutes).
+// So the name set is a boot-time contract between the manifest and the routes this
+// instance can supply locally, and it is not a runtime one: a process cannot
+// conjure a route for a name that appeared while it was running, and draining a
+// pool for a name that vanished is a different problem from adopting wiring.
+//
+// liveWiring.swap therefore compares the pushed manifest's name set against the
+// one the boot resolved routes for, BEFORE it builds anything, and refuses the
+// whole push when they differ in either direction
+// (liveWiring.refuseFrozenConnectionNames). Held WHOLE is the deliberate half: the
+// providers, field types and attribute providers that arrived in the same push are
+// a coherent set somebody pushed together, and applying the parts that happen to
+// fit would install a wiring version that was nobody's — the same defect a
+// field-by-field swap would be, one push higher up. So nothing is installed, the
+// digest does not advance, and the instance goes on deciding through the wiring it
+// has until it is restarted. That is stated here, pinned by
+// TestANameSetChangingPushIsHeldWhole, and it is why the check sits at the top of
+// swap rather than inside the rebuild.
+//
 // The seams the rest of the epic attaches here:
 //
-//   - E4-S3 (the frozen connection-name set) belongs in liveWiring.swap, BEFORE
-//     the rebuild, and is marked there. Today a name the boot opened no pool for is
-//     refused by borrowBootPools — fail-closed and last-good, which is the right
-//     outcome — but as a rebuild failure rather than as the specific, surfaced
-//     "restart required" condition that story owes an operator.
 //   - E4-S4 (last-good on failure, and the alarm) owns what wiring_poll.go's tick
 //     does with the error this returns. Last-good is already the behaviour: a
 //     failed rebuild installs nothing, the digest does not advance, and the
-//     instance keeps deciding through the version it has.
+//     instance keeps deciding through the version it has. The frozen-name-set
+//     condition is latched separately, on the holder, for whatever
+//     operator-visible posture that story lands: liveWiring.restartRequired is the
+//     one seam it needs, and it is deliberately the narrowest thing that can be —
+//     no writer, no clock, no second alarm mechanism. "A restart is required" is
+//     mutable runtime state and therefore not a service.Capabilities boolean; that
+//     tension is E4-S4's to resolve, and nothing here pre-empts it.
 
 // wiringVersion is ONE coherent wiring version this process can answer a request
 // through: the decision stack, the facade composed over it, the HTTP handler that
@@ -160,10 +187,61 @@ type liveWiring struct {
 	cur     atomic.Pointer[wiringVersion]
 	rebuild wiringRebuild
 
+	// frozen is the connection NAME SET this process resolved routes for at boot,
+	// sorted, and it never changes: it is the process's half of a contract only a
+	// restart can renegotiate. See the file header, and decisionStack.wiringConnections
+	// for why it is the manifest's names and not the pool set.
+	//
+	// Read without the mutex because it is written once, before the holder is
+	// published, and never again.
+	frozen []string
+
+	// restart latches the frozen-name-set condition for a reader that is not the
+	// poll goroutine: nil means this instance has been asked to adopt nothing it
+	// cannot, and non-nil names what the push changed.
+	//
+	// It is an atomic pointer to an immutable record for the same reason cur is: the
+	// writer is the poll goroutine and the reader is whatever surface reports the
+	// instance's posture, and a posture read must never wait on a rebuild. It is the
+	// ONE seam E4-S4 needs from this file — see restartRequired.
+	restart atomic.Pointer[wiringRestart]
+
 	// swapping serialises writers. It protects the REBUILD as well as the store,
 	// so a second refresh cannot start while the first is half-way through reading
 	// the seed file and constructing registries.
 	swapping sync.Mutex
+}
+
+// wiringRestart is the frozen-connection-name condition in the form something other
+// than a log line can read: which names the deployed wiring added, which it
+// dropped, and the digest of the push that asked for them.
+//
+// It carries NAMES and a digest and nothing else. A connection name is
+// operator-supplied configuration and is safe to report; a DSN, a credential or a
+// pool size is not, and none of them is in the shared tables to begin with.
+//
+// It is immutable once stored, and it is deliberately minimal. There is no
+// timestamp, no counter and no severity on it: how long an instance has been
+// superseded, and how that is surfaced to an operator, is ONE staleness question
+// that belongs in one place (E4-S4), and a second answer to it invented here would
+// be a second alarm mechanism.
+type wiringRestart struct {
+	// digest is the digest of the pushed wiring that requires the restart — the same
+	// value wiring_poll.go compares and reports, so an operator reading a posture and
+	// an operator reading stderr are looking at one push.
+	digest string
+	// added are names the pushed manifest declares that the boot's manifest did not,
+	// sorted; removed are names the boot's declared that the push no longer does,
+	// sorted. At least one of the two is non-empty.
+	//
+	// An added name is normally one this process opened no pool for, but not always:
+	// a name this instance's own seed file already routes could arrive in the
+	// manifest, and it is a restart all the same. The frozen set is the MANIFEST's,
+	// so the answer is the same on every instance in the fleet — where "adopted here,
+	// restart required on the peer" would leave two instances running two wiring
+	// versions with only one of them saying so.
+	added   []string
+	removed []string
 }
 
 // newLiveWiring holds boot as the version every request is answered through until
@@ -173,10 +251,30 @@ type liveWiring struct {
 // rather than silently doing nothing, because a process that accepted a change it
 // cannot apply and said so nowhere is the silently-stale instance this epic exists
 // to close.
+// The frozen connection name set is taken from the BOOT VERSION rather than from a
+// caller, so no surface can construct a holder that is frozen on a name set its own
+// stack was not wired from. It is the same argument decisionStack.wiringDigest
+// makes: the boot read owns the value, and a second derivation of it is a second
+// answer that can disagree.
 func newLiveWiring(boot *wiringVersion, rebuild wiringRebuild) *liveWiring {
-	l := &liveWiring{rebuild: rebuild}
+	l := &liveWiring{rebuild: rebuild, frozen: boot.stack.wiringConnections}
 	l.cur.Store(boot)
 	return l
+}
+
+// restartRequired reports the frozen-connection-name condition, or nil when this
+// instance has not been asked to adopt a name set it cannot.
+//
+// It is the whole of this file's operator-visible surface, and it is a READ: no
+// writer, no clock, no formatting and no side effect, so a posture reader cannot
+// perturb what it is reporting and cannot block on a rebuild. The returned record
+// is immutable and safe to hold.
+//
+// It is nil-safe in the only sense that matters here — the record, not the
+// receiver — because "nothing to report" is the state every instance is in for its
+// whole life unless somebody pushes a connection change.
+func (l *liveWiring) restartRequired() *wiringRestart {
+	return l.restart.Load()
 }
 
 // current is THE PIN: the one resolution of "which wiring answers this request",
@@ -219,14 +317,29 @@ func (l *liveWiring) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // adopted under the earlier read's digest, which is a stale instance that believes
 // it is current.
 //
-// E4-S3's frozen connection-name check goes at the top of this function, before the
-// rebuild: comparing set.Connections against the manifest this process resolved
-// routes for at boot is a decision that can be made without building anything, and
-// its outcome ("restart required") is not the same fact as "the rebuild failed".
+// The FROZEN CONNECTION NAME SET is checked first, before anything is built and
+// before the holder's ability to rebuild at all is consulted. Comparing the pushed
+// manifest's names against the ones this process resolved routes for at boot needs
+// no registry, no pool and no seed file, and its outcome is not the same fact as a
+// rebuild failure: "this instance must be restarted to adopt this push" is a
+// STANDING condition about the process, where a failed rebuild is a statement about
+// the push. Both leave the instance deciding through the wiring it has; only one of
+// them is fixed by correcting the pushed document. See
+// refuseFrozenConnectionNames.
+//
+// A successful swap CLEARS the latched condition, because a push that restores the
+// name set is the operator's own remedy and an instance that went on reporting
+// "restart required" after adopting one would be reporting a fact about a push it
+// no longer runs. A failed REBUILD deliberately leaves the latch alone: whether a
+// rebuild failure is itself an operator-visible posture is E4-S4's question, and
+// answering it here would put two mechanisms on one signal.
 func (l *liveWiring) swap(ctx context.Context, set model.WiringSet, digest string) error {
 	l.swapping.Lock()
 	defer l.swapping.Unlock()
 
+	if err := l.refuseFrozenConnectionNames(set, digest); err != nil {
+		return err
+	}
 	if l.rebuild == nil {
 		return aerr.New(aerr.APERTURE_BOOT,
 			"cli: this process has no way to rebuild its wiring, so a deployed change cannot be adopted without a restart")
@@ -248,7 +361,145 @@ func (l *liveWiring) swap(ctx context.Context, set model.WiringSet, digest strin
 			"cli: rebuilding the wiring produced no version, so this instance keeps the wiring it has")
 	}
 	l.cur.Store(next)
+	// Cleared AFTER the install, so a reader that saw the condition and then sees it
+	// gone is looking at an instance that really is running the push.
+	l.restart.Store(nil)
 	return nil
+}
+
+// refuseFrozenConnectionNames refuses a push whose connection NAME SET differs from
+// the one this process resolved routes for at boot, in either direction, and latches
+// the condition for a reader that is not watching stderr.
+//
+// # Why both directions, and why they are reported apart
+//
+// An ADDED name is normally one this instance has no pool for and cannot make one
+// for: sql.Open is lazy, so the failure would not even be at the push — it would be
+// the first decision that needed the database, and an object provider that cannot
+// reach its database yields no metadata while an attribute provider that cannot
+// yields a NIL BAG, which widens an exclusive grant instead of denying it. That is
+// the same fact a boot refuses with APERTURE_WIRING_CONNECTION_UNROUTED, from the
+// running process's side, and borrowBootPools is still the backstop for it.
+//
+// It is refused even in the case where this instance HAPPENS to route the new name
+// already, out of its own seed file's connections: block. The frozen set is the
+// manifest's, not the pool set, so every instance in the fleet gives the same answer
+// to the same push; a rule that adopted where the local file helped and refused
+// where it did not would leave two instances running two wiring versions, with only
+// one of them reporting anything.
+//
+// A REMOVED name is the quieter one, and until this check existed it was applied
+// SILENTLY: the rebuild simply built a registry that named no connection, every
+// remaining provider still resolved, and the process was left holding a pool for a
+// connection the deployment had retired — with the operator's own wiring diff saying
+// the retirement had landed. Draining that pool is a different problem from adopting
+// wiring (it is open, it may have checked-out connections, and its lifetime belongs
+// to the boot's seed.Connections, which serve closes once on shutdown), so this
+// refuses the push rather than pretending to. The pool is NOT torn down, and the
+// instance goes on deciding through it.
+//
+// The two are reported apart because they are different operator situations —
+// "export a DSN for the new name, then restart" versus "this instance is still
+// holding a pool for a name you retired; restart it when you are ready" — even
+// though the coded remedy is the same restart.
+//
+// # Why this code
+//
+// APERTURE_WIRING_RESTART_REQUIRED, its own code rather than the boot half's
+// APERTURE_WIRING_CONNECTION_UNROUTED, because only HALF of the condition is
+// shared. A name the push ADDS that this host cannot route really is "unrouted",
+// and that code's fixups are the remedy for it. A name the push DROPS is routed
+// perfectly well — the pool is open and serving — so "this instance has no route
+// for it" is simply false of it, and none of that code's five fixups says the one
+// thing an operator has to do here. Reusing it would have handed a
+// correct-sounding message and five inapplicable remedies to half of the cases.
+//
+// The boot half keeps APERTURE_WIRING_CONNECTION_UNROUTED, where the message is
+// exactly true and every fixup applies: at boot there is no running process to
+// restart, and the remedy really is to supply the missing route.
+//
+// Constructed and never wrapped, so there is exactly one Aperture-coded error in the
+// chain: a pass-through guard would be pointless here because nothing below has
+// coded anything yet, and a wrap of a coded error would bury the fixups that ARE the
+// remedy.
+//
+// Only connection NAMES and a digest reach the message and the context map. A name
+// is operator-supplied configuration; a DSN is not, and is not in the shared tables
+// to be leaked in the first place.
+func (l *liveWiring) refuseFrozenConnectionNames(set model.WiringSet, digest string) error {
+	added, removed := diffConnectionNames(l.frozen, wiringConnectionNames(set))
+	if len(added) == 0 && len(removed) == 0 {
+		return nil
+	}
+	l.restart.Store(&wiringRestart{digest: digest, added: added, removed: removed})
+
+	var changes []string
+	if len(added) > 0 {
+		changes = append(changes, fmt.Sprintf("it adds connection %s %s",
+			plural("name", "names", len(added)), strings.Join(quoteEach(added), ", ")))
+	}
+	if len(removed) > 0 {
+		changes = append(changes, fmt.Sprintf("it drops connection %s %s",
+			plural("name", "names", len(removed)), strings.Join(quoteEach(removed), ", ")))
+	}
+	return aerr.WithContext(aerr.APERTURE_WIRING_RESTART_REQUIRED,
+		fmt.Sprintf("cli: the deployed wiring changes this instance's connection NAME SET — %s — and that set is FIXED for the "+
+			"life of a process: the shared tables carry a connection's name and nothing else, because which server, which "+
+			"credential and how big a pool are per-instance facts this instance resolves once, at boot. It can neither open a "+
+			"pool for a name that appeared while it was running nor drain one for a name that vanished. RESTART THIS INSTANCE "+
+			"to adopt the push. Nothing in it was applied — not the connections, and not the providers, field types or "+
+			"attribute providers pushed beside them, because a push is adopted whole or not at all — so this instance keeps the "+
+			"wiring it has and goes on deciding meanwhile", strings.Join(changes, ", and ")),
+		map[string]any{"added": added, "removed": removed, "digest": digest})
+}
+
+// wiringConnectionNames is the connection NAME SET of a wiring snapshot, sorted.
+//
+// Sorted so that two reads of the same manifest compare equal however a backend
+// ordered its rows, which is the same reason wiringDigest sorts before it hashes. The
+// names are the whole of the connections section — model.WiringConnection carries a
+// name and its stamps and nothing else — so this is not a projection of the section,
+// it IS the section, which is why a stamp-only re-push (every push rewrites every
+// row) is correctly read as no change at all.
+//
+// Returns nil for an empty section, which compares equal to another empty one.
+func wiringConnectionNames(set model.WiringSet) []string {
+	if len(set.Connections) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(set.Connections))
+	for _, c := range set.Connections {
+		out = append(out, c.Name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// diffConnectionNames reports what next adds to was and what it drops from it, both
+// sorted, given two sorted inputs.
+//
+// It is a set difference and not a length or an order comparison, deliberately: an
+// operator who renames one connection has both an add and a drop in one push and
+// needs told both names, and a push that only re-stamps its rows must come back empty
+// from both.
+func diffConnectionNames(was, next []string) (added, removed []string) {
+	have := make(map[string]struct{}, len(was))
+	for _, n := range was {
+		have[n] = struct{}{}
+	}
+	want := make(map[string]struct{}, len(next))
+	for _, n := range next {
+		want[n] = struct{}{}
+		if _, ok := have[n]; !ok {
+			added = append(added, n)
+		}
+	}
+	for _, n := range was {
+		if _, ok := want[n]; !ok {
+			removed = append(removed, n)
+		}
+	}
+	return added, removed
 }
 
 // borrowBootPools is the ConnectionOpener a REBUILD resolves `connections:`
@@ -262,14 +513,18 @@ func (l *liveWiring) swap(ctx context.Context, set model.WiringSet, digest strin
 // declared name, for the life of the process, is the same promise
 // seed.Connections makes a boot.
 //
-// A name the boot opened no pool for is REFUSED, which is what freezes the
-// connection name set in practice: the rebuild fails, nothing is installed, and the
-// instance keeps deciding. It is deliberately the same code the boot uses for a
-// name it has no route for (APERTURE_WIRING_CONNECTION_UNROUTED), because it is the
-// same fact from the running process's side — this instance cannot reach a database
-// the pushed wiring names. E4-S3 owns turning it into the surfaced "restart
-// required" condition an operator can see without reading stderr; until then the
-// behaviour is correct and the reporting is a log line.
+// A name the boot opened no pool for is REFUSED, with the same code the boot uses
+// for a name it has no route for (APERTURE_WIRING_CONNECTION_UNROUTED), because it
+// is the same fact from the running process's side — this instance cannot reach a
+// database the pushed wiring names.
+//
+// It is now a BACKSTOP rather than the mechanism. refuseFrozenConnectionNames
+// catches the whole condition before a rebuild starts, and catches the REMOVED
+// direction this function structurally cannot see, so nothing that reaches here
+// should ever fail. It is kept, unchanged, because it is fail-closed at the exact
+// point a pool is handed out: any future path that rebuilt without going through
+// swap — an embedding host's own refresh, a test — must not be able to read through
+// a connection this process never opened.
 //
 // The message names the CONNECTION and never a DSN, and the context map carries
 // names only — the rule Connections.Names and refuseUnroutedConnections both obey.

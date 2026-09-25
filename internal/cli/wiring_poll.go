@@ -47,13 +47,14 @@ import (
 //
 // The seams the rest of the epic builds on are named where they are:
 //
-//   - E4-S3 (the frozen connection-name set) belongs in liveWiring.swap, BEFORE
-//     the rebuild: a set whose connections: manifest differs from the one this
-//     instance resolved routes for at boot cannot be adopted by a process that
-//     has already opened pools. Today such a set is refused by borrowBootPools as
-//     an ordinary rebuild failure — correct and last-good, but reported as a log
-//     line rather than as the surfaced "restart required" condition that story
-//     owes an operator.
+//   - The CONNECTION NAME SET is frozen for the life of a process, so a set whose
+//     connections: manifest differs from the one this instance resolved routes for
+//     at boot is refused WHOLE by liveWiring.swap before anything is rebuilt, in
+//     either direction, and latched as a standing "restart required" condition a
+//     posture reader can see without watching this writer
+//     (liveWiring.restartRequired). The error reaches the swap branch below like
+//     any other, so the line it prints is the same line — what differs is that the
+//     condition outlives the line.
 //   - E4-S4 (last-good on failure, and the alarm) owns tick's failure branches,
 //     and has landed: a failure records an alarm on a service.WiringHealth and
 //     keeps the wiring it has, and a successful refresh clears it. wiring_stale.go
@@ -598,11 +599,23 @@ func (p *wiringPoll) tick(ctx context.Context) bool {
 		// Last-good, and the digest deliberately does NOT advance — see the doc
 		// comment. The error is reported verbatim because it is already an
 		// APERTURE_*-coded refusal naming the entry to go and fix (an unconstructable
-		// kind, a connection name this process has no pool for, a seed file that has
-		// since been edited into an invalid one). E4-S4 adds the alarm; this line is
-		// the whole of the reporting until then.
+		// kind, a connection NAME SET this process cannot adopt, a seed file that has
+		// since been edited into an invalid one).
 		p.report("wiring poll: the deployed wiring CHANGED (%s -> %s) but this instance could not adopt it, so it keeps "+
 			"the wiring it has and goes on deciding: %v", shortDigest(previous), shortDigest(digest), err)
+		// And the alarm is RE-ARMED, after refreshed() cleared it above. Both calls
+		// belong here and the order is the contract: the read and the digest both
+		// succeeded, so "could this instance find out?" really was answered yes and
+		// refreshed() was right to clear — but the instance is now KNOWINGLY running
+		// superseded wiring, which is a strictly worse posture than not having looked.
+		//
+		// Without this line a failed adoption reports on stderr and leaves the
+		// posture saying HEALTHY, because the success of the read had already cleared
+		// the alarm three statements earlier. That is the silent staleness this epic
+		// exists to close, and it is the one shape of it that no amount of polling
+		// discovers: every subsequent tick reads fine, clears fine, fails to adopt
+		// again, and says nothing.
+		p.alarm(err)
 		return false
 	}
 	p.digest = digest

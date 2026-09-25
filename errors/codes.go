@@ -465,6 +465,31 @@ const (
 	// than the deployment asked for, and nothing in either verdict says a route was
 	// missing.
 	APERTURE_WIRING_CONNECTION_UNROUTED Code = "APERTURE_WIRING_CONNECTION_UNROUTED"
+	// APERTURE_WIRING_RESTART_REQUIRED — the deployed wiring changes a RUNNING
+	// instance's connection NAME SET, which is fixed for the life of a process. The
+	// message names which names the push adds and which it drops, and says that
+	// nothing in the push was applied.
+	//
+	// It is the running-process counterpart of
+	// APERTURE_WIRING_CONNECTION_UNROUTED, and the two are deliberately separate
+	// codes rather than one reused twice, because only half of the condition is
+	// shared. A name the push ADDS that this host cannot route is genuinely
+	// "unrouted", and that code's fixups are the remedy. A name the push DROPS is
+	// routed perfectly well — the pool is open and serving — so "this instance has
+	// no route for it" is simply false of it, and none of that code's fixups says
+	// the thing an operator actually has to do. Reusing it would have handed a
+	// correct-sounding message and five inapplicable remedies to half of the cases.
+	//
+	// The remedy is always a restart, and the reason the remedy is not "adopt it
+	// anyway" is that a process cannot open a pool for a name that appeared while
+	// it was running, nor drain one for a name that vanished, without becoming a
+	// second answer to a question the boot already answered.
+	//
+	// Nothing in the push is applied, not even the parts that have nothing to do
+	// with connections: a push is adopted whole or not at all, because a set
+	// applied by halves is a wiring version no operator ever pushed and no
+	// `aperture wiring diff` would describe.
+	APERTURE_WIRING_RESTART_REQUIRED Code = "APERTURE_WIRING_RESTART_REQUIRED"
 	// APERTURE_WIRING_LOCAL_COLLISION — this instance's LOCAL seed file declares
 	// an object type or an attribute slot the shared wiring in its database
 	// already declares. The message names the colliding entries and the two
@@ -945,6 +970,16 @@ var Registry = map[Code]Metadata{
 			"Do not work around it by removing the entry that uses the connection: an object provider that cannot reach its database yields no metadata, and an attribute provider that cannot yields a nil bag — which widens an exclusive grant rather than denying.",
 		},
 	},
+	APERTURE_WIRING_RESTART_REQUIRED: {
+		Message: "the deployed wiring changes this instance's connection name set, which is fixed for the life of a process",
+		Fixups: []string{
+			"Restart this instance to adopt the push. The connection NAME SET is resolved once, at boot, because a route — which server, which credential, how big a pool — is a per-instance fact the shared tables carry no column for.",
+			"For each name the message says the push ADDS, supply this instance's route first: export APERTURE_CONNECTION_<NAME>_DSN, or declare a connections: entry under the same name in this instance's --seed file, or supply seed.WithConnectionOpener in a Go host. Then restart.",
+			"For each name the message says the push DROPS, nothing needs supplying: the pool stays open and this instance goes on deciding through the wiring it has until it is restarted.",
+			"Nothing else in the push was applied either — a push is adopted whole or not at all — so the providers, field types and attribute providers pushed alongside the connection change are still outstanding and land on the restart.",
+			"Check what the deployment expects with `aperture wiring show --store <dsn>`; the shared tables carry the connection NAME and nothing else, so every instance supplies its own route for each one.",
+		},
+	},
 	APERTURE_WIRING_LOCAL_COLLISION: {
 		Message: "the local seed file declares an object type or attribute slot the shared wiring already declares",
 		Fixups: []string{
@@ -1038,6 +1073,7 @@ var AllCodes = []Code{
 	APERTURE_WIRING_CONNECTION_UNDECLARED,
 	APERTURE_WIRING_KIND_UNSHAREABLE,
 	APERTURE_WIRING_CONNECTION_UNROUTED,
+	APERTURE_WIRING_RESTART_REQUIRED,
 	APERTURE_WIRING_LOCAL_COLLISION,
 	APERTURE_WIRING_NOTHING_DEPLOYED,
 	APERTURE_WIRING_OUTPUT_EXISTS,

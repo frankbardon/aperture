@@ -499,3 +499,78 @@ func TestThePollerAndTheFacadeShareOneRecorder(t *testing.T) {
 		t.Errorf("the failure the poller observed did not reach the shared recorder: %+v", p)
 	}
 }
+
+// TestAnAdoptionThatFailsIsStaleAndNotHealthy is the case the interleaved merge of
+// E4-S2 (the swap), E4-S3 (the frozen connection-name set) and E4-S4 (the alarm)
+// left uncovered, and the defect it caught was live on the branch for one commit.
+//
+// tick clears any standing alarm as soon as the READ and the DIGEST succeed, which
+// is right on its own terms: the alarm's subject is "could this instance find out
+// whether the wiring changed", and a completed read answers that question. But the
+// adoption comes AFTER that point, so a push this instance refuses used to leave
+// the posture reporting HEALTHY while stderr said the opposite.
+//
+// That is the worst shape of the staleness this epic exists to close, because it is
+// the one polling cannot discover. Every subsequent tick reads fine, clears fine,
+// refuses the same push again, and reports a healthy instance running wiring its
+// operator replaced. An operator watching the posture — which is the surface E4-S4
+// built precisely so nobody has to tail a log — would see nothing at all.
+//
+// The frozen connection-name set is the cleanest way to provoke it: a refusal that
+// happens BEFORE anything is rebuilt, with its own code, and one that can never
+// clear by itself. It stands in for every failed adoption, which is why the
+// assertions below are about the POSTURE and not about connections.
+func TestAnAdoptionThatFailsIsStaleAndNotHealthy(t *testing.T) {
+	probe := newStalenessProbe(t)
+	baseline := probe.poll.digest
+	probe.decides(t, "before the refused push")
+
+	// A push that adds a connection name this instance has no route for. The read
+	// and the digest both succeed, so refreshed() clears the alarm on the way past;
+	// the adoption is what fails.
+	set := staleWiringSet(time.Now().UTC())
+	set.Connections = append(set.Connections,
+		model.WiringConnection{Name: "replica", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()})
+	if err := probe.counting.ReplaceWiring(probe.ctx, set); err != nil {
+		t.Fatalf("pushing the wiring: %v", err)
+	}
+	if probe.poll.tick(probe.ctx) {
+		t.Fatal("a push this instance cannot adopt was reported as adopted")
+	}
+
+	// Last-good, and still deciding.
+	if probe.poll.digest != baseline {
+		t.Error("a refused adoption advanced the digest, so the next tick would not " +
+			"re-detect the change and the refusal would be reported exactly once")
+	}
+	probe.decides(t, "after the refused push")
+
+	// And the posture says so. This is the assertion that was failing.
+	p := probe.health.Posture()
+	if !p.Stale {
+		t.Fatalf("an instance that REFUSED a push reports itself healthy: %+v\n"+
+			"It knows the deployed wiring changed, it knows it did not adopt it, and the only "+
+			"place that fact appears is stderr — which is what the posture exists to replace", p)
+	}
+	if p.Code != string(aerr.APERTURE_WIRING_RESTART_REQUIRED) {
+		t.Errorf("the posture's code = %q, want %q: the operator needs the code whose fixups "+
+			"say to restart, not a generic refresh failure", p.Code, aerr.APERTURE_WIRING_RESTART_REQUIRED)
+	}
+	if p.Digest != baseline {
+		t.Errorf("the posture reports digest %q, want the last-good %q this instance is still "+
+			"deciding from — claiming the pushed digest would claim an adoption that was refused",
+			p.Digest, baseline)
+	}
+
+	// It does not clear by itself, and that is the point of THIS failure mode: a
+	// store that went away comes back, but a name set this instance cannot route
+	// stays unroutable until somebody restarts it. A second tick must not launder
+	// the refusal into health.
+	if probe.poll.tick(probe.ctx) {
+		t.Fatal("the second tick adopted a push the first one refused")
+	}
+	if again := probe.health.Posture(); !again.Stale {
+		t.Error("a second tick cleared the alarm and reported health, because the read " +
+			"succeeded again — the refusal is re-detected every tick and must re-arm every time")
+	}
+}
