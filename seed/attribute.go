@@ -121,10 +121,13 @@ func (d *Document) HasAttributeSources() bool {
 //     for the life of the process, so a freshness window would only buy re-reads
 //     of a value that cannot have changed).
 //
-// A slot claimed by BOTH sections is not an error: the attribute_providers:
-// entry WINS and every inline entry for that slot is discarded entirely. The
-// discarded slots are reported by Document.AttributeCollisions, whose doc gives
-// the reasoning — it is Document.ProviderCollisions' rule at slot granularity.
+// A slot claimed by BOTH sections is not an error and not a discard: the two are
+// registered as the slot's two LAYERS — the attribute_providers: entry as the
+// SHARED layer, the inline block as the LOCAL one — and a fetch reads their merge
+// with the shared layer winning every key both serve, so an inline bag can add a
+// key the external source does not carry and can never override one it does. The
+// layered slots are reported by Document.AttributeCollisions and the rule itself
+// is provider.AttributeLayer's.
 //
 // It always returns a usable registry — empty when the document declares neither
 // section — so a caller can wire it unconditionally. An empty registry is not

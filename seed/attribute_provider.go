@@ -370,10 +370,13 @@ func (d *Document) BuildAttributeRegistryWithConnections(baseDir string, conns *
 func (d *Document) buildAttributeRegistry(baseDir string, conns *Connections, open attributeSourceOpener) (*provider.AttributeRegistry, error) {
 	// attribute_providers: is resolved FIRST, before any inline entry is grouped,
 	// so a document that declares both fails on the external declaration it
-	// cannot satisfy rather than on an inline entry that a declared source was
-	// going to discard anyway. That ordering IS the precedence rule, and it
-	// mirrors BuildRegistryWithConnections registering providers: before
-	// objects:.
+	// cannot satisfy rather than on an inline entry whose own validity says nothing
+	// about it. That ordering mirrors BuildRegistryWithConnections registering
+	// providers: before objects:.
+	//
+	// The precedence between the two sections is no longer this ordering, though:
+	// it is the LAYER each is registered in, which is a property of the registry
+	// rather than of a loop (see the registration calls below).
 	sources, err := d.attributeSources(baseDir, conns)
 	if err != nil {
 		return nil, err
@@ -386,6 +389,24 @@ func (d *Document) buildAttributeRegistry(baseDir string, conns *Connections, op
 	// Slots are filled in provider.AttributeSlots() order, not file order, so a
 	// document with two bad slots always fails on the same one and a build is
 	// reproducible.
+	//
+	// A slot declared in BOTH sections gets BOTH, in the two layers the registry
+	// keeps: the attribute_providers: entry is the SHARED layer and the inline
+	// attributes: block is the LOCAL one, so the external source wins every key
+	// both serve and the inline bags contribute the keys it does not. That is a
+	// reversal of the rule this file used to state — the inline bags were discarded
+	// entirely — and the argument for it is provider.AttributeLayer's: a shared
+	// directory a deployment administers and a block in one instance's file are not
+	// two candidates for one slot, they are two layers of it, and refusing the
+	// second meant an instance could not add a field the directory does not carry
+	// without abandoning the directory.
+	//
+	// Which section is which layer is not a choice either. attribute_providers:
+	// names a source every instance of the deployment reads (a database row
+	// projected back into this section, or a directory), and attributes: is data
+	// written into one instance's file; if the file could override a key the
+	// directory serves, one machine would silently answer a deployment-wide rule
+	// differently.
 	for _, slot := range provider.AttributeSlots() {
 		if src, ok := sources[slot]; ok {
 			impl, err := open(src)
@@ -400,7 +421,6 @@ func (d *Document) buildAttributeRegistry(baseDir string, conns *Connections, op
 			if err := reg.Register(slot, impl, src.cacheOpts...); err != nil {
 				return nil, err
 			}
-			continue
 		}
 		records, ok := groups[slot]
 		if !ok {
@@ -415,8 +435,10 @@ func (d *Document) buildAttributeRegistry(baseDir string, conns *Connections, op
 			return nil, err
 		}
 		// TTL 0: inline data is fixed for the life of the process, so a freshness
-		// window would only buy re-reads of a value that cannot have changed.
-		if err := reg.Register(slot, impl, provider.WithTTL(0)); err != nil {
+		// window would only buy re-reads of a value that cannot have changed. It is
+		// the LOCAL layer's window and nothing else's — the shared layer keeps the
+		// ttl: its own entry declared, which is why the two caches are separate.
+		if err := reg.RegisterLocal(slot, impl, provider.WithTTL(0)); err != nil {
 			return nil, err
 		}
 	}
@@ -588,11 +610,18 @@ const AttributeSourceInline = "inline"
 //
 // It exists so a surface that DISPLAYS the wiring — `aperture attributes slots`
 // — does not have to re-derive the precedence rule. The rule is one rule and it
-// is defined in this file: an attribute_providers: entry WINS and the inline
-// bags for that slot are discarded entirely (see AttributeCollisions). A CLI
-// that walked the two sections itself would be a second implementation of it,
-// and the two would eventually disagree about which source an operator is
-// actually running — the one question the listing exists to answer.
+// is defined in this file: an attribute_providers: entry is the SHARED layer and
+// WINS every key both sections serve, with the inline bags layered under it (see
+// AttributeCollisions). A CLI that walked the two sections itself would be a
+// second implementation of it, and the two would eventually disagree about which
+// source an operator is actually running — the one question the listing exists to
+// answer.
+//
+// A slot filled by both therefore reports the external kind:, because that is the
+// source a contested key is answered from. That it is the WINNER rather than the
+// only source is what AttributeCollisions reports, and a listing that needs to
+// name both asks provider.AttributeRegistry.Layers for the shape it actually
+// built.
 //
 // It reports WIRING, not contents: slot names and kinds, never a key and never a
 // bag. What a slot's cache is actually configured with is a property of the
@@ -634,19 +663,25 @@ func (d *Document) AttributeSlotSources() map[string]string {
 // attribute_providers: and attributes: sections, in provider.AttributeSlots()
 // order.
 //
-// It is Document.ProviderCollisions for the attribute seam, and the rule it
-// reports is the same one, at slot granularity instead of type granularity: the
-// external attribute_providers: entry WINS, and every inline attributes: entry
-// for that slot is discarded ENTIRELY. There is no per-subject merge and no
-// fallback — an inline id the external source happens to lack is simply not
-// resolvable, exactly as if the entry had never been written.
+// It is Document.ProviderCollisions for the attribute seam, and the two no longer
+// report the same rule. The OBJECT rule is still a discard: a providers: entry
+// wins a type and the inline objects: entries for it are dropped. The ATTRIBUTE
+// rule is a LAYERING: the external attribute_providers: entry is the slot's shared
+// layer, the inline attributes: block is its local layer, and a fetch reads their
+// merge with the shared layer winning every key both serve (provider.AttributeLayer
+// is the full account).
 //
-// Field-level merging is the most useful-sounding behaviour and the most
-// impossible to debug: a rule reading a department the directory silently did
-// not override is a support ticket nobody can reproduce. Predictability wins,
-// and it wins for the same reason it does for objects.
+// So an inline id the external source lacks IS resolvable — that is the point of
+// the local layer — while an inline value for a key the external source does serve
+// is not read, ever, on any instance.
 //
-// The discard is not silent either. seed has no logging path of its own, so it
+// Field-level merging with a CONFIGURABLE or order-dependent winner is what remains
+// impossible to debug, and it is still refused: a rule reading a department one
+// machine's file silently overrode is a support ticket nobody can reproduce. What
+// makes the layering safe is that the winner is fixed and is the deployment-wide
+// source, so a contested key reads the same on every instance.
+//
+// The layering is not silent either. seed has no logging path of its own, so it
 // reports the fact here and the caller surfaces it — internal/cli prints a
 // warning naming the slots. Only SLOT NAMES are reported, never keys, so the
 // warning cannot leak a directory's contents.

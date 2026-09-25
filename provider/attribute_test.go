@@ -237,7 +237,12 @@ func TestAttributeRegistration(t *testing.T) {
 		}
 	})
 
-	t.Run("a duplicate is refused rather than replacing", func(t *testing.T) {
+	// A duplicate WITHIN A LAYER is refused rather than replacing. The second
+	// provider a slot accepts is a different LAYER with a stated winner
+	// (RegisterLocal, and attribute_layer_test.go); a second SHARED one would be
+	// "last writer wins" over a directory, which is the shadowing this refusal
+	// exists for.
+	t.Run("a duplicate in the same layer is refused rather than replacing", func(t *testing.T) {
 		reg := NewAttributeRegistry()
 		if err := reg.Register(AttributeSlotUser, p); err != nil {
 			t.Fatalf("first register: %v", err)

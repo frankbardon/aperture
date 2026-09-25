@@ -91,8 +91,18 @@ func (s decisionStack) Close() error {
 
 // reportCollisions writes a warning naming every object type whose inline
 // `objects:` entries were discarded because a `providers:` entry claimed the same
-// type, and every attribute SLOT whose inline `attributes:` entries were
-// discarded because an `attribute_providers:` entry claimed the same slot.
+// type, and every attribute SLOT that is filled from both `attribute_providers:`
+// and `attributes:`.
+//
+// The two are no longer the same fact and the warning no longer says they are.
+// The object rule is a DISCARD: the `providers:` entry wins the type and the
+// inline entries for it are dropped. The attribute rule is a LAYERING: the
+// `attribute_providers:` entry is the slot's shared layer, the inline block is its
+// local layer, and a fetch reads their merge with the shared layer winning every
+// key both serve (`provider.AttributeLayer`). It is still worth a line, because
+// which layer answers a contested key is exactly what an operator debugging an
+// unexpected attribute value needs told.
+//
 // Nothing is written when there is no collision, so a normal boot stays silent.
 // Only object TYPES and slot NAMES are named — never ids, never keys — so the
 // warning cannot leak cross-account data or a directory's contents.
@@ -107,7 +117,8 @@ func (s decisionStack) reportCollisions(w io.Writer) {
 	}
 	if len(s.attributeCollisions) > 0 {
 		fmt.Fprintf(w, "warning: seed declares %d attribute slot(s) in both attribute_providers: and attributes: — "+
-			"the attribute_providers: entry wins and the inline bags were discarded: %s\n",
+			"the attribute_providers: entry is the shared layer and wins every key both serve; "+
+			"the inline bags layer under it: %s\n",
 			len(s.attributeCollisions), strings.Join(s.attributeCollisions, ", "))
 	}
 }
