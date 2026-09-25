@@ -130,19 +130,27 @@ providers:
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
-	if md["tier"] != "gold" {
-		t.Errorf("tier = %v (%T), want gold", md["tier"], md["tier"])
-	}
 	// The value model, against a real driver: an int column arrives as a Go
 	// integer, and a date arrives as the canonical UTC text form — never as a
 	// time.Time restated in the reader's zone. sqlprovider always formats a
 	// timestamp at datetime granularity, so a DATE column reads back as midnight
 	// Z rather than as a bare day.
-	if got := fmt.Sprint(md["seats"]); got != "12" {
-		t.Errorf("seats = %v (%T), want 12", md["seats"], md["seats"])
+	//
+	// Each assertion pins the Go TYPE with a type assertion, for the reason spelled
+	// out at the attribute test below: a fmt.Sprint comparison — which the seats
+	// case used to be — cannot tell int64(12) from the string "12", and this test
+	// is the only thing in the repo that watches a real driver hand over a real
+	// result set. A silent stringification is exactly what it exists to catch.
+	if got, ok := md["tier"].(string); !ok || got != "gold" {
+		t.Errorf("tier = %#v (%T), want the string \"gold\"", md["tier"], md["tier"])
 	}
-	if got, want := md["renews_on"], "2026-03-01T00:00:00Z"; got != want {
-		t.Errorf("renews_on = %v (%T), want %q", got, got, want)
+	if got, ok := md["seats"].(int64); !ok || got != 12 {
+		t.Errorf("seats = %#v (%T), want int64(12) — a stringified number compares "+
+			"against nothing a rule can write", md["seats"], md["seats"])
+	}
+	if got, ok := md["renews_on"].(string); !ok || got != "2026-03-01T00:00:00Z" {
+		t.Errorf("renews_on = %#v (%T), want the string \"2026-03-01T00:00:00Z\"",
+			md["renews_on"], md["renews_on"])
 	}
 
 	ids, err := reg.Identifiers(ctx, "brand")
@@ -275,21 +283,34 @@ attribute_providers:
 	// The decision path's fetch. The value model against a real driver: an int
 	// column is a Go integer, a cast array is a real list, and a ::text date is
 	// the bare day it was written as.
+	//
+	// Every assertion pins the Go TYPE as well as the value, with a type
+	// assertion rather than ==, and that is the point of the shape they are
+	// written in. `bag["clearance"] != 3` would compare an any against an
+	// untyped constant and be false for the correct int64(3); a
+	// fmt.Sprint(...) == "3" — which this test used to do — cannot tell int64(3)
+	// from the string "3" at all, so a driver that silently stringified a numeric
+	// column would pass here and then fail `principal.clearance >= 3` with
+	// nothing to point at. In an authorization engine "5" != 5 is load-bearing
+	// (it is the whole argument for pgx over lib/pq, which returns []byte for
+	// numeric and uuid), so the type is the assertion, not a detail of it.
 	bag, err := attrs.Attributes(ctx, "user", "alice")
 	if err != nil {
 		t.Fatalf("Attributes(user, alice): %v", err)
 	}
-	if bag["department"] != "eng" {
-		t.Errorf("department = %v (%T), want eng", bag["department"], bag["department"])
+	if got, ok := bag["department"].(string); !ok || got != "eng" {
+		t.Errorf("department = %#v (%T), want the string \"eng\"", bag["department"], bag["department"])
 	}
-	if got := fmt.Sprint(bag["clearance"]); got != "3" {
-		t.Errorf("clearance = %v (%T), want 3", bag["clearance"], bag["clearance"])
+	if got, ok := bag["clearance"].(int64); !ok || got != 3 {
+		t.Errorf("clearance = %#v (%T), want int64(3) — a stringified number compares "+
+			"against nothing a rule can write", bag["clearance"], bag["clearance"])
 	}
 	if got, want := bag["teams"], []any{"platform", "oncall"}; !reflect.DeepEqual(got, want) {
-		t.Errorf("teams = %#v, want %#v — check the to_jsonb cast", got, want)
+		t.Errorf("teams = %#v (%T), want %#v — check the to_jsonb cast", got, got, want)
 	}
-	if got, want := bag["hired_on"], "2024-03-04"; got != want {
-		t.Errorf("hired_on = %v, want %q", got, want)
+	if got, ok := bag["hired_on"].(string); !ok || got != "2024-03-04" {
+		t.Errorf("hired_on = %#v (%T), want the string \"2024-03-04\" — a ::text date is "+
+			"stored as-is, never routed through the datetime form", bag["hired_on"], bag["hired_on"])
 	}
 
 	// A subject the table does not hold is not a failure: it decides against the
@@ -299,6 +320,16 @@ attribute_providers:
 	}
 
 	// The admin read, keyed by BARE ids.
+	//
+	// Its position in this test is load-bearing and must not be moved below the
+	// verdict. This document's get_all projects three columns where get_one
+	// projects four — the legal pairing, since AttributeConfig.ListQuery is
+	// optional and need only select a bare id — so an Enumerate that wrote the
+	// slot's FETCH cache would replace alice's decision bag with the listing's
+	// narrower one, `principal.teams` would be absent, and the verdict below would
+	// be false. That is the bug this ordering found (E3-S5); the fix is in
+	// provider.AttributeRegistry.Enumerate, and the make-test-catchable version of
+	// this case is TestAttributeProviders_SQLAnEnumerationDoesNotNarrowTheRuleBag.
 	recs, err := attrs.Enumerate(ctx, provider.AttributeSlotUser, provider.AttributeFilter{})
 	if err != nil {
 		t.Fatalf("Enumerate: %v", err)

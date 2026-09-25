@@ -416,3 +416,136 @@ attribute_providers:
 // to supply — and the engine is wired with a nil MetadataFetcher to match, which
 // makes `object` an empty bag rather than a failed lookup.
 var noObject = identity.Identity{}
+
+// The statements for the narrower-get_all case below. get_one projects four
+// columns and get_all projects two, which is the pairing the loaders' own
+// contract permits (AttributeConfig.ListQuery is OPTIONAL and is only required to
+// select a bare id) and the pairing the gated live-Postgres test uses.
+const (
+	wideFetch   = `SELECT department, clearance, to_jsonb(teams) AS teams, hired_on::text AS hired_on FROM users WHERE id = $1`
+	narrowList  = `SELECT u.id AS id, u.department, u.clearance FROM users u`
+	teamsColumn = `["platform","oncall"]`
+)
+
+// TestAttributeProviders_SQLAnEnumerationDoesNotNarrowTheRuleBag is E3-S5's
+// regression, at the seed layer and over the FAKE driver, so plain `make test`
+// catches it with no database present.
+//
+// It is the gated TestPostgresIntegration_AttributeProviderServesASlot's exact
+// shape and exact order: an operator's admin listing runs, and only then does a
+// decision. The listing's projection has no `teams` column; the decision's rule
+// asks about `principal.teams`. Before the fix the registry warmed the slot's
+// FETCH cache from the listing's bags, so the decision read a bag with `teams`
+// absent and `hasAny` went false — a verdict flipped by an administrative read,
+// for the whole of the slot's ttl, with nothing anywhere to say so.
+//
+// The three predicates are deliberate. Two of them (a string equality and a
+// numeric >=) survive the narrowing because the listing happens to carry those
+// two columns; only the third fails. A single-predicate rule would have made the
+// bug look like a total outage, which is the thing that would have been noticed.
+func TestAttributeProviders_SQLAnEnumerationDoesNotNarrowTheRuleBag(t *testing.T) {
+	ctx := context.Background()
+	db := &fakeDB{tables: map[string]fakeTable{
+		wideFetch: {
+			cols: []string{"department", "clearance", "teams", "hired_on"},
+			// teams arrives as jsonb, which reaches the value model as []byte and
+			// decodes to a LIST — the to_jsonb cast the package doc requires.
+			rows: [][]driver.Value{{"eng", int64(3), []byte(teamsColumn), "2024-03-04"}},
+		},
+		narrowList: {
+			cols: []string{"id", "department", "clearance"},
+			rows: [][]driver.Value{
+				{"alice", "eng", int64(3)},
+				{"bob", "sales", int64(1)},
+			},
+		},
+	}}
+	dsn := newFakeDSN(t, db)
+	t.Setenv("APERTURE_TEST_DSN", dsn)
+	opener := newCountingOpener(dsn)
+
+	doc := attributeDoc(t, `
+connections:
+  main:
+    dsn_env: APERTURE_TEST_DSN
+attribute_providers:
+  - subject: user
+    kind: sql
+    connection: main
+    get_one: `+wideFetch+`
+    get_all: `+narrowList+`
+`)
+	conns, err := doc.openConnections(opener.open)
+	if err != nil {
+		t.Fatalf("openConnections: %v", err)
+	}
+	defer func() { _ = conns.Close() }()
+	attrs, err := doc.BuildAttributeRegistryWithConnections("", conns)
+	if err != nil {
+		t.Fatalf("BuildAttributeRegistryWithConnections: %v", err)
+	}
+
+	// The operator's system-tier admin read, first. This is the only step the bug
+	// needed, and it is one an operator is meant to be able to run at any time.
+	if _, err := attrs.Enumerate(ctx, provider.AttributeSlotUser, provider.AttributeFilter{}); err != nil {
+		t.Fatalf("Enumerate: %v", err)
+	}
+
+	// The decision path's bag, AFTER the listing. Every column get_one projects is
+	// still there, with the Go type the driver-value table promises.
+	bag, err := attrs.Attributes(ctx, "user", "alice")
+	if err != nil {
+		t.Fatalf("Attributes(user, alice): %v", err)
+	}
+	if got, ok := bag["department"].(string); !ok || got != "eng" {
+		t.Errorf("department = %#v (%T), want the string \"eng\"", bag["department"], bag["department"])
+	}
+	if got, ok := bag["clearance"].(int64); !ok || got != 3 {
+		t.Errorf("clearance = %#v (%T), want int64(3)", bag["clearance"], bag["clearance"])
+	}
+	if got, want := bag["teams"], []any{"platform", "oncall"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("teams = %#v, want %#v — a listing's projection reached the decision path", got, want)
+	}
+	if got, ok := bag["hired_on"].(string); !ok || got != "2024-03-04" {
+		t.Errorf("hired_on = %#v (%T), want the string \"2024-03-04\"", bag["hired_on"], bag["hired_on"])
+	}
+
+	// And the verdict, through the production seam.
+	eng := rules.NewEngine(
+		rules.MapSource{
+			"engineering": {AST: rules.And(
+				rules.Compare(rules.OpEq, rules.Var("principal.department"), rules.Lit("eng")),
+				rules.Compare(rules.OpGe, rules.Var("principal.clearance"), rules.Lit(3)),
+				rules.Compare(rules.OpHasAny, rules.Var("principal.teams"), rules.List(rules.Lit("oncall"))),
+			)},
+			// The two rules that must be FALSE. A membership predicate over an
+			// absent collection is false, so `engineering` selecting proves
+			// nothing on its own — a rule that cannot deny is not evidence of
+			// anything. `finance` asks the same question of the same key and must
+			// deny, which is what makes the true verdict above a read of the
+			// bag's real contents rather than of a shape.
+			"finance": {AST: rules.Compare(rules.OpHasAny,
+				rules.Var("principal.teams"), rules.List(rules.Lit("finance")))},
+			"sales": {AST: rules.Compare(rules.OpEq,
+				rules.Var("principal.department"), rules.Lit("sales"))},
+		},
+		nil, // the rules read only the principal
+		rules.WithPrincipalResolver(attrs),
+	)
+	for _, tc := range []struct {
+		rule string
+		want bool
+	}{
+		{"engineering", true},
+		{"finance", false},
+		{"sales", false},
+	} {
+		selected, err := eng.Selected(ctx, tc.rule, noObject, "acme", "user", "alice", "read")
+		if err != nil {
+			t.Fatalf("Selected(%s): %v", tc.rule, err)
+		}
+		if selected != tc.want {
+			t.Errorf("Selected(%s) = %v, want %v — an admin enumeration changed a decision", tc.rule, selected, tc.want)
+		}
+	}
+}

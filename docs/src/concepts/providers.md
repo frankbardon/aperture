@@ -513,6 +513,31 @@ surfaced as [`aperture attributes query`](../cli/attributes.md). The decision
 path's `Fetch` is not gated and must never be — a decision resolves one bag for a
 subject it already named.
 
+### The listing does not write the decision path's cache
+
+`AttributeRegistry.Enumerate` is read-only all the way down: unlike the object
+registry's `List`, it never warms the slot's cache. `Fetch` still caches its own
+answer; only the listing's bags are excluded.
+
+`Fetch` and `Query` answer different questions, and nothing in `AttributeProvider`
+makes their bags equal. The SQL loader makes the inequality **legal**:
+`AttributeConfig.ListQuery` is optional and only has to select a bare id, so a
+`get_all` projecting two columns beside a `get_one` projecting four is a correct
+pair in which `Query`'s bag is a strict subset of `Fetch`'s. Warming the fetch
+cache from it substituted the *display* projection for the authoritative bag, for
+the whole of the slot's `ttl`.
+
+That is an access-control change rather than a stale read, because **an absent key
+is not a wrong key**. Every predicate over it goes false, so an inclusive grant
+denies and an **exclusive** grant stops excluding — an operator running
+`aperture attributes query user` would silently widen access until the `ttl`
+expired, with nothing in any verdict or trace to say why.
+
+The object `Registry.List` keeps its warm, and the asymmetry is the point: `List`
+is a decision-path call whose `Fetch` follows in the same candidate walk, so the
+warm is repaid within the same decision. `Enumerate` has no `Fetch` behind it, so
+the warm bought nothing and cost the decision path its bag.
+
 ### Where the bags come from
 
 | Implementation | Source | Notes |

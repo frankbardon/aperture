@@ -23,12 +23,15 @@ import (
 func TestInvalidatingAttributesRequiresSystemAdmin(t *testing.T) {
 	svc, spy, ctx := attributeFixture(t)
 
-	// Warm the cache through the decision path, so there is genuinely something
-	// to drop and a refused drop is observable as "it is still there".
+	// One admin listing, so the directory has been read once and the counts below
+	// have a baseline. A listing does NOT write the slot's cache (only a
+	// decision-path Fetch does — see provider.AttributeRegistry.Enumerate), which
+	// is why the baseline taken here is the FETCH count: it is zero, and the claim
+	// below is that a refused invalidation leaves it zero.
 	if _, err := svc.ListAttributes(ctx, adminActor, "user", provider.AttributeFilter{}); err != nil {
 		t.Fatalf("warm-up listing: %v", err)
 	}
-	warm, _, _ := spy.counts()
+	fetchesBefore, _, _ := spy.counts()
 
 	if _, err := svc.InvalidateAttribute(ctx, deniedActor, "user", "mallory"); aerr.CodeOf(err) != aerr.APERTURE_AUTHZ_DENIED {
 		t.Errorf("non-admin InvalidateAttribute = %v, want APERTURE_AUTHZ_DENIED", err)
@@ -40,15 +43,15 @@ func TestInvalidatingAttributesRequiresSystemAdmin(t *testing.T) {
 		t.Errorf("non-admin InvalidateAllAttributes = %v, want APERTURE_AUTHZ_DENIED", err)
 	}
 
-	// A refusal must not have dropped anything: the next admin read is still
-	// served from the warm cache, so the directory sees no new traffic. This is
-	// the DoS half of the reason the gate is there — a refused caller in a loop
-	// must not be able to make every decision re-read the host's user table.
+	// A refusal must not have dropped anything, and it must not have cost the
+	// decision path a directory round-trip. This is the DoS half of the reason the
+	// gate is there — a refused caller in a loop must not be able to make every
+	// decision re-read the host's user table.
 	if _, err := svc.ListAttributes(ctx, adminActor, "user", provider.AttributeFilter{}); err != nil {
 		t.Fatalf("post-refusal listing: %v", err)
 	}
-	if got, _, _ := spy.counts(); got != warm {
-		t.Errorf("the directory was fetched %d extra time(s) after a REFUSED invalidation", got-warm)
+	if got, _, _ := spy.counts(); got != fetchesBefore {
+		t.Errorf("the directory was fetched %d extra time(s) after a REFUSED invalidation", got-fetchesBefore)
 	}
 
 	// The admin's own calls succeed, all three forms.
@@ -126,8 +129,18 @@ func TestInvalidationClosesTheStalenessWindow(t *testing.T) {
 		t.Fatalf("first listing = %+v, want mallory at tier gold", first)
 	}
 
-	// The host demotes mallory. Enumerate warmed the cache, so a Fetch on the
-	// decision path is still answering "gold".
+	// The cache is warmed by a DECISION-PATH fetch, which is the only thing that
+	// warms it: an admin listing reads the directory without writing the slot's
+	// cache, because Query's bag is allowed to be a narrower projection than
+	// Fetch's (see provider.AttributeRegistry.Enumerate). That is also what the
+	// window this test is about is made of — a bag some decision resolved.
+	if md, err := attrs.Fetch(ctx, provider.AttributeSlotUser, "mallory"); err != nil {
+		t.Fatalf("warming fetch: %v", err)
+	} else if md["tier"] != "gold" {
+		t.Fatalf("warming fetch = %v, want gold", md["tier"])
+	}
+
+	// The host demotes mallory. The decision path is still answering "gold".
 	dir.bags["mallory"] = provider.Metadata{"tier": "bronze"}
 	md, err := attrs.Fetch(ctx, provider.AttributeSlotUser, "mallory")
 	if err != nil {
