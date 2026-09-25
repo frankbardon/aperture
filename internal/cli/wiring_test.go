@@ -395,12 +395,12 @@ providers:
 	}
 }
 
-// TestPushRefusesAFieldTypeForATypeWithNoRow is the asymmetry's positive control:
+// TestPushAcceptsAFieldTypeForATypeWithNoRow is the asymmetry's positive control:
 // a field_types: declaration may name a type whose objects a LOCAL seed lists
 // inline, which needs no object_types row at all, and apt_wiring_field_types
 // carries no edge for exactly that reason. Refusing it here would refuse a
 // declaration every loader accepts.
-func TestPushRefusesAFieldTypeForATypeWithNoRow(t *testing.T) {
+func TestPushAcceptsAFieldTypeForATypeWithNoRow(t *testing.T) {
 	dsn := newWiringStore(t, wiringModelSeed)
 	seedPath := writeWiringSeed(t, `
 field_types:
