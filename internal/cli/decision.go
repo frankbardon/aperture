@@ -165,9 +165,11 @@ func (s decisionStack) reportCollisions(w io.Writer) {
 // buildDecisionStack wires the decision graph over an already-seeded store.
 //
 // seedPath is the same --seed value buildStore was given: the seed file is read a
-// second time as a Document because several of its sections — `providers:`,
-// `objects:` and `attributes:` — are runtime WIRING that Apply never writes to
-// storage, so the file is their only source of truth.
+// second time as a Document because six of its sections are runtime WIRING that
+// Apply never writes to storage. Two of them — `objects:` and `attributes:` — are
+// LOCAL, and the file really is their only source of truth; the other four
+// (`providers:`, `field_types:`, `connections:`, `attribute_providers:`) are
+// SHARED, and the store's wiring tables are read first (see below).
 //
 // # Where the wiring comes from
 //

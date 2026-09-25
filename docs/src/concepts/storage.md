@@ -181,6 +181,12 @@ are read *from*. They are the database-backed home for a seed document's
 `connections:`, `providers:`, `field_types:` and `attribute_providers:` sections,
 so a second instance can boot with **no seed file** and decide identically.
 
+Those are four of the document's **six** wiring sections. `objects:` and
+`attributes:` stay local to the instance whose file lists them, because they carry
+the data rather than a pointer to it — see
+[The file is not the only home for wiring](seed.md#the-file-is-not-the-only-home-for-wiring)
+and [`aperture wiring`](../cli/wiring.md) for the command surface over these tables.
+
 | Table | Holds | Key |
 |---|---|---|
 | `apt_wiring_connections` | one row per connection **name**, and nothing else | `name` |

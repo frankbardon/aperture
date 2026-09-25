@@ -52,8 +52,13 @@ import (
 // has no column for any of them — which is also why kind: csv is refused here and
 // stays perfectly legal in a local seed.
 
-// wiringCommand is `aperture wiring`, the parent. Subcommands land beside push as
-// their stories do; the parent carries the shared-versus-local explanation once.
+// wiringCommand is `aperture wiring`, the parent. The tree is complete at four —
+// push deploys, show reads, pull snapshots, diff compares — and the parent carries
+// the shared-versus-local explanation once so no subcommand restates it.
+//
+// The operator-facing account of the whole tree is docs/src/cli/wiring.md and the
+// contract is skills/shared-wiring.md; a subcommand, a flag or a description
+// changing here moves both (CLAUDE.md, "The `aperture wiring` COMMAND TREE").
 func wiringCommand() *ucli.Command {
 	return &ucli.Command{
 		Name:  "wiring",

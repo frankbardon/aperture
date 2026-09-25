@@ -180,6 +180,14 @@ Like the rest of `providers:`, a `references:` block is **runtime wiring, not
 model state**: `Apply` never writes it to storage and an export never reproduces
 it. `TestReferenceWiringIsNotModelState` pins that.
 
+And like the rest of `providers:`, it is **shared** wiring: `aperture wiring push`
+flattens the map into `apt_wiring_provider_references`, one row per
+(`object_type`, `field`), and `aperture wiring pull` reads it back under this key.
+The target type is still resolved against **the registry the wiring builds** rather
+than against a table, so a declaration may legitimately point at a type served only
+by a local `objects:` entry — which is why there is no foreign key on the target
+column. See [`skills/shared-wiring.md`](shared-wiring.md).
+
 ## Enumerating through a reference
 
 One input, five spellings, all carrying the same three strings:

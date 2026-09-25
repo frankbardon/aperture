@@ -183,6 +183,17 @@ Like `providers:`, `objects:`, and `field_types:`, the `connections:` block is
 runtime **wiring, not model state**: `Apply` writes nothing for it, and an export
 never reproduces it.
 
+It is also one of the four **shared** wiring sections — but only its **names** are.
+`aperture wiring push` writes a manifest of connection names to
+`apt_wiring_connections` and nothing else: no DSN, no credential, not even the
+`dsn_env:` variable *name*, and no pool tuning. Everything below the name is this
+instance's **route** for it, supplied one of three ways —
+`seed.WithConnectionOpener`, a local `connections:` entry under the same name, or
+`APERTURE_CONNECTION_<NAME>_DSN` — and a shared name with no route refuses the boot
+with `APERTURE_WIRING_CONNECTION_UNROUTED`. `kind: csv` cannot be shared at all,
+because a filesystem path is machine-local and the tables have no column for one;
+it stays legal in a local file. See [`skills/shared-wiring.md`](shared-wiring.md).
+
 ### There is no `dsn:` key, and writing one is an error
 
 A seed file is a committed artifact. A DSN carries a password, and a password in

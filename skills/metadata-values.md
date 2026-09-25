@@ -406,6 +406,14 @@ declared. `Document.BuildRegistry` groups the entries by type and registers one
 `Query` return. This is runtime **wiring**, not model state: `Apply` writes no row
 and an export never reproduces the section.
 
+It is one of the two **local** wiring sections, and the only two: `aperture wiring
+push` shares `providers:`, `field_types:`, `connections:` and
+`attribute_providers:`, and shares neither `objects:` nor `attributes:`. Those two
+carry metadata **values** rather than a pointer to where values live, and Aperture's
+own database is never the source of truth for a host's domain data. An instance
+whose peers need the same metadata reaches it through a `providers:` entry instead.
+See [`skills/shared-wiring.md`](shared-wiring.md).
+
 Three properties, all of them the same ones the CSV loader owes:
 
 - **Numbers normalise identically.** The section is carried as raw JSON and

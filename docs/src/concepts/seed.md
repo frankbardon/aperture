@@ -21,13 +21,20 @@ groups:        [ ... ]
 grants:        [{ id: g1, account: acme, subject: { kind: principal, id: alice }, permission: doc.read, object: "account:acme/document:*", effect: allow }]
 templates:     [ ... ]
 rules:         [ ... ]
-connections:   { ... }   # named database connections — runtime wiring (see below)
-providers:     [ ... ]   # runtime wiring, not model state (see below)
-objects:       [ ... ]   # inline object metadata — also wiring, not model state
-field_types:   [ ... ]   # declared types for inline metadata fields — also wiring
-attributes:    [ ... ]   # inline SUBJECT attributes (principal / account) — also wiring
-attribute_providers: [ ... ]  # EXTERNAL sources for those same bags — also wiring
+connections:   { ... }   # named database connections — wiring, SHARED (names only)
+providers:     [ ... ]   # object-metadata providers — wiring, SHARED
+field_types:   [ ... ]   # declared types for metadata fields — wiring, SHARED
+attribute_providers: [ ... ]  # EXTERNAL sources for subject bags — wiring, SHARED
+objects:       [ ... ]   # inline object metadata — wiring, LOCAL
+attributes:    [ ... ]   # inline SUBJECT attributes (principal / account) — wiring, LOCAL
 ```
+
+The first ten sections are **model state** and the last six are runtime **wiring**.
+Of the six, four are **shared** — `aperture wiring push` writes them to the
+database every instance of a deployment already holds — and two are **local** to the
+instance whose file lists them. See
+[What is *not* in the file](#what-is-not-in-the-file) below, and
+[`aperture wiring`](../cli/wiring.md) for the command surface.
 
 `connections:` is a **map** keyed by name, not a list: the name is what a
 provider entry's `connection:` refers to, and a map cannot declare one twice.
@@ -484,8 +491,10 @@ an error at all**: metadata fields are discovered at fetch, not declared, so it
 simply resolves to nothing.
 
 Like every other `providers:` key, `references:` is runtime **wiring, not model
-state**: `Apply` writes nothing for it and an export reproduces none of it. See
-[Declared references](providers.md#declared-references) for what a declaration
+state**: `Apply` writes nothing for it and an export reproduces none of it. It is
+shared with the rest of the section — `aperture wiring push` flattens the map into
+`apt_wiring_provider_references` — so a second instance reads the same declarations.
+See [Declared references](providers.md#declared-references) for what a declaration
 buys and the security semantics of enumerating through one.
 
 ## Inline subject attributes
@@ -815,15 +824,16 @@ eventually disagreeing with it.
 
 ## What is *not* in the file
 
-Two things are deliberately excluded from the model state file:
+Three things are deliberately excluded from the model state file:
 
 - **Live host domain-object metadata** — that is the [provider](providers.md)
   cache: derived, disposable, never source of truth. Because `Export` reads storage
   back, and a provider produces no model rows, it is never reproduced.
 - **Live subject attributes** — a principal's or an account's bag is the host
-  directory's, for the same reason and with the same consequence: `Apply` writes
-  no row for `attributes:` or `attribute_providers:` and an export reproduces
-  none of either.
+  directory's, for the same reason and with the same consequence: `Apply` writes no
+  row for `attributes:` or `attribute_providers:` and an export reproduces neither.
+  The shared wiring tables hold an `attribute_providers:` entry's **pointer** to a
+  directory; no table anywhere holds a bag.
 - **Runtime *wiring*** — the `connections:`, `providers:`, `objects:`,
   `field_types:`, `attributes:` and `attribute_providers:` sections are runtime
   wiring, not model state. `Apply` never writes any of them to storage; instead
@@ -832,9 +842,8 @@ Two things are deliberately excluded from the model state file:
   `*provider.Registry`, and `Document.BuildAttributeRegistry(baseDir)` — or
   `BuildAttributeRegistryWithConnections` when an attribute source is
   `kind: sql` — turns the last two into a live `*provider.AttributeRegistry`.
-  **The seed file is the source
-  of truth for them**, exactly as auth config is — and an export reproduces none
-  of them. A declared provider names an `object_type`, a `kind` (`csv` or `sql`),
+  An export reproduces none of them. A declared provider names an `object_type`, a
+  `kind` (`csv` or `sql`),
   optional cache `ttl`/`max_size`, and then either a `path` (for `csv`, resolved
   relative to the seed file) or a `connection` plus `get_one` / `get_all`
   statements (for `sql` — see
@@ -847,6 +856,44 @@ Two things are deliberately excluded from the model state file:
   type, `providers:` wins the type outright — see
   [When both sections claim a type](#when-both-sections-claim-a-type).
 
+### The file is not the only home for wiring
+
+"`Apply` writes no wiring" and "an export reproduces no wiring" are both still true,
+and neither means the seed file is the only place a deployment's wiring can live.
+**Four of the six wiring sections are shared**, and `aperture wiring push` writes
+them to the [five `apt_wiring_*` tables](storage.md#the-five-shared-wiring-tables)
+every instance of a deployment already holds:
+
+| Section | Home | Read back by |
+|---|---|---|
+| `connections:` | shared — the manifest of **names**, and nothing else | `aperture wiring pull` |
+| `providers:` (with its `references:`) | shared | `aperture wiring pull` |
+| `field_types:` | shared | `aperture wiring pull` |
+| `attribute_providers:` | shared | `aperture wiring pull` |
+| `objects:` | **local** to the instance whose file lists it | nothing |
+| `attributes:` | **local** to the instance whose file lists it | nothing |
+
+The line between the two halves is **a pointer to data versus the data itself**. A
+`providers:` or `attribute_providers:` entry says *where* to read metadata or an
+attribute bag from, which is a fact about the deployment and safe to copy to a second
+instance. An `objects:` or `attributes:` entry carries the metadata or the bag, and
+Aperture's own database is never the source of truth for a host's domain data — the
+same Non-Goal that keeps the provider cache out of an export.
+
+Three read-backs therefore exist and answer three different questions. `Export`
+emits the **model** and no wiring, and is reachable over Twirp with an admin-tier
+token. `aperture wiring pull` emits the four **shared wiring** sections and no
+model, is CLI-only, and is gated by the store credential alone. Nothing emits the
+two local sections, because nothing put them anywhere but the file.
+
+A pushed row carries **no secret and no path** — not a DSN, not a credential, not
+even the `dsn_env:` variable *name*, and no filesystem path — because a row is copied
+to a second instance that resolves its own credentials and has its own disk. That is
+why `kind: csv` is refused at the push and stays perfectly legal in a local file.
+The whole contract, including what an instance does when both the database and its
+file declare the same entry, is on [`aperture wiring`](../cli/wiring.md) and in
+[Two instances, one store](../operations/two-instance-topology.md).
+
 ## Related
 
 - [The RBAC model](model.md) — the entities the document mirrors.
@@ -856,3 +903,7 @@ Two things are deliberately excluded from the model state file:
 - [Storage](storage.md) — the `Storage` backend `Apply` writes through and `Export`
   reads back.
 - [Portability CLI](../cli/portability.md) — the command surface over import/export.
+- [`aperture wiring`](../cli/wiring.md) — the command surface over the four shared
+  wiring sections.
+- [Two instances, one store](../operations/two-instance-topology.md) — the topology
+  the shared sections exist for.

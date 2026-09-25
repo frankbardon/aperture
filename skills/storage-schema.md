@@ -321,6 +321,12 @@ document's `connections:`, `providers:`, `field_types:` and `attribute_providers
 sections, so a second instance can boot with **no seed file** and decide
 identically.
 
+Those are four of a seed document's **six** wiring sections; `objects:` and
+`attributes:` stay file-local, because they carry the data rather than a pointer to
+it. The split, the `aperture wiring` command tree over these tables, and what a
+booting instance does with what it finds are `skills/shared-wiring.md`. This
+document is the schema and the storage surface.
+
 | Table | Holds | Key |
 |---|---|---|
 | `apt_wiring_connections` | one row per connection **name**, and nothing else | `name` |

@@ -614,8 +614,19 @@ decision for that slot*, and boot is where the operator is present to fix it.
 
 Two sections, both **runtime wiring and never model state** — `Apply` writes no
 row for either, and because `Export` reads the model back out of storage, an
-export reproduces neither. The seed **file** is their source of truth, exactly as
-`providers:` / `objects:` / `field_types:` / `connections:` are.
+export reproduces neither.
+
+They part company on the other read-back, and along the line that separates all six
+wiring sections: **`attribute_providers:` is SHARED and `attributes:` is LOCAL.**
+An `attribute_providers:` entry points a slot *at* a source, so `aperture wiring
+push` writes it to `apt_wiring_attribute_providers` and every instance of the
+deployment reads it; an `attributes:` block carries the bags themselves, so no
+command shares it and the seed **file** is its only source of truth. That is also
+exactly why the two land in different registration layers — the shared row and the
+seed `attribute_providers:` entry both fill `AttributeLayerShared`, and an
+`attributes:` block fills `AttributeLayerLocal`. See
+[`skills/shared-wiring.md`](shared-wiring.md) for the four/two split and what a
+pushed row may never carry.
 
 ```yaml
 connections:

@@ -19,6 +19,14 @@ import (
 // provider cache (E2-S2), derived and disposable, never source of truth, so it
 // is never exported.
 //
+// It also reproduces no WIRING — none of the six sections, shared or local. That
+// is not an omission waiting to be filled: Export reads storage back and wiring
+// rows are not model state, and keeping the two apart is what leaves this surface,
+// which is reachable over Twirp with an admin-tier token, emitting no deployment
+// configuration at all. The read-back for the four SHARED wiring sections is
+// MarshalWiring, behind `aperture wiring pull` — CLI-only and gated by the store
+// credential.
+//
 // Every slice is emitted in a stable order (sorted by id, name, or the natural
 // key) and each rule AST is re-serialized to the rules package's canonical form,
 // so a re-export of an unchanged model is byte-identical. Marshal turns the
