@@ -234,6 +234,13 @@ func TestEveryCollidingSectionIsRefusedByName(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// This instance has a route for the shared manifest's one connection, so
+			// the refusal under test is the COLLISION and not the missing route: the
+			// projection resolves routes before it layers any section, and an
+			// unrouted name fails in its own right
+			// (APERTURE_WIRING_CONNECTION_UNROUTED).
+			t.Setenv(connectionDSNEnvVar("main"), unroutedDSN)
+
 			_, err := wiringDocument(shared, tc.local)
 			if err == nil {
 				t.Fatal("the colliding declaration was accepted; one of the two sources was " +
@@ -409,12 +416,15 @@ func TestALocalConnectionForALocallyAddedProviderIsCarried(t *testing.T) {
 			GetAll:     "SELECT 'report:' || r.id AS id, r.title FROM reports r",
 		}},
 	}
+	// Both routes exist before the projection runs: the shared name's conventional
+	// variable, and the locally-added connection's own dsn_env:.
+	t.Setenv("MY_ANALYTICS_URL", unroutedDSN)
+	t.Setenv(connectionDSNEnvVar("main"), unroutedDSN)
+
 	doc, err := wiringDocument(sharedWiringSet(time.Now().UTC()), local)
 	if err != nil {
 		t.Fatalf("wiringDocument: %v", err)
 	}
-	t.Setenv("MY_ANALYTICS_URL", unroutedDSN)
-	t.Setenv(connectionDSNEnvVar("main"), unroutedDSN)
 
 	opened := map[string]bool{}
 	reg, conns, err := doc.BuildRegistryWithConnections("",
