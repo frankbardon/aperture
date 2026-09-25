@@ -560,6 +560,7 @@ aperture serve [options]
 | `--manage-principals` | — | bool | — | manage the lifecycle of principal records — allow principal create/update/delete through the API (default true; overrides APERTURE_MANAGE_PRINCIPALS). Pass --manage-principals=false when principals are mastered by an upstream directory or IdP: Aperture then refuses every principal write regardless of the caller's authority, while principal reads and every decision stay unaffected. Read once at startup; a restart is required to change it |
 | `--seed` | — | string | — | path to a JSON/YAML seed model to apply on startup (when omitted: the embedded example for the in-memory store, and nothing at all for a --store DSN) |
 | `--store` | — | string | — | DSN for the backing store: a postgres:// or postgresql:// URL for PostgreSQL, any other value as a SQLite path (defaults to in-memory). Set APERTURE_POSTGRES_SCHEMA to place Aperture's tables in a named PostgreSQL schema; unset uses the connection's search_path |
+| `--wiring-poll` | — | string | — | re-read the shared wiring tables on an interval instead of only at startup, so a `wiring push` from another host is noticed without a restart. A Go duration ("30s", "5m"), or on for the default of 30s, or off. Omitted means OFF — the instance is wired once, at boot, and starts no background reader (overrides APERTURE_WIRING_POLL) (env: `APERTURE_WIRING_POLL`) |
 
 ## `aperture template`
 

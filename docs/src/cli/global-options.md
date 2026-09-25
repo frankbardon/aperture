@@ -127,6 +127,24 @@ character that is not a letter or digit becomes an underscore, so `main` reads
 wanted — every unrouted name in one refusal, so a new instance is configured in one
 pass rather than one restart per connection.
 
+### The wiring is read once, unless you ask for more
+
+The read above happens at startup and **only** at startup. A `aperture wiring push`
+from another host is picked up by restarting the instances — which is what a deploy
+pipeline does anyway, and it is the whole story for a deployment with one instance.
+
+A long-lived instance can be told to notice a push instead, with
+[`serve --wiring-poll`](serve.md#noticing-a-push-without-a-restart) or
+`APERTURE_WIRING_POLL`. It is **off unless configured**, and off means no
+background reader and no periodic query, so an instance that cannot use it pays
+nothing for it.
+
+Unlike `--enumerate-limit`, it is **not** carried by every command that decides:
+it configures a process that outlives a decision, and there is no tick in the life
+of `aperture check` for one to happen on. It is declared on `serve`, and the whole
+account of it — the interval vocabulary, how a change is detected, and what it
+costs — is on that page.
+
 ### An instance will not start on wiring it cannot construct
 
 A pushed entry whose `kind:` this instance cannot build from a row refuses the boot

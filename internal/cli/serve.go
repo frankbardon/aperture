@@ -64,6 +64,11 @@ func serveCommand() *ucli.Command {
 			// `identifiers` / `explain` / `mcp` carry, and buildDecisionStack — not
 			// serveEngineOptions — is what applies it. See enumerate_limit.go.
 			enumerateLimitFlag(),
+			// Serve-only, and the one deliberate difference from --enumerate-limit
+			// above: a poll interval describes a process that OUTLIVES a decision, and
+			// there is no tick in the life of `aperture check` for one to happen on.
+			// See wiringPollFlag.
+			wiringPollFlag(),
 			&ucli.BoolFlag{
 				Name:  "manage-accounts",
 				Value: true,
@@ -178,6 +183,16 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 		return err
 	}
 
+	// And the wiring poll interval, for the same reason and in the same breath: a
+	// malformed --wiring-poll / APERTURE_WIRING_POLL must fail the boot BEFORE a
+	// connection is made, not once a database file has been created and a pool
+	// opened. Nothing is started here — the loop cannot begin until there is a stack
+	// for it to have a baseline digest from — this is only the parse.
+	pollEvery, _, err := wiringPollInterval(cmd)
+	if err != nil {
+		return err
+	}
+
 	// Construct the dependency graph by hand: storage -> engine -> service ->
 	// HTTP handler. Each layer is a plain constructor; there is no container.
 	store, err := buildStore(ctx, cmd.String("store"), cmd.String("seed"))
@@ -249,6 +264,17 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 	// graceful shutdown.
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Opt-in, and OFF unless configured: with no --wiring-poll this returns nil,
+	// starts no goroutine and makes no periodic read, so an instance that cannot use
+	// the feature pays nothing for it. Started here, after the signal context exists,
+	// so a SIGINT stops the reader at once and the deferred Close only waits for it;
+	// both calls are nil-safe, which is why neither needs a condition.
+	//
+	// The baseline is the digest the STACK was built from, never the loop's own first
+	// read — see startWiringPoll for what a self-baselining loop silently loses.
+	poll := startWiringPoll(ctx, store, pollEvery, stack.wiringDigest, cmd.ErrWriter)
+	defer func() { _ = poll.Close() }()
 
 	serveErr := make(chan error, 1)
 	go func() {
