@@ -26,7 +26,13 @@ import (
 //	go test -run TestPostgresIntegration ./seed/
 //
 // Ungated it SKIPS. Gated without a DSN it FAILS — asking for the integration
-// test and silently not getting one is the outcome a gate must never produce.
+// test and silently not getting one is the outcome a gate must never produce. And
+// gated with a value that is neither on nor off it FAILS too: a bare `!= "1"` test
+// turned APERTURE_PG_INTEGRATION=true into a silent skip, which is the same
+// failure wearing a different hat. The decision lives in postgres_gate_test.go as
+// a pure function so all three outcomes are asserted in `make test`, with no
+// server — a gate whose own behaviour is only observable by running it is not a
+// gate.
 //
 // It exists because everything else about the SQL path is proved against a fake
 // driver, and a fake cannot prove the two things that are only true of the real
@@ -39,17 +45,18 @@ const (
 	pgDSNEnv  = "APERTURE_PG_DSN"
 )
 
-// requirePostgres skips unless the gate is set, and returns the DSN.
+// requirePostgres is the one entry point every integration test in this package
+// calls. It applies decideSeedGate's verdict; see postgres_gate_test.go.
 func requirePostgres(t *testing.T) string {
 	t.Helper()
-	if os.Getenv(pgGateEnv) != "1" {
-		t.Skipf("skipping: set %s=1 and %s=<dsn> to run the real-Postgres integration test", pgGateEnv, pgDSNEnv)
+	d := decideSeedGate(os.Getenv(pgGateEnv), os.Getenv(pgDSNEnv))
+	switch {
+	case d.Skip != "":
+		t.Skip(d.Skip)
+	case d.Fail != "":
+		t.Fatal(d.Fail)
 	}
-	dsn := os.Getenv(pgDSNEnv)
-	if dsn == "" {
-		t.Fatalf("%s=1 but %s is empty: the gate is on and there is no database to run against", pgGateEnv, pgDSNEnv)
-	}
-	return dsn
+	return d.DSN
 }
 
 // TestPostgresIntegration_SeedFileAloneServesRealObjects drives the whole story

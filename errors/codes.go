@@ -4,10 +4,21 @@
 // human-readable messages.
 //
 // Codes are SCREAMING_SNAKE, namespaced with the APERTURE_ prefix, and each one
-// carries a Message + Fixup metadata entry in Registry (the orbit pattern). An
-// error that already carries an APERTURE_* code passes through Aperture's
-// wrapping verbatim — CodeOf recovers the existing code and it is never
-// re-stamped.
+// carries a Message + Fixup metadata entry in Registry (the orbit pattern).
+//
+// Wrap and Wrapf DO re-stamp. They are not pass-through: coded_error.go builds a
+// fresh CodedError around whatever code it is handed, and CodeOf resolves through
+// errors.As, which reports the OUTERMOST code — so wrapping an already-coded error
+// in a different code observably replaces the code a caller reads, burying a
+// specific remedy under a generic one. Pass-through is therefore a CALL-SITE
+// idiom, and every caller that might be wrapping an already-coded error writes it:
+//
+//	if errors.CodeOf(err) != "" { return err }        // it already says something better
+//	return errors.Wrap(errors.APERTURE_X, "...", err) // only classify what nothing else did
+//
+// A same-code re-stamp is invisible to CodeOf, so the tests that protect this
+// assert CHAIN DEPTH — exactly one Aperture-coded error in the chain — rather than
+// just the code.
 package errors
 
 // Code is a typed identifier for an Aperture-domain error.
