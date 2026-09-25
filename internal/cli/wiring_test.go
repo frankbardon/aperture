@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,8 @@ import (
 	"github.com/frankbardon/aperture/model"
 	"github.com/frankbardon/aperture/seed"
 	"github.com/frankbardon/aperture/storage/sqlite"
+
+	ucli "github.com/urfave/cli/v3"
 )
 
 // E1-S3, driven through the real command tree.
@@ -795,6 +798,357 @@ func TestPushReportsAMalformedDocumentBeforeTouchingAStore(t *testing.T) {
 	}
 	if _, statErr := os.Stat(dsn); statErr == nil {
 		t.Errorf("the store was opened for a document that never validated: %s", dsn)
+	}
+}
+
+// ---- E1-S4: `wiring show`, and the push audit record ----
+
+// wiringSubcommand reaches into the real command tree for one `wiring`
+// subcommand, so the cases below assert what an operator can actually type rather
+// than what a builder function happens to return.
+func wiringSubcommand(t *testing.T, name string) *ucli.Command {
+	t.Helper()
+	for _, c := range wiringCommand().Commands {
+		if c.Name == name {
+			return c
+		}
+	}
+	t.Fatalf("`aperture wiring %s` is not registered", name)
+	return nil
+}
+
+// queryAudit reads the whole audit trail back out of a store.
+func queryAudit(t *testing.T, dsn string, filter model.AuditFilter) []model.AuditEvent {
+	t.Helper()
+	events, err := openWiringStore(t, dsn).QueryAudit(context.Background(), filter)
+	if err != nil {
+		t.Fatalf("query audit: %v", err)
+	}
+	return events
+}
+
+// TestShowPrintsEverySectionOfTheDeployedWiring is the story's first criterion: an
+// operator can answer "what is deployed?" without a database client. Every section
+// is named, every entry's key appears, and the statement set — the part that
+// actually determines what a provider does — is printed rather than summarised.
+func TestShowPrintsEverySectionOfTheDeployedWiring(t *testing.T) {
+	dsn := newWiringStore(t, wiringModelSeed)
+	seedPath := writeWiringSeed(t, wiringSharedSeed)
+	if out, err := runWiringCLI(t, "push", seedPath, dsn); err != nil {
+		t.Fatalf("push: %v\n%s", err, out)
+	}
+
+	// No --seed: show reads the store and nothing else.
+	out, err := runWiringCLI(t, "show", "", dsn)
+	if err != nil {
+		t.Fatalf("wiring show: %v\n%s", err, out)
+	}
+
+	for _, want := range []string{
+		// The four section headings.
+		"connections", "providers", "field types", "attribute providers",
+		// The connection manifest, which carries names and nothing else.
+		"main", "reporting",
+		// The provider entries and their reference declarations.
+		"document", "project", "project_ids -> project", "owner_ids -> document",
+		// The field-type declarations.
+		"published_at", "datetime", "due", "date",
+		// The attribute-provider entry, its ttl (the revocation window) and its cap.
+		"user", "30s", "100",
+		// The statements themselves.
+		"statements",
+		"SELECT owner, project_ids FROM documents WHERE id = $1",
+		"SELECT 'project:' || p.id AS id, p.name FROM projects p",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("show does not print %q:\n%s", want, out)
+		}
+	}
+
+	// The second provider sets neither ttl nor max_size. Both must read as the
+	// registry default and NOT as 0 or as an empty cell: "0" reads as "caches
+	// nothing", which is the opposite of what an unset bound means.
+	if !strings.Contains(out, "(default)") {
+		t.Errorf("an entry that sets no ttl and no max_size must say (default), not leave a blank or print 0:\n%s", out)
+	}
+
+	// The shared wiring carries no account, no principal and no object identity, so
+	// a listing of it cannot leak one. Asserted rather than assumed, because this
+	// is the output an operator pastes into a ticket.
+	for _, forbidden := range []string{"acme", "account:", "atlas", "enterprise"} {
+		if strings.Contains(out, forbidden) {
+			t.Errorf("show printed %q; shared wiring holds no account and no inline data, so a listing of it must not either:\n%s", forbidden, out)
+		}
+	}
+}
+
+// TestShowLabelsAFetchOnlySlot: an attribute slot with no get_all is legitimate —
+// it serves every decision and refuses only the system-tier directory read — so
+// the listing says so instead of leaving a gap that reads as an unfinished entry.
+func TestShowLabelsAFetchOnlySlot(t *testing.T) {
+	dsn := newWiringStore(t, wiringModelSeed)
+	seedPath := writeWiringSeed(t, `
+connections:
+  main:
+    dsn_env: APERTURE_TEST_MAIN_DSN
+attribute_providers:
+  - subject: user
+    kind: sql
+    connection: main
+    get_one: SELECT department FROM users WHERE id = $1
+`)
+	if out, err := runWiringCLI(t, "push", seedPath, dsn); err != nil {
+		t.Fatalf("push: %v\n%s", err, out)
+	}
+	out, err := runWiringCLI(t, "show", "", dsn)
+	if err != nil {
+		t.Fatalf("wiring show: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "FETCH-ONLY") {
+		t.Errorf("a slot with no get_all must be labelled fetch-only, not left blank:\n%s", out)
+	}
+}
+
+// TestShowSaysAnEmptyStoreIsAnAnswer: nothing deployed is not an error. It is also
+// exactly what a mistyped --store looks like, because a DSN naming a database that
+// does not exist yet is one Setup creates — so the output has to name both of the
+// opposite things an operator might do next.
+func TestShowSaysAnEmptyStoreIsAnAnswer(t *testing.T) {
+	dsn := newWiringStore(t, wiringModelSeed)
+
+	out, err := runWiringCLI(t, "show", "", dsn)
+	if err != nil {
+		t.Fatalf("an empty wiring set is an answer, not an error: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "no shared wiring is deployed") {
+		t.Errorf("an empty store must say so plainly:\n%s", out)
+	}
+	if !strings.Contains(out, "--seed") {
+		t.Errorf("the empty answer must say what an instance does instead — build its wiring from its own --seed file:\n%s", out)
+	}
+	if !strings.Contains(out, "--store") {
+		t.Errorf("the empty answer must name the other possibility, a mistyped --store naming a database Setup just created:\n%s", out)
+	}
+}
+
+// TestShowDistinguishesNotDeclaredFromDeclaredEmpty is the criterion the whole
+// existence of model.DeclaredKeys rests on, asserted at the last layer it could
+// still be lost in.
+//
+// NOT DECLARED and DECLARED EMPTY are DIFFERENT ANSWERS: the first opts a slot out
+// of key enforcement entirely, the second opts it IN and permits no keys at all. A
+// listing that printed a blank for both would collapse the distinction in the one
+// place an operator actually reads it — and E3-S3's enforcement turns on exactly
+// that bit.
+func TestShowDistinguishesNotDeclaredFromDeclaredEmpty(t *testing.T) {
+	dsn := newWiringStore(t, wiringModelSeed)
+	store := openWiringStore(t, dsn)
+	// Written straight to storage rather than pushed, because the seed document has
+	// no key for a declared set yet (E3-S1) — and the printer must already be right
+	// when it does, since the column is there from this schema on.
+	set := model.WiringSet{AttributeProviders: []model.WiringAttributeProvider{
+		{Subject: "account", Kind: "sql", DeclaredKeys: model.DeclaredKeys{}},
+		{Subject: "machine", Kind: "sql", DeclaredKeys: model.DeclaredKeys{Declared: true}},
+		{Subject: "user", Kind: "sql", DeclaredKeys: model.DeclaredKeys{
+			Declared: true, Keys: []string{"clearance", "department"}}},
+	}}
+	if err := store.ReplaceWiring(context.Background(), set); err != nil {
+		t.Fatalf("replace wiring: %v", err)
+	}
+
+	out, err := runWiringCLI(t, "show", "", dsn)
+	if err != nil {
+		t.Fatalf("wiring show: %v\n%s", err, out)
+	}
+	for _, want := range []string{"(not declared)", "(declared empty)", "clearance, department"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("show does not print %q — the three states of a declared key set must read differently, "+
+				"because not-declared opts OUT of enforcement and declared-empty opts IN and permits nothing:\n%s", want, out)
+		}
+	}
+}
+
+// TestShowIsUngatedAndReadsOnlyTheStore pins both halves of the gating decision
+// structurally, because neither is visible from a passing output assertion.
+//
+// `show` is ungated in the same sense `aperture attributes slots` is: it restates
+// wiring that the --store credential the operator just supplied already grants
+// full WRITE access to, so an authority check on top of it would only mean nobody
+// could diagnose "is anything even deployed?" without already holding the
+// authority the diagnosis explains. And it takes no --seed, because a listing that
+// merged in the document on the command line would answer "what would a push
+// deploy?" while looking like it answered "what IS deployed?".
+func TestShowIsUngatedAndReadsOnlyTheStore(t *testing.T) {
+	show := wiringSubcommand(t, "show")
+	var names []string
+	for _, f := range show.Flags {
+		names = append(names, f.Names()...)
+	}
+	if len(names) != 1 || names[0] != "store" {
+		t.Errorf("`wiring show` flags = %v, want exactly [store]: an actor flag would gate a read of "+
+			"configuration the store credential already covers, and a --seed flag would let the listing "+
+			"answer a different question than the one it is printed under", names)
+	}
+}
+
+// TestShowNeedsAStore: a missing --store is a usage error, and there is no
+// in-memory default, because an in-memory store is private to the process that
+// opened it and has nothing deployed to it.
+func TestShowNeedsAStore(t *testing.T) {
+	_, err := runWiringCLI(t, "show", "", "")
+	mustRefuse(t, "a show with no --store", err, aerr.APERTURE_INVALID_INPUT, "--store")
+}
+
+// TestEverySuccessfulPushIsAudited is the story's second half: one record per
+// successful push, in the SAME trail as a grant change.
+//
+// It is read back from a reopened store after the command has returned, which is
+// also the durability assertion. audit.Recorder buffers DECISIONS asynchronously;
+// a push must not take that path, or a one-shot CLI invocation could exit with the
+// record still in a channel.
+func TestEverySuccessfulPushIsAudited(t *testing.T) {
+	dsn := newWiringStore(t, wiringModelSeed)
+	seedPath := writeWiringSeed(t, wiringSharedSeed)
+
+	before := time.Now().Add(-time.Second)
+	if out, err := runWiringCLI(t, "push", seedPath, dsn); err != nil {
+		t.Fatalf("push: %v\n%s", err, out)
+	}
+
+	// Filtered by the MUTATION category on purpose: "visible in the same trail as
+	// grant changes" is the criterion, and an event filed under a category of its
+	// own would satisfy an unfiltered read while failing this one.
+	events := queryAudit(t, dsn, model.AuditFilter{EventType: model.AuditMutation})
+	if len(events) != 1 {
+		t.Fatalf("mutation events = %d, want exactly 1 for one push: %+v", len(events), events)
+	}
+	ev := events[0]
+	if ev.Action != "WiringPush" {
+		t.Errorf("action = %q, want WiringPush", ev.Action)
+	}
+	if ev.Outcome != model.OutcomeSuccess {
+		t.Errorf("outcome = %q, want %q", ev.Outcome, model.OutcomeSuccess)
+	}
+	if ev.Target != "wiring:shared" {
+		t.Errorf("target = %q, want wiring:shared", ev.Target)
+	}
+	// WHO: the store credential, recorded as the credential and not as an invented
+	// identity. `wiring push` takes no --principal, so any principal id here would
+	// be a name nothing verified — worse than an honest sentinel, because the next
+	// reader believes it.
+	if ev.Actor != wiringPushActor {
+		t.Errorf("actor = %q, want the store-credential sentinel %q — a push has no principal to attribute to", ev.Actor, wiringPushActor)
+	}
+	if !strings.Contains(ev.Reason, "store credential") {
+		t.Errorf("reason = %q; it must say in words what the actor sentinel means, for a reader who meets it cold", ev.Reason)
+	}
+	// WHEN.
+	if ev.Timestamp.IsZero() || ev.Timestamp.Before(before) {
+		t.Errorf("timestamp = %v, want an instant from this push (after %v)", ev.Timestamp, before)
+	}
+	if ev.ID == "" {
+		t.Error("the event carries no id")
+	}
+	// Wiring is not account-scoped and a push affects every account at once, so the
+	// record carries the reserved wildcard — which names no real account.
+	if ev.Account != model.AccountWildcard {
+		t.Errorf("account = %q, want the wildcard %q: wiring has no account column and a push changes every account's decisions at once",
+			ev.Account, model.AccountWildcard)
+	}
+	// WHAT: the same counts the push summary printed, so the trail is checkable
+	// against what the operator saw.
+	set := readWiring(t, dsn)
+	for key, want := range map[string]int{
+		"connection_count":         len(set.Connections),
+		"provider_count":           len(set.Providers),
+		"provider_reference_count": countWiringReferences(set),
+		"field_type_count":         len(set.FieldTypes),
+		"attribute_provider_count": len(set.AttributeProviders),
+	} {
+		got, ok := ev.Details[key]
+		if !ok {
+			t.Errorf("details carry no %s", key)
+			continue
+		}
+		if fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Errorf("details[%s] = %v, want %d", key, got, want)
+		}
+	}
+
+	// One record per push, not one per run of the binary: a second push is a second
+	// deployment-wide change and gets its own entry.
+	if out, err := runWiringCLI(t, "push", seedPath, dsn); err != nil {
+		t.Fatalf("second push: %v\n%s", err, out)
+	}
+	if again := queryAudit(t, dsn, model.AuditFilter{EventType: model.AuditMutation}); len(again) != 2 {
+		t.Errorf("mutation events after two pushes = %d, want 2", len(again))
+	}
+}
+
+// TestARefusedPushIsNotAudited: nothing was deployed, so nothing is recorded.
+//
+// A record on a refusal would be worse than no record at all — it would put an
+// entry in the trail saying the deployment's wiring changed at an instant when it
+// provably did not, and an investigator reading back from that entry would be
+// chasing a change that never happened.
+func TestARefusedPushIsNotAudited(t *testing.T) {
+	cases := []struct {
+		name      string
+		modelSeed string
+		doc       string
+	}{
+		{
+			name:      "no model state at all",
+			modelSeed: "",
+			doc:       wiringSharedSeed,
+		},
+		{
+			name:      "an unknown object type",
+			modelSeed: wiringModelSeed,
+			doc: `
+providers:
+  - object_type: invoice
+    kind: sql
+    get_one: SELECT 1
+    get_all: SELECT 1
+`,
+		},
+		{
+			name:      "an undeclared connection",
+			modelSeed: wiringModelSeed,
+			doc: `
+providers:
+  - object_type: document
+    kind: sql
+    connection: nowhere
+    get_one: SELECT 1
+    get_all: SELECT 1
+`,
+		},
+		{
+			name:      "a csv entry",
+			modelSeed: wiringModelSeed,
+			doc: `
+providers:
+  - object_type: document
+    kind: csv
+    path: /srv/documents.csv
+`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dsn := newWiringStore(t, tc.modelSeed)
+			seedPath := writeWiringSeed(t, tc.doc)
+
+			if _, err := runWiringCLI(t, "push", seedPath, dsn); err == nil {
+				t.Fatalf("%s must be refused", tc.name)
+			}
+			if events := queryAudit(t, dsn, model.AuditFilter{}); len(events) != 0 {
+				t.Errorf("a refused push wrote %d audit event(s): %+v — the deployment's wiring "+
+					"did not change, so the trail must not say it did", len(events), events)
+			}
+		})
 	}
 }
 
