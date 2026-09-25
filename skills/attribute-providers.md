@@ -607,6 +607,8 @@ Key details:
   called `acme` and a service principal called `acme` are unrelated subjects.
 - `ttl:` / `max_size:` are **per slot**, because one number covering all three
   would tune for whichever was declared last. `ttl: "0"` never expires.
+- `declared_keys:` is the **optional** declared key set — see below. Omitting it is
+  legal and changes nothing.
 - `dsn:` is refused **by name** wherever it appears: credentials belong to a
   `connections:` entry's `dsn_env:`.
 - A value-model rejection keeps `APERTURE_METADATA_INVALID` (whose fixups name the
@@ -619,6 +621,58 @@ section owes a one-line edit there, in one place. (`internal/cli`'s
 `hasObjectSources` records the bug that taught this: a gate written over
 `providers:` alone, in a different package from the field list, so adding
 `objects:` did not look like touching the gate.)
+
+#### `declared_keys:` — the keys a shared slot guarantees
+
+An entry may declare the attribute keys it guarantees:
+
+```yaml
+attribute_providers:
+  - subject: user
+    kind: sql
+    connection: main
+    get_one: SELECT department, clearance FROM users WHERE id = $1
+    declared_keys: [department, clearance]
+```
+
+Declaring opts that slot into **key enforcement**: a rule may then read only the
+keys the set names on that slot. Declaring nothing opts out, and a slot with no set
+behaves exactly as every slot did before the key existed.
+
+That is what makes a **local layer safe**. A slot holds two layers and the shared
+one wins every key both serve, so keys a local layer adds on top are unreachable
+from any rule the deployment can validate — **inert**, rather than a second answer
+to a deployment-wide grant. This is why the declared set lives on the SHARED entry
+and nowhere else: a local layer able to narrow or widen it would be one machine
+changing which keys a deployment-wide rule may name.
+
+The shape is a **plain list of names, with no per-key type information**. It is the
+simplest form that round-trips, and it is also the right one: the metadata value
+model already governs shape, and `field_types:` already governs declared date
+types, so a second typing mechanism here would be a second place for two
+declarations about one key to disagree.
+
+**Three states, not two**, and the difference is load-bearing:
+
+| Written | State | Effect |
+|---|---|---|
+| `declared_keys:` absent (or `null`) | not declared | the slot is opted **out** of key enforcement |
+| `declared_keys: []` | declared empty | the slot is opted **in** and permits **no** key |
+| `declared_keys: [a, b]` | declared | permits `a` and `b` |
+
+The middle row is the one a plain list would lose — nil is what both an absent and
+an empty list decode to — so the YAML field is a **pointer** (`*[]string`), the
+model carries `Declared` as its own bit (`model.DeclaredKeys`), both dialects'
+`declared_keys` column stores `""` for not-declared and `"[]"` for declared-empty,
+and `aperture wiring show` prints all three as words (`(not declared)`,
+`(declared empty)`, or the names). Collapsing declared-empty into not-declared
+would silently **un-enforce** a slot, with nothing red anywhere.
+
+Names are trimmed, an empty name is refused, and a repeated name is refused —
+`APERTURE_CONFIG_INVALID`, naming the slot and the key. The declaration order is
+preserved, so `aperture wiring pull` reproduces the author's list rather than a
+sorted paraphrase of it, and `push → pull → push` is a fixed point for a slot that
+declares a set.
 
 #### Precedence: the external source wins, entirely
 

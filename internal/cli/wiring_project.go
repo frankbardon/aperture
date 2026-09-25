@@ -180,7 +180,12 @@ func wiringFromDocument(doc *seed.Document, now time.Time) (model.WiringSet, err
 //     of the rule that a credential's variable name is per-instance too.
 //   - Provider.Path / AttributeProvider.Path: kind: csv is refused at push, so no
 //     stored entry has one.
-//   - DeclaredKeys: see wiringUnexpressedDeclaredKeys.
+//
+// DeclaredKeys is NOT one of them any more. It used to be — the section had no key
+// for a declared set, so a pull warned that it was dropping one — and both the
+// warning and the gap are gone: declared_keys: carries all three states, so a slot
+// that declares a set survives the round trip and a re-push of a pulled document
+// leaves it exactly as it was.
 func wiringToDocument(set model.WiringSet) *seed.Document {
 	doc := &seed.Document{}
 
@@ -229,46 +234,41 @@ func wiringToDocument(set model.WiringSet) *seed.Document {
 
 	for _, ap := range set.AttributeProviders {
 		doc.AttributeProviders = append(doc.AttributeProviders, seed.AttributeProvider{
-			Subject:    ap.Subject,
-			Kind:       ap.Kind,
-			Connection: ap.Connection,
-			GetOne:     ap.GetOne,
-			GetAll:     ap.GetAll,
-			IDColumn:   ap.IDColumn,
-			TTL:        ap.TTL,
-			MaxSize:    ap.MaxSize,
+			Subject:      ap.Subject,
+			Kind:         ap.Kind,
+			Connection:   ap.Connection,
+			GetOne:       ap.GetOne,
+			GetAll:       ap.GetAll,
+			IDColumn:     ap.IDColumn,
+			TTL:          ap.TTL,
+			MaxSize:      ap.MaxSize,
+			DeclaredKeys: seedDeclaredKeys(ap.DeclaredKeys),
 		})
 	}
 	return doc
 }
 
-// wiringUnexpressedDeclaredKeys names the slots whose DECLARED KEY SET a pulled
-// document cannot yet carry, so a pull can say so out loud instead of dropping it.
+// seedDeclaredKeys renders a stored declared key set as the seed section's
+// POINTER-shaped declared_keys:, which is the half of the round trip that has to
+// keep three states apart rather than two.
 //
-// The seed attribute_providers: schema has no key for a declared set yet — it
-// gains one in its own story — while the column and model.DeclaredKeys have existed
-// since the schema was created, because Setup creates and never migrates. So a slot
-// whose set was written straight to storage round-trips through a pull as NOT
-// DECLARED, and a re-push would clear it.
+// A not-declared set becomes a nil pointer, which omitempty leaves out of the
+// document entirely — the slot is opted out of key enforcement and a document that
+// says nothing is the accurate way to say so.
 //
-// That is a real gap in the fixed point, and it is reported rather than hidden: the
-// two states DeclaredKeys exists to keep apart are "opted out of enforcement" and
-// "opted in and permits nothing", and silently turning the second into the first is
-// precisely the collapse the type was made a struct to prevent. Refusing the pull
-// instead would be worse — it would make the command unusable for the other three
-// sections over a field nothing enforces yet.
-//
-// WHEN THE SEED KEY LANDS, this function and its warning go away in the same
-// change that starts emitting the key. A warning left behind after the document can
-// express the set would be a false alarm on every pull.
-func wiringUnexpressedDeclaredKeys(set model.WiringSet) []string {
-	var slots []string
-	for _, ap := range set.AttributeProviders {
-		if ap.DeclaredKeys.Declared {
-			slots = append(slots, ap.Subject)
-		}
+// A DECLARED-EMPTY set becomes a pointer to a NON-NIL empty slice, so it marshals as
+// `declared_keys: []` and not as `declared_keys: null`. That is the line the whole
+// pointer exists for: null decodes back to "not declared", so emitting it would turn
+// a slot that permits NO key into one that permits every key, on the next push of a
+// document whose diff looked clean. make([]string, 0) is non-nil where a var
+// declaration is not, and that difference is the entire mechanism.
+func seedDeclaredKeys(d model.DeclaredKeys) *[]string {
+	if !d.Declared {
+		return nil
 	}
-	return slots
+	keys := make([]string, 0, len(d.Keys))
+	keys = append(keys, d.Keys...)
+	return &keys
 }
 
 // refuseLiteralWiringDSN refuses a literal dsn: anywhere in the wiring being
@@ -441,26 +441,74 @@ func wiringAttributeProviderRow(ap seed.AttributeProvider, declared map[string]s
 	if err := checkWiringTTL(ap.TTL, "attribute provider", where); err != nil {
 		return model.WiringAttributeProvider{}, err
 	}
+	keys, err := wiringDeclaredKeys(ap.DeclaredKeys, slot.String())
+	if err != nil {
+		return model.WiringAttributeProvider{}, err
+	}
 	return model.WiringAttributeProvider{
-		Subject:    slot.String(),
-		Kind:       strings.TrimSpace(ap.Kind),
-		Connection: connection,
-		GetOne:     ap.GetOne,
-		GetAll:     ap.GetAll,
-		IDColumn:   ap.IDColumn,
-		TTL:        strings.TrimSpace(ap.TTL),
-		MaxSize:    ap.MaxSize,
-		// DeclaredKeys is left NOT DECLARED, explicitly, because the seed document
-		// has no key for it yet: the attribute_providers: schema gains the field in
-		// its own story, and the two states a DeclaredKeys distinguishes — "not
-		// declared" (opts the slot out of enforcement) and "declared empty" (opts in
-		// and permits nothing) — must not be collapsed on the way through. An absent
-		// YAML key is the zero value here; a present-but-empty one will be
-		// model.DeclaredKeys{Declared: true}.
-		DeclaredKeys: model.DeclaredKeys{},
+		Subject:      slot.String(),
+		Kind:         strings.TrimSpace(ap.Kind),
+		Connection:   connection,
+		GetOne:       ap.GetOne,
+		GetAll:       ap.GetAll,
+		IDColumn:     ap.IDColumn,
+		TTL:          strings.TrimSpace(ap.TTL),
+		MaxSize:      ap.MaxSize,
+		DeclaredKeys: keys,
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}, nil
+}
+
+// wiringDeclaredKeys projects a declared_keys: value onto model.DeclaredKeys, and
+// it is the ONE place the seed section's pointer becomes the model's Declared bit.
+//
+// The mapping is the whole reason the YAML field is a *[]string rather than a
+// []string, and it is set EXPLICITLY in both directions rather than inferred from a
+// length:
+//
+//   - a nil pointer (the key absent, or written as null) is NOT DECLARED, which
+//     leaves the slot opted out of key enforcement exactly as every slot was before
+//     the key existed. Omitting declared_keys: is legal and means nothing changes.
+//   - a non-nil pointer is DECLARED, whatever it points at. `declared_keys: []` is
+//     therefore declared-EMPTY: the slot is opted IN and permits no key at all.
+//
+// Reading Declared off len(keys) instead would collapse the second into the first —
+// a slot that permits nothing would silently permit everything — which is the one
+// failure model.DeclaredKeys was made a struct to prevent, and it would be invisible
+// to every compiler, every store and every diff.
+//
+// The names are trimmed and then checked here, not left to
+// model.ValidateWiringAttributeProvider. Storage refuses the same two malformations,
+// but it refuses them of a row whose keys have already been trimmed, and it cannot
+// name the offending key in the MESSAGE the CLI prints with %v — a refusal an
+// operator has to act on that lives only in Context is invisible exactly where it is
+// read. The order is preserved: a declared set is stored as it was written, so a
+// pull reproduces the author's list rather than a sorted paraphrase of it.
+func wiringDeclaredKeys(declared *[]string, subject string) (model.DeclaredKeys, error) {
+	if declared == nil {
+		return model.DeclaredKeys{}, nil
+	}
+	out := model.DeclaredKeys{Declared: true, Keys: make([]string, 0, len(*declared))}
+	seen := make(map[string]struct{}, len(*declared))
+	for _, raw := range *declared {
+		key := strings.TrimSpace(raw)
+		if key == "" {
+			return model.DeclaredKeys{}, aerr.WithContext(aerr.APERTURE_CONFIG_INVALID,
+				fmt.Sprintf("cli: the wiring's attribute provider for subject %q declares an empty attribute key; write the key names the slot guarantees, or write declared_keys: [] to declare that it guarantees none",
+					subject),
+				map[string]any{"subject": subject})
+		}
+		if _, dup := seen[key]; dup {
+			return model.DeclaredKeys{}, aerr.WithContext(aerr.APERTURE_CONFIG_INVALID,
+				fmt.Sprintf("cli: the wiring's attribute provider for subject %q declares the attribute key %q twice; the declared set is a set, and a repeated name means one of the two lines was meant to say something else",
+					subject, key),
+				map[string]any{"subject": subject, "key": key})
+		}
+		seen[key] = struct{}{}
+		out.Keys = append(out.Keys, key)
+	}
+	return out, nil
 }
 
 // checkWiringKind refuses a kind that cannot be shared wiring, and an unknown

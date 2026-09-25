@@ -872,12 +872,17 @@ func writeWiringPull(path string, data []byte, force bool) error {
 }
 
 // printWiringPulled reports what was written, in the shape printWiringPushed
-// reports what was pushed, plus the two things a reader of the FILE has to know.
+// reports what was pushed, plus the one thing a reader of the FILE has to know: the
+// dsn_env: values are empty, because shared wiring holds a connection's name and
+// nothing else.
 //
-// The declared-key warning goes to ErrWriter rather than the summary, for the
-// reason reportCollisions does: it is a caveat about the output, not part of it, so
-// a pull whose summary is being redirected still shows it. It names the slots and
-// nothing else — no keys — because the slot is what the operator acts on.
+// It used to carry a second caveat, on ErrWriter, naming the slots whose declared
+// key set the document could not express. That warning is GONE, together with the
+// gap it reported: declared_keys: now carries all three states, so a pull is lossless
+// for a declared set and a warning here would be a false alarm on every pull. If a
+// future field is stored and unexpressible, the shape to bring back is that one — a
+// caveat on ErrWriter, naming the entries and never their contents — not a silent
+// drop.
 func printWiringPulled(cmd *ucli.Command, set model.WiringSet, path string, format seed.Format) error {
 	w := tabwriter.NewWriter(cmd.Writer, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "section\trows")
@@ -892,19 +897,6 @@ func printWiringPulled(cmd *ucli.Command, set model.WiringSet, path string, form
 	fmt.Fprintf(cmd.Writer, "wrote the deployed wiring to %s as %s\n", path, format)
 	if len(set.Connections) > 0 {
 		fmt.Fprintln(cmd.Writer, "every connection's dsn_env: is empty, because shared wiring holds the connection's NAME and nothing else: fill each one in from your own environment before booting an instance from this file")
-	}
-
-	if slots := wiringUnexpressedDeclaredKeys(set); len(slots) > 0 {
-		// Said out loud, because this is the one place the round trip is lossy and the
-		// loss is silent everywhere else. "Not declared" and "declared empty" are
-		// different answers — the first opts a slot out of key enforcement, the second
-		// opts it in and permits nothing — and a re-push of this document would turn
-		// the second into the first with nothing to say so.
-		fmt.Fprintf(cmd.ErrWriter,
-			"warning: attribute slot %s declares a key set, which the seed attribute_providers: schema has no key for yet, so this document does not carry it; re-pushing this file would leave that slot with NO declared key set\n",
-			strings.Join(quoteEach(slots), ", "))
-		fmt.Fprintln(cmd.ErrWriter,
-			"warning: `aperture wiring show --store <dsn>` prints the declared keys, so they are not lost — only unexpressible in a document")
 	}
 	return nil
 }

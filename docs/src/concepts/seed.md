@@ -613,6 +613,58 @@ can close it.
 `dsn:` is refused **by name** wherever it appears, here as on a `providers:`
 entry: credentials belong to a `connections:` entry's `dsn_env:`.
 
+### `declared_keys:` — the keys a slot guarantees
+
+An entry may declare the attribute keys it guarantees. The key is **optional**, and
+omitting it is legal:
+
+```yaml
+attribute_providers:
+  - subject: user
+    kind: sql
+    connection: main
+    get_one: SELECT department, clearance FROM users WHERE id = $1
+    declared_keys: [department, clearance]
+```
+
+Declaring opts that slot into **key enforcement**: a rule may then read only the
+keys the set names on that slot. Declaring nothing opts out, and a slot with no
+declared set behaves exactly as every slot did before the key existed.
+
+That is what makes a local attribute layer safe. A slot holds a shared layer and a
+local one, and the shared layer wins every key both serve, so the keys a local layer
+adds on top are unreachable from any rule the deployment can validate — **inert**,
+rather than a second answer to a deployment-wide grant. The declared set therefore
+lives on the shared entry and nowhere else: a local layer able to narrow or widen it
+would be one machine changing which keys a deployment-wide rule may name.
+
+The set is a **plain list of names, with no per-key type information** — the simplest
+form that round-trips, and the right one, because the [metadata value
+model](providers.md) already governs shape and `field_types:` already governs the
+declared date types. A second typing mechanism would be a second place for two
+declarations about one key to disagree.
+
+**There are three states, not two:**
+
+| Written | State | Effect |
+|---|---|---|
+| `declared_keys:` absent (or `null`) | not declared | the slot is opted **out** of key enforcement |
+| `declared_keys: []` | declared empty | the slot is opted **in** and permits **no** key |
+| `declared_keys: [a, b]` | declared | permits `a` and `b` |
+
+The middle row is the one a plain list of strings would lose, since nil is what both
+an absent and an empty list decode to. So the distinction is carried explicitly at
+every layer it crosses — the YAML field is a pointer, the stored row carries a
+`Declared` bit of its own, and `aperture wiring show` prints all three as words
+(`(not declared)`, `(declared empty)`, or the names). Collapsing declared-empty into
+not-declared would silently **un-enforce** a slot.
+
+Names are trimmed; an empty or repeated name is refused with
+`APERTURE_CONFIG_INVALID` naming the slot and the key. The declaration order is
+preserved, so `aperture wiring pull` reproduces the author's
+list rather than a sorted paraphrase, and push → pull → push is a fixed point for a
+slot that declares a set.
+
 ### The bare-id contract
 
 An attribute key is a **bare** principal id or account id — an opaque handle into

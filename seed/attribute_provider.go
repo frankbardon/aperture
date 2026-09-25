@@ -185,6 +185,60 @@ type AttributeProvider struct {
 	TTL string `yaml:"ttl,omitempty" json:"ttl,omitempty"`
 	// MaxSize caps cached bags for this slot; 0 uses the registry default.
 	MaxSize int `yaml:"max_size,omitempty" json:"max_size,omitempty"`
+	// DeclaredKeys is the OPTIONAL declared key set: the attribute keys this slot
+	// GUARANTEES to serve.
+	//
+	//	attribute_providers:
+	//	  - subject: user
+	//	    kind: sql
+	//	    connection: main
+	//	    get_one: SELECT department, clearance FROM users WHERE id = $1
+	//	    declared_keys: [department, clearance]
+	//
+	// # What declaring DOES
+	//
+	// It opts the slot into key enforcement: a rule may then read only the keys
+	// this set names on that slot, and reading any other one is refused at
+	// validation. Declaring nothing opts out, and a slot with no set behaves
+	// exactly as every slot did before the key existed — no refusal, no warning.
+	//
+	// That is what makes a LOCAL layer safe. A slot holds two layers, and the
+	// shared one wins every key both serve (provider.AttributeLayer). The keys a
+	// local layer adds on top are therefore unreachable from any rule the
+	// deployment can validate, so one instance's extra bag fields are INERT rather
+	// than a second answer to a deployment-wide grant. The declared set is the
+	// contract that makes that true by construction instead of by convention, which
+	// is why it lives on the SHARED entry: a local layer that could narrow or widen
+	// it would be one machine changing which keys a deployment-wide rule may name.
+	//
+	// # The shape is a plain list of names, with NO per-key type information
+	//
+	// It is the simplest form that round-trips, and the reason it is also the right
+	// one is that the metadata value model already governs SHAPE
+	// (provider/metadata.go, and field_types: for the declared date types). A second
+	// typing mechanism here would be a second place for two declarations about one
+	// key to disagree, and the one that loses is the one nobody reads.
+	//
+	// # Why a POINTER
+	//
+	// An absent declared_keys: and a present, empty one are DIFFERENT ANSWERS, and
+	// a []string cannot tell them apart — nil is what both decode to. So:
+	//
+	//   - the key ABSENT (or explicitly null) is NOT DECLARED: the slot is opted out.
+	//   - declared_keys: [] is DECLARED EMPTY: the slot is opted IN and permits no
+	//     key at all.
+	//   - declared_keys: [a, b] is declared and permits a and b.
+	//
+	// The distinction survives the whole trip because every layer it crosses was
+	// built to keep it: model.DeclaredKeys carries Declared as its own bit, both
+	// dialects' declared_keys column stores "" for the first state and "[]" for the
+	// second, and `aperture wiring show` prints all three as words. Collapsing
+	// declared-empty into not-declared would silently un-enforce a slot, which is
+	// the one failure the whole mechanism is shaped around.
+	//
+	// Names are trimmed, an empty one is refused, and a duplicate is refused; a
+	// push stores the set in the order it was declared.
+	DeclaredKeys *[]string `yaml:"declared_keys,omitempty" json:"declared_keys,omitempty"`
 }
 
 // attributeSource is one RESOLVED attribute_providers: entry: the declaration

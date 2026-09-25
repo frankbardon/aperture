@@ -216,6 +216,66 @@ func assertWiringPullIsAFixedPoint(t *testing.T, dsn string) {
 	if string(a) != string(c) {
 		t.Errorf("a pull after the round trip differs from the pull before it:\n--- before ---\n%s\n--- after ---\n%s", a, c)
 	}
+
+	assertWiringPullIsAFixedPointForADeclaredKeySet(t, dsn)
+}
+
+// assertWiringPullIsAFixedPointForADeclaredKeySet is the same proof for the one
+// field that used to be lossy.
+//
+// It is a phase of the fixed point rather than a case beside it, so both backends run
+// it: E5-S1's document could not express a declared key set at all, and a pull that
+// silently dropped one on Postgres only would pass every dialect-parity gate while
+// making `wiring diff` report drift between two identically-wired deployments.
+//
+// The fixture declares all three states at once — keys, declared-EMPTY, and nothing —
+// because the pair that can collapse is the last two. A cycle over a non-empty set
+// alone would be a fixed point under an implementation that rendered declared-empty as
+// null, which reads back as "not declared" and un-enforces the slot on the re-push.
+func assertWiringPullIsAFixedPointForADeclaredKeySet(t *testing.T, dsn string) {
+	t.Helper()
+	if out, err := runWiringCLI(t, "push", writeWiringSeed(t, wiringDeclaredKeysSeed), dsn); err != nil {
+		t.Fatalf("push of a document declaring key sets: %v\n%s", err, out)
+	}
+	pushed := readWiringFrom(t, dsn)
+
+	first := pullPath(t, "keys-first.yaml")
+	if out, err := runWiringPullCLI(t, dsn, first); err != nil {
+		t.Fatalf("pull of a declared key set: %v\n%s", err, out)
+	}
+	if out, err := runWiringCLI(t, "push", first, dsn); err != nil {
+		t.Fatalf("re-push of the pulled declared key sets: %v\n%s", err, out)
+	}
+	repushed := readWiringFrom(t, dsn)
+	if !sameWiringShape(pushed, repushed) {
+		t.Fatalf("push -> pull -> push is not a fixed point for a declared key set:\n--- pushed ---\n%+v\n--- re-pushed ---\n%+v",
+			pushed.AttributeProviders, repushed.AttributeProviders)
+	}
+
+	second := pullPath(t, "keys-second.yaml")
+	if out, err := runWiringPullCLI(t, dsn, second); err != nil {
+		t.Fatalf("second pull of a declared key set: %v\n%s", err, out)
+	}
+	a, err := os.ReadFile(first)
+	if err != nil {
+		t.Fatalf("read the first declared-keys pull: %v", err)
+	}
+	b, err := os.ReadFile(second)
+	if err != nil {
+		t.Fatalf("read the second declared-keys pull: %v", err)
+	}
+	if string(a) != string(b) {
+		t.Errorf("a pull of declared key sets is not byte-stable across the round trip:\n--- first ---\n%s\n--- second ---\n%s", a, b)
+	}
+	// The three states as WORDS, on the bytes, because this is the assertion a
+	// length-based implementation passes everything else without.
+	doc := string(a)
+	if strings.Contains(doc, "declared_keys: null") {
+		t.Errorf("the pull rendered a declared key set as null, which reads back as NOT DECLARED:\n%s", doc)
+	}
+	if !strings.Contains(doc, "declared_keys: []") {
+		t.Errorf("the pull did not spell the declared-EMPTY set as []:\n%s", doc)
+	}
 }
 
 // TestPullEmitsNoSecretAndNoCrossAccountData is the security criterion, asserted
@@ -478,61 +538,6 @@ func TestPullChoosesTheFormatTheSameWayExportDoes(t *testing.T) {
 
 	_, err := runWiringPullCLI(t, dsn, filepath.Join(dir, "bad.yaml"), "--format", "toml")
 	mustRefuse(t, "an unknown --format", err, aerr.APERTURE_INVALID_INPUT, "toml")
-}
-
-// TestPullWarnsThatADeclaredKeySetCannotBeEmittedYet is the one place this round
-// trip is lossy, said out loud.
-//
-// The seed attribute_providers: schema has no key for a declared key set yet, while
-// the column and model.DeclaredKeys have existed since the schema was created —
-// Setup creates and never migrates. So a slot whose set was written straight to
-// storage pulls back as NOT DECLARED, and a re-push would clear it. Those are
-// DIFFERENT ANSWERS: not-declared opts the slot out of key enforcement, and
-// declared-empty opts it in and permits nothing. Collapsing them silently is exactly
-// what making DeclaredKeys a struct was for, so the pull names the slots instead.
-func TestPullWarnsThatADeclaredKeySetCannotBeEmittedYet(t *testing.T) {
-	dsn := newWiringStore(t, wiringModelSeed)
-	store := openWiringStore(t, dsn)
-	// Written straight to storage, because there is no YAML key to push it through —
-	// which is the situation the warning is about.
-	set := model.WiringSet{AttributeProviders: []model.WiringAttributeProvider{
-		{Subject: "account", Kind: "sql", DeclaredKeys: model.DeclaredKeys{}},
-		{Subject: "machine", Kind: "sql", DeclaredKeys: model.DeclaredKeys{Declared: true}},
-		{Subject: "user", Kind: "sql", DeclaredKeys: model.DeclaredKeys{
-			Declared: true, Keys: []string{"clearance", "department"}}},
-	}}
-	if err := store.ReplaceWiring(context.Background(), set); err != nil {
-		t.Fatalf("replace wiring: %v", err)
-	}
-
-	out := pullPath(t, "wiring.yaml")
-	got, err := runWiringPullCLI(t, dsn, out)
-	if err != nil {
-		t.Fatalf("a slot with a declared key set must still pull: %v\n%s", err, got)
-	}
-	if !strings.Contains(got, "warning") {
-		t.Fatalf("the pull emitted no warning about the declared key sets it could not carry:\n%s", got)
-	}
-	// The two slots that DECLARED a set are named; the one that did not is not,
-	// because there is nothing about it the document fails to express.
-	for _, want := range []string{`"machine"`, `"user"`} {
-		if !strings.Contains(got, want) {
-			t.Errorf("the warning does not name slot %s:\n%s", want, got)
-		}
-	}
-	if strings.Contains(got, `"account"`) {
-		t.Errorf("the warning names the slot that declared NO key set; not-declared is the state the document does express:\n%s", got)
-	}
-	// The keys themselves are not in the warning: the slot is what the operator acts
-	// on, and `wiring show` is where the keys are read.
-	for _, key := range []string{"clearance", "department"} {
-		if strings.Contains(got, key) {
-			t.Errorf("the warning spells the key %q; it names slots, and `wiring show` prints the keys:\n%s", key, got)
-		}
-	}
-	if !strings.Contains(got, "wiring show") {
-		t.Errorf("the warning does not say where the declared keys can still be read:\n%s", got)
-	}
 }
 
 // TestPullReadsOneAtomicSnapshot pins the read E1-S4 deliberately did NOT use.
