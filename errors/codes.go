@@ -511,6 +511,34 @@ const (
 	// the comparison and leave nothing to say it had ever been different. The
 	// refusal is the default and --force is the way to say "yes, replace it".
 	APERTURE_WIRING_OUTPUT_EXISTS Code = "APERTURE_WIRING_OUTPUT_EXISTS"
+	// APERTURE_WIRING_REFRESH_FAILED — a running instance's background re-read of
+	// the shared wiring (--wiring-poll) did not complete, so the instance is still
+	// deciding from the wiring it last succeeded with. It is an ALARM, not a
+	// refusal: nothing was rolled back, nothing stopped, and the process keeps
+	// answering decisions.
+	//
+	// Keeping last-good is not a fallback, it is the design. Aperture is embedded
+	// in-process in its first real host, so an access engine that stops deciding
+	// takes the whole host down with it, and a fleet that stops answering because
+	// one operator pushed a row it cannot read is worse than a fleet answering
+	// from wiring one push behind. What the choice costs is staleness — the window
+	// an already-replaced configuration keeps being enforced in, the same class of
+	// hazard as an attribute slot's ttl: — which is why the code exists at all:
+	// silent staleness was explicitly rejected.
+	//
+	// It is the code of LAST RESORT and is deliberately rare. A refresh usually
+	// fails for a reason that already has a code and fixups of its own — the
+	// store's APERTURE_STORAGE_SCHEMA_INCOMPATIBLE, E2-S3's
+	// APERTURE_WIRING_CONNECTION_UNROUTED, APERTURE_WIRING_KIND_UNSHAREABLE,
+	// APERTURE_WIRING_LOCAL_COLLISION, a builder's APERTURE_CONFIG_INVALID — and
+	// the alarm passes those through untouched, because aerr.Wrap RE-STAMPS and an
+	// operator handed a generic alarm code instead of the specific one loses the
+	// remedy. This code is what an UNCODED failure is classified as, so that every
+	// stale instance names some APERTURE_* code and none names none.
+	//
+	// The staleness it announces is also readable without logs, as a duration: the
+	// system-admin-gated service.WiringPosture read, and its WiringPosture RPC.
+	APERTURE_WIRING_REFRESH_FAILED Code = "APERTURE_WIRING_REFRESH_FAILED"
 )
 
 // Metadata describes an Aperture code: the canonical human-readable Message and
@@ -943,6 +971,17 @@ var Registry = map[Code]Metadata{
 			"Nothing was read from the store and nothing was written: the path is checked before the wiring is fetched, so a refusal here leaves both the file and the deployment untouched.",
 		},
 	},
+	APERTURE_WIRING_REFRESH_FAILED: {
+		Message: "a background re-read of the shared wiring failed, so this instance is still deciding from the wiring it has",
+		Fixups: []string{
+			"Nothing is broken about this instance's decisions: it kept the last wiring it successfully read and is still answering. What it has lost is the ability to notice a `aperture wiring push`, so treat it as a deployment that has drifted, not as an outage.",
+			"Read how long it has been stale with the system-admin-gated WiringPosture read (the `WiringPosture` RPC), which reports the duration, the failure count and the code — an alarm minutes old on a restarting database is ordinary, and the same alarm hours old is a fleet enforcing policy somebody already retired.",
+			"The alarm normally carries the underlying failure's OWN code and fixups; follow those first. Seeing this code itself means nothing underneath it was coded, which is worth reporting.",
+			"Check the store is reachable from this host and that its wiring tables match this build (`aperture wiring show --store <dsn>`): an unreachable store and a schema from an older build are the two commonest causes.",
+			"If the push added a connection name, every instance needs its own route for it — export APERTURE_CONNECTION_<NAME>_DSN, or declare the name in this instance's --seed file. See APERTURE_WIRING_CONNECTION_UNROUTED.",
+			"Restarting the instance is the way to force the matter, and it is safe: a boot re-reads the shared wiring from scratch and REFUSES to start on wiring it cannot build, rather than degrading.",
+		},
+	},
 }
 
 // AllCodes is the registry every gate walks. Append new codes here; the
@@ -1002,6 +1041,7 @@ var AllCodes = []Code{
 	APERTURE_WIRING_LOCAL_COLLISION,
 	APERTURE_WIRING_NOTHING_DEPLOYED,
 	APERTURE_WIRING_OUTPUT_EXISTS,
+	APERTURE_WIRING_REFRESH_FAILED,
 }
 
 // Message returns the canonical message for a code, or empty when the code has

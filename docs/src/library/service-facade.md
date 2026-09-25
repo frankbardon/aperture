@@ -30,6 +30,7 @@ dependencies:
 | `WithAudit(r *audit.Recorder)` | The append-only audit trail: mutations synchronously, decision checks sampled + async. |
 | `WithProviders(reg *provider.Registry)` | `ObjectIdentifiers` and `ObjectMetadata` — object enumeration and metadata reads. |
 | `WithAttributes(reg *provider.AttributeRegistry)` | `ListAttributes` and the three attribute-cache invalidations — the gated, system-tier directory reads. It grants nobody anything: the decision path never resolves a bag through this option. |
+| `WithWiringHealth(h *service.WiringHealth)` | `WiringPosture` — the gated, system-tier read of whether this instance's background re-read of the **shared wiring** is failing, and for how long. The recorder is created by whatever starts the refresher and the SAME pointer is handed to both, or the facade answers for a loop that never wrote to it. Unwired, `WiringPosture` reports the zero posture (not polling, not stale), which is the truth for a process with no refresher. |
 | `WithRuleSource(base rules.RuleSource, fetcher rules.MetadataFetcher)` | The what-if preview of an **unsaved** rule via `Simulate`'s `Overlay.Rules`. |
 | `WithDeclaredAttributeKeys(sets map[provider.AttributeSlot]model.DeclaredKeys)` | The wiring's **declared attribute key sets**. Turns on definition-time key enforcement: `ValidateRule`, `PutRule` and `EvaluateRulePreview` refuse a rule reading a key a declaring slot does not name, with `APERTURE_RULE_UNDECLARED_ATTRIBUTE`. Opt-in per slot — without it, and for a slot that declares nothing, every rule that validated before still validates. It reaches no decision. |
 | `WithClock(now func() time.Time)` | Override the facade clock used to stamp entity timestamps on writes (for deterministic tests). |
@@ -498,6 +499,63 @@ Invalidation is a **security control**, not a performance knob: a slot's TTL is
 the window a revoked clearance keeps authorizing for, and these methods are how
 an operator closes it now instead of waiting it out. They clear the caches of
 **this process** only.
+
+## The wiring posture — a system-tier read
+
+An instance can be told to re-read the shared wiring tables on an interval
+(`--wiring-poll`), so a `aperture wiring push` from another host is noticed
+without a restart. That re-read can fail: the store is unreachable, the rows it
+returns cannot be turned into a working registry, or a connection name in them is
+one this host has no route for.
+
+When it fails the instance **keeps the wiring it already has and keeps deciding**.
+It has to — Aperture is embedded in-process in its first real host, so an access
+engine that stops answering takes the whole host down with it, and a fleet that
+stops answering because one operator pushed a bad row is worse than a fleet
+answering from wiring one push behind.
+
+The price is **staleness**, and staleness is never silent. Every failure emits an
+`APERTURE_*` coded alarm, and the state is readable without touching a log:
+
+```go
+p, err := svc.WiringPosture(ctx, actor)   // system-admin
+if p.Stale {
+	log.Printf("wiring stale for %s (%d failures, %s)", p.StaleFor, p.Failures, p.Code)
+}
+```
+
+| Field | Is |
+|---|---|
+| `Polling` / `Every` | whether this process re-reads at all, and how often. Both zero-valued for a boot-only instance, which cannot be stale in this sense because it never looks again. |
+| `Stale` / `Healthy()` | the most recent refresh attempt FAILED. It does **not** say the deployed wiring changed — a failed read cannot know, which is exactly why the instance keeps what it has. |
+| `StaleFor` / `Since` | how long the current run of failures has lasted, and when it began. **`StaleFor` is the field to alert on**: one missed tick against a restarting database is ordinary, and the same alarm four hours old is a fleet enforcing policy somebody already retired. |
+| `Failures` | consecutive failures in the current run. A long duration with one is a loop that stopped looking; with many, a store that keeps refusing. |
+| `Code` / `Reason` | the most recent failure's own `APERTURE_*` code and message — the store's `APERTURE_STORAGE_SCHEMA_INCOMPATIBLE`, `APERTURE_WIRING_CONNECTION_UNROUTED`, and only `APERTURE_WIRING_REFRESH_FAILED` when nothing beneath it was coded. Following the underlying code's fixups is the remedy. |
+| `Digest` / `LastRefresh` | the digest of the wiring this process is DECIDING FROM (the last-good set, when stale), and when a refresh last succeeded. |
+
+Four properties are contract, not implementation:
+
+- **It is not part of `Capabilities`, deliberately.** `Capabilities` is an open,
+  unauthenticated call because it carries booleans of immutable boot-time
+  configuration and cannot fail. This is mutable runtime state about a fault whose
+  useful half is a duration, and "this instance has been enforcing configuration
+  its operator already replaced, for four hours" is operational intelligence for
+  the operator, not for every anonymous caller. Adding a boolean there and keeping
+  the duration here would be theatre — the boolean carries the disclosure.
+- **The gate runs before the recorder is consulted.** A refused caller's error is
+  identical for a healthy instance, one that does not poll, and one four hours
+  stale, so a refusal cannot be used to probe whether an instance is degraded.
+- **An unwired recorder is an answer, not a refusal.** Every deployment that has
+  not opted into polling reports not-polling / not-stale, which is true. Refusing
+  would make the read unusable as a fleet-wide probe.
+- **Recovery clears it completely.** Any successful refresh — including one that
+  observed no change, which is almost every tick — resets the window, the count and
+  the code. An alarm that latches past its own remedy trains an operator to ignore
+  the channel.
+
+Over Twirp this is `WiringPosture`, which takes an `Actor` (system-admin authority
+resolves in an active account) and renders durations as Go duration text and
+instants as RFC3339.
 
 ## Related
 

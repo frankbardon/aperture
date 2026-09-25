@@ -171,7 +171,7 @@ func serveEngineOptions(cmd *ucli.Command) ([]engine.Option, error) {
 // store, rec and managed outlive every version and are passed through unchanged:
 // the database, the audit trail and which entities this deployment owns are
 // properties of the process, not of its wiring.
-func serveFacadeOptions(store model.Storage, stack decisionStack, rec *audit.Recorder, managed service.ManagedEntities) []service.Option {
+func serveFacadeOptions(store model.Storage, stack decisionStack, rec *audit.Recorder, managed service.ManagedEntities, health *service.WiringHealth) []service.Option {
 	eng := stack.eng
 	return []service.Option{
 		service.WithStorage(store),
@@ -181,6 +181,13 @@ func serveFacadeOptions(store model.Storage, stack decisionStack, rec *audit.Rec
 		service.WithAudit(rec),
 		service.WithRuleSource(stack.ruleSource, stack.fetcher),
 		service.WithManagedEntities(managed),
+		// The staleness recorder is one pointer for the process, threaded through
+		// HERE rather than composed per call site, for the same reason every other
+		// extra is: a REBUILT facade that took a fresh recorder would answer for a
+		// loop that never writes to it and report a permanently healthy instance no
+		// matter what the loop observed. That is the silent staleness this epic
+		// exists to close, reintroduced one swap later.
+		service.WithWiringHealth(health),
 	}
 }
 
@@ -263,6 +270,19 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 	defer func() { _ = stack.Close() }()
 	stack.reportCollisions(cmd.ErrWriter)
 
+	// The staleness recorder is built HERE, between the stack and the facade, for
+	// the one reason that matters: the facade and the poller must share ONE
+	// pointer. The facade answers WiringPosture from it and the poller writes to
+	// it, and a facade holding a recorder of its own would report a permanently
+	// healthy instance no matter what the loop observed — silent staleness, which
+	// is precisely what the alarm exists to prevent (see wiring_stale.go).
+	//
+	// It is constructed unconditionally, including when polling is off. A
+	// non-positive interval yields a recorder that reports Polling false and can
+	// never report stale, which is the honest posture for a boot-only instance and
+	// saves every call site below a condition.
+	wiringHealth := service.NewWiringHealth(pollEvery, stack.wiringDigest, nil)
+
 	// Wire the append-only audit trail (E4-S2) through the same store so the
 	// mutation/impersonation/delegation record is durable and the E6-S4 audit
 	// viewer has data to query. Mutations are always recorded; decisions are
@@ -277,7 +297,7 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 	// These are the serve-only extras layered on top of the shared stack; the
 	// rule source is handed over as well so the editor's live what-if can preview
 	// an UNSAVED rule read-only (E7-S3).
-	svc := stack.newService(serveFacadeOptions(store, stack, rec, managed)...)
+	svc := stack.newService(serveFacadeOptions(store, stack, rec, managed, wiringHealth)...)
 
 	// The wiring this process answers through, as ONE swappable version: the stack,
 	// the facade over it, and the HTTP handler over that. Everything ABOVE this line
@@ -309,7 +329,7 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 			// providers: row discarded, are facts an operator needs after a push for
 			// the same reason they need them after a restart.
 			next.reportCollisions(errOut)
-			nextSvc := next.newService(serveFacadeOptions(store, next, rec, managed)...)
+			nextSvc := next.newService(serveFacadeOptions(store, next, rec, managed, wiringHealth)...)
 			return &wiringVersion{stack: next, svc: nextSvc, handler: server.New(nextSvc), digest: digest}, nil
 		})
 
@@ -337,9 +357,13 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 	// both calls are nil-safe, which is why neither needs a condition.
 	//
 	// The baseline is the digest the STACK was built from, never the loop's own first
-	// read — see startWiringPoll for what a self-baselining loop silently loses — and
-	// live.swap is what a detected change is adopted through.
-	poll := startWiringPoll(ctx, store, pollEvery, stack.wiringDigest, live.swap, cmd.ErrWriter)
+	// read — see startWiringPoll for what a self-baselining loop silently loses —
+	// and live.swap is what a detected change is adopted through.
+	//
+	// The recorder handed over here is the SAME pointer the facade above holds, so
+	// a refresh that fails is readable through the gated WiringPosture read and not
+	// only on stderr.
+	poll := startWiringPoll(ctx, store, pollEvery, stack.wiringDigest, live.swap, cmd.ErrWriter, wiringHealth)
 	defer func() { _ = poll.Close() }()
 
 	serveErr := make(chan error, 1)

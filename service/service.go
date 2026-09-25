@@ -139,6 +139,15 @@ type Service struct {
 	// kind is managed, so a facade built without WithManagedEntities behaves
 	// exactly as before the option existed. Wired with WithManagedEntities.
 	managed ManagedEntities
+	// wiring, when non-nil, is the recorder a background shared-wiring refresher
+	// reports its successes and failures to, and is what WiringPosture answers
+	// from. It is the one field here that is MUTABLE RUNTIME STATE rather than a
+	// dependency or boot-time posture — deliberately so, and deliberately kept off
+	// Capabilities, which promises the opposite (see wiring_posture.go). Nil (the
+	// default) makes WiringPosture report the zero posture: not polling, not
+	// stale, which is the truth for a process with no refresher. Wired with
+	// WithWiringHealth.
+	wiring *WiringHealth
 }
 
 // Option configures a Service at construction. Options compose; the mutation

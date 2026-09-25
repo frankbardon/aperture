@@ -189,7 +189,7 @@ func newSwapProbe(t *testing.T, ctx context.Context, department string) *swapPro
 						digest:  digest,
 					}, nil
 				})
-			probe.poll = startWiringPoll(ctx, store, time.Hour, stack.wiringDigest, probe.live.swap, probe.out)
+			probe.poll = startWiringPoll(ctx, store, time.Hour, stack.wiringDigest, probe.live.swap, probe.out, nil)
 			return nil
 		},
 	}
@@ -625,7 +625,7 @@ func TestAPollerStartedWithNoSwapperRefusesLoudlyRatherThanPanicking(t *testing.
 
 	// A second poller over the same store, deliberately given no swapper.
 	out := &strings.Builder{}
-	poll := startWiringPoll(ctx, probe.store, time.Hour, probe.live.current().digest, nil, out)
+	poll := startWiringPoll(ctx, probe.store, time.Hour, probe.live.current().digest, nil, out, nil)
 	if poll == nil {
 		t.Fatal("a 1h interval started no poller")
 	}
