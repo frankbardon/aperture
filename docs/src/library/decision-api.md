@@ -224,7 +224,10 @@ Two orderings are load-bearing:
 Metadata is read through `engine.WithMetadata(fetcher)`, whose seam
 (`MetadataFetcher`) has the signature of `*provider.Registry.Fetch` — the same
 registry that backs the scope lister and the rule evaluator, so a candidate is
-served from the per-type cache the enumeration already warmed:
+served from the per-type cache — warmed by the enumeration itself when the provider
+promises its listed bags are its fetched bags
+([`FetchCompleteLister`](../concepts/providers.md#the-listing-and-the-fetch-must-be-the-same-bag)),
+and by the candidate's own `Fetch` otherwise:
 
 ```go
 eng := engine.New(store,

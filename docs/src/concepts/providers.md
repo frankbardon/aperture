@@ -304,8 +304,10 @@ The registry serves two other roles by matching contracts from other packages
 - **`List(ctx, objectType, pattern, limit)` is a `scope.ObjectLister`** —
   byte-for-byte the seam the [implicit/exclusive scope resolvers](scopes.md) left
   open, so a `*Registry` is passed as `engine.ScopeDeps{Lister: reg}`. It queries
-  the provider, bounds the result by the pattern and the limit, and
-  opportunistically warms the cache with each returned object's metadata.
+  the provider, bounds the result by the pattern and the limit, and warms the cache
+  with each returned object's metadata **when the provider promises the two bags
+  are the same bag** — see
+  [The listing and the fetch must be the same bag](#the-listing-and-the-fetch-must-be-the-same-bag).
   A **positive caller limit is honoured verbatim**, however large;
   `DefaultListLimit` (= 1000) is the value substituted for a limit `<= 0`, not a
   ceiling. The caller is the authority because the bound on a decision path is set
@@ -318,6 +320,69 @@ Two enumeration variants sit beside the bounded `List`: `Identifiers` returns th
 **complete, unbounded** id set (sorted, for a stable diff — use it to expand an
 exclusive allowance into a positive allow-list), and `IdentifiersExcept` is
 `Identifiers` minus an excluded set.
+
+### The listing and the fetch must be the same bag
+
+Every **read** of the per-type cache is a `Fetch` — the decision path's
+authoritative view of an object, what a rule sees as `object.*` and what an
+`Enumerate`'s `Fields` predicate is tested against. An entry a listing wrote is
+served back through that seam indistinguishably from one `Fetch` produced. So an
+enumeration may only warm the cache when the listed bag is the bag `Fetch` would
+have returned, and nothing in `ObjectProvider` makes that true:
+
+```yaml
+get_one: SELECT tier, seats, renews_on FROM brands WHERE id = $1
+get_all: SELECT 'brand:' || b.id AS id, b.tier FROM brands b   # NARROWER
+```
+
+That is a legal, documented pair — `Config.FetchQuery` and `Config.ListQuery` are
+independent statements, and a deliberately narrow listing over a wide table is a
+reasonable thing to write. Warming from it caches a one-field bag under an id whose
+real bag has three, for the whole of the type's TTL. A rule then reads
+`object.seats` as **absent** — not wrong, absent — and every predicate over an
+absent field is false: an inclusive grant **denies**, and an **exclusive** grant
+stops excluding and therefore **widens**. Nothing in any verdict, trace or note says
+why, because a bag of any shape is a legal bag. A listing **wider** than the fetch
+statement is the mirror image: it caches a field `Fetch` would never produce, which
+compares true until the entry expires and false afterwards.
+
+The promise is therefore explicit and opt-in:
+
+```go
+// Implemented by an ObjectProvider that guarantees the Metadata its List and
+// Query return is the bag its own Fetch would return, for every object.
+type FetchCompleteLister interface {
+	ObjectProvider
+	ListedMetadataMatchesFetch() bool
+}
+```
+
+A provider that does not implement it makes no promise, and a listing through it
+warms **nothing** — the restrictive default. It costs one enumeration's worth of
+fetches per TTL window and stays correct; a slower decision is an operational
+problem, where a decision computed from a bag no statement of the host's produces is
+an authorization one.
+
+| Provider | Answer | Why |
+|---|---|---|
+| `provider.Static` | always `true` | one map per object, handed to `Fetch`, `List` and `Query` alike |
+| `csvprovider` | always `true` | one parse of one file behind all three methods |
+| `sqlprovider` | **derived** | the list statement's columns minus the id column must equal the fetch statement's columns, as a set — `false` until both statements have run once |
+| a host's own | `false` unless it implements the interface | a provider that reads both answers from one row mapper can promise; one serving `Query` from a search index and `Fetch` from the system of record must not |
+
+`sqlprovider` derives rather than declares because it can: `rows.Columns()` is the
+statement's SELECT list, so it is the same for every row and unaffected by any row's
+NULLs — where comparing two *bags* would not be, since a NULL column omits its field
+and an omitted field is indistinguishable from an unprojected one. There is no
+config field and no YAML key for it: an operator's unchecked promise about two
+statements is exactly what this replaces. The practical cost is one cold enumeration
+per process per SQL-backed type — its candidates each fetch, which is what teaches
+the fetch projection — after which every enumeration warms as before.
+
+The registry cannot verify the promise itself, which is why it is asked rather than
+checked. Metadata is opaque host data, one object's bags agreeing proves nothing
+about the next object's, and comparing per object would cost the very `Fetch` the
+warm exists to avoid.
 
 ### Cache tuning and invalidation
 
@@ -515,9 +580,9 @@ subject it already named.
 
 ### The listing does not write the decision path's cache
 
-`AttributeRegistry.Enumerate` is read-only all the way down: unlike the object
-registry's `List`, it never warms the slot's cache. `Fetch` still caches its own
-answer; only the listing's bags are excluded.
+`AttributeRegistry.Enumerate` is read-only all the way down: it never warms the
+slot's cache. `Fetch` still caches its own answer; only the listing's bags are
+excluded.
 
 `Fetch` and `Query` answer different questions, and nothing in `AttributeProvider`
 makes their bags equal. The SQL loader makes the inequality **legal**:
@@ -533,10 +598,13 @@ denies and an **exclusive** grant stops excluding — an operator running
 `aperture attributes query user` would silently widen access until the `ttl`
 expired, with nothing in any verdict or trace to say why.
 
-The object `Registry.List` keeps its warm, and the asymmetry is the point: `List`
-is a decision-path call whose `Fetch` follows in the same candidate walk, so the
-warm is repaid within the same decision. `Enumerate` has no `Fetch` behind it, so
-the warm bought nothing and cost the decision path its bag.
+The object `Registry.List` had the same bug from the same cause and is fixed
+differently — its warm is **conditional** rather than removed, because it is a
+decision-path call whose `Fetch` follows in the same candidate walk. See
+[The listing and the fetch must be the same bag](#the-listing-and-the-fetch-must-be-the-same-bag).
+`Enumerate` has no `Fetch` behind it, so its warm bought nothing and cost the
+decision path its bag; an `AttributeProvider` is therefore given no promise to make
+about the two, deliberately.
 
 ### Where the bags come from
 
@@ -992,6 +1060,15 @@ provider's object-type — is `APERTURE_SQL_PROVIDER_ROW_IDENTITY` naming the ro
 position, never a row silently skipped. A short enumeration reads as "no access"
 one layer up, and a wrong-type row would be cached under an identity this
 provider's own `Fetch` could never return.
+
+**Project the same columns in both statements** unless you mean not to. The two
+SELECT lists are what decide whether an enumeration may warm the Registry's cache
+(`ListedMetadataMatchesFetch`, derived from the columns each statement really
+returns — see
+[The listing and the fetch must be the same bag](#the-listing-and-the-fetch-must-be-the-same-bag)).
+An unequal pair stays legal and stays correct; it costs a fetch per candidate per TTL
+window instead of one per enumeration, silently. If one SQL-backed type's enumeration
+is slower than its sibling's, compare the two SELECT lists first.
 
 `Query` applies `Filter.Fields` with `provider.MatchFields`, **in Go** — the
 predicates are never templated into the developer's SQL. Comparison in

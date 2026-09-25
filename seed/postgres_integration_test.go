@@ -161,6 +161,36 @@ providers:
 		t.Fatalf("Identifiers = %v, want 2 objects", ids)
 	}
 
+	// The enumerate-then-fetch ORDER is load-bearing, and so is this document's
+	// statement pairing: get_all projects the id plus exactly the columns get_one
+	// projects. That equality is what licenses the Registry to warm its per-type
+	// metadata cache from the listing (provider.FetchCompleteLister, which
+	// sqlprovider answers by comparing the two statements' real column
+	// projections), and brand:2 has never been fetched on its own — so this bag
+	// came out of the listing.
+	//
+	// It is the POSITIVE control for E3-S6 against a real driver: a warmed entry
+	// must be the whole bag, with the same Go types a direct fetch produces. The
+	// narrower pairing — the one that must NOT warm — is proved over the fake
+	// driver in TestBuildRegistry_SQLAnEnumerationDoesNotNarrowTheObjectBag, which
+	// runs in plain `make test`. Do not tidy this read to before the Identifiers
+	// call: after it is the whole point.
+	warmed, err := reg.Fetch(ctx, identity.MustParse("brand:2"))
+	if err != nil {
+		t.Fatalf("Fetch of a listed object: %v", err)
+	}
+	if got, ok := warmed["tier"].(string); !ok || got != "silver" {
+		t.Errorf("tier = %#v (%T), want the string \"silver\"", warmed["tier"], warmed["tier"])
+	}
+	if got, ok := warmed["seats"].(int64); !ok || got != 3 {
+		t.Errorf("seats = %#v (%T), want int64(3) — a listing-warmed entry must carry "+
+			"every column get_one projects, with the same Go type", warmed["seats"], warmed["seats"])
+	}
+	if got, ok := warmed["renews_on"].(string); !ok || got != "2026-09-15T00:00:00Z" {
+		t.Errorf("renews_on = %#v (%T), want the string \"2026-09-15T00:00:00Z\"",
+			warmed["renews_on"], warmed["renews_on"])
+	}
+
 	// An absent object is NOT FOUND, not an operational failure — the distinction
 	// the whole error taxonomy rests on.
 	if _, err := reg.Fetch(ctx, identity.MustParse("brand:missing")); err == nil {

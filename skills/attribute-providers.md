@@ -477,17 +477,40 @@ expires, and no verdict, trace or note says why. It is
 ["The hazard leniency leaves"](#the-hazard-leniency-leaves-an-exclusive-grant-widens)
 reached from the other direction: a bag that is present but shorter.
 
-There is no cheap way to make the warm safe. Aperture cannot compare the two
+Aperture cannot make the warm safe by **inspecting** it. It cannot compare the two
 projections — an attribute bag is opaque host data, an absent key is
 indistinguishable from a key whose value is genuinely unset (`sqlprovider` maps a
 `NULL` to an **omitted** field on purpose), and a provider may legitimately answer
-`Query` from a search index and `Fetch` from the system of record.
+`Query` from a search index and `Fetch` from the system of record. Only the
+implementation knows.
 
-The object `provider.Registry.List` **keeps** its cache warm, and the asymmetry is
-deliberate: `List` is a decision-path call whose `Fetch` follows immediately in the
-same candidate walk, so the warm is repaid inside the same decision. `Enumerate`
-has no `Fetch` behind it — it is an admin listing rendered to an operator — so the
-warm bought nothing and cost the decision path its bag.
+### The object registry had the same bug, and is fixed differently
+
+`provider.Registry.List` and `Registry.Identifiers` warmed the per-type **object**
+metadata cache the same unconditional way, from the same kind of legal statement
+pair — and with the same consequence, since a rule reading `object.<dropped_field>`
+is false for reasons no trace explains.
+
+The two are fixed differently because the calls are not the same kind of call:
+
+| | attribute `Enumerate` | object `List` / `Identifiers` |
+|---|---|---|
+| What it is | a system-tier admin listing | a **decision-path** call: how a rule-backed inclusive scope gathers its candidates |
+| Is there a `Fetch` behind it? | none at all | one per candidate, immediately, in the same `engine.walkAllowed` |
+| Fix | the warm is **removed** | the warm is **conditional** |
+
+Removing the object warm would put a provider round trip per candidate into the
+widest fan-out Aperture has — precisely the super-linear term
+`bench.TestCheckNFREnumerateBound` exists to catch. So it is kept, gated on the one
+thing that makes it correct: the provider promising, through
+`provider.FetchCompleteLister`, that a listed bag is the bag its own `Fetch` would
+return. `Static` and `csvprovider` promise unconditionally (one map per object, served
+to all three methods); `sqlprovider` **derives** it from the two statements' real
+column projections; a provider that makes no promise gets no warm and stays correct.
+
+An `AttributeProvider` is given no such promise to make, deliberately. A slot's bags
+are only ever read by a decision, so a directory read has no business writing to
+what a decision reads, whatever it could promise about them.
 
 ## Wiring
 

@@ -344,6 +344,15 @@ yields the raw array literal as a **string**, and every membership predicate ove
 it then silently matches nothing. See
 [the SQL provider](providers.md#worked-example-sqlprovider).
 
+**Project the same columns in `get_one` and `get_all`** (the id column aside) unless
+you mean not to. The two SELECT lists are what decide whether an enumeration may warm
+the registry's per-type metadata cache, and an unequal pair silently gives that up —
+correctly, because a bag from a narrower listing would make a rule read
+`object.<dropped_field>` as absent, which denies an inclusive grant and stops an
+exclusive one excluding. The pairing is compared from the columns the statements
+really return, so there is no key here to declare it with. See
+[The listing and the fetch must be the same bag](providers.md#the-listing-and-the-fetch-must-be-the-same-bag).
+
 ### There is no `dsn:` key
 
 A seed file is a committed artifact, and a DSN carries a password. Naming an

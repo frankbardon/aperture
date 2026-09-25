@@ -275,17 +275,30 @@ func (r *AttributeRegistry) Fetch(ctx context.Context, slot AttributeSlot, id st
 // rules.TestAMissingBagWidensAnExclusiveGrant describes, reached from the other
 // direction — a bag that is present but shorter.
 //
-// There is no cheap way to make the warm safe. Aperture cannot compare the two
+// Aperture cannot make the warm safe by INSPECTING it. It cannot compare the two
 // projections: an attribute bag is opaque host data, an absent key is
 // indistinguishable from a key whose value is genuinely unset (metadataValue maps
 // a NULL to an OMITTED field on purpose), and a provider may legitimately answer
-// Query from a search index and Fetch from the system of record.
+// Query from a search index and Fetch from the system of record. Only the
+// implementation knows, which is why the object seam asks it (FetchCompleteLister)
+// and this one does not ask at all.
 //
-// The object Registry.List keeps its warm, and the asymmetry is deliberate: List
-// is a DECISION-PATH call whose Fetch follows immediately in the same candidate
-// walk, so the warm is paid back within the same decision. Enumerate has no Fetch
-// behind it — it is an admin listing rendered to an operator — so the warm bought
-// nothing and cost the decision path its bag.
+// The object Registry.List had the same bug from the same cause, and it is fixed
+// DIFFERENTLY, because the two calls are not the same kind of call. List is a
+// DECISION-PATH call whose Fetch follows immediately in the same candidate walk
+// (engine.walkAllowed), so its warm is paid back within the same decision and
+// removing it would put a round trip per candidate into the widest fan-out
+// Aperture has. It therefore keeps the warm, CONDITIONAL on the provider promising
+// through FetchCompleteLister that a listed bag is the bag its own Fetch would
+// return — sqlprovider derives that from the two statements' real column
+// projections, so nothing is taken on trust. See typeEntry.warmsFromListing.
+//
+// Enumerate has no Fetch behind it at all — it is an admin listing rendered to an
+// operator — so there was nothing to conditionalise and nothing to repay: the warm
+// bought nothing and cost the decision path its bag. Removal is the whole fix here,
+// and an AttributeProvider is given no promise to make, deliberately. A slot's bags
+// are only ever read by a decision, and a directory read has no business writing to
+// what a decision reads.
 //
 // Fields is re-enforced through MatchFields rather than trusted to the provider.
 // The object Registry leaves Fields entirely to its provider because there
