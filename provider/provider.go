@@ -9,7 +9,11 @@
 //     an object's metadata on demand (Fetch), and enumerates / filters the
 //     objects of its type (List / Query). Aperture never owns this data — it is
 //     the host's source of truth, and Aperture only ever caches a copy of it
-//     (the "never persist provider data as source of truth" Non-Goal).
+//     (the "never persist provider data as source of truth" Non-Goal). Whether
+//     the bags List and Query return are the bags Fetch would return is NOT
+//     implied by the interface — it is the separate, opt-in promise of
+//     FetchCompleteLister, and it is what decides whether an enumeration may warm
+//     the cache Fetch reads.
 //   - Registry maps an object-type to its provider plus a per-type cache, and is
 //     the seam every consumer resolves a type's provider through. The Registry
 //     also satisfies the scope.ObjectLister contract (its List method has the
@@ -151,6 +155,76 @@ type ObjectProvider interface {
 	List(ctx context.Context) ([]Object, error)
 	// Query returns the objects of this provider's type that satisfy filter.
 	Query(ctx context.Context, filter Filter) ([]Object, error)
+}
+
+// FetchCompleteLister is the OPTIONAL promise an ObjectProvider makes about the
+// Metadata it returns from List and Query: that for every Object it hands back,
+// that bag is the SAME bag its own Fetch would return for the same id. It is
+// what permits Registry.List and Registry.Identifiers to warm the per-type
+// metadata cache from an enumeration instead of leaving every candidate to pay
+// its own round trip.
+//
+// An ObjectProvider that does not implement it makes no such promise, and a
+// listing through it warms NOTHING. That default is deliberate, and it is the
+// restrictive one: a cache entry is read back by Fetch, which is the decision
+// path's authoritative view of an object, so an entry that is not what Fetch
+// would have returned is a decision computed from something no statement of the
+// host's actually says.
+//
+// # Why the promise is needed at all
+//
+// Nothing in ObjectProvider makes Fetch's bag and Query's bag equal, and the SQL
+// loader makes the inequality legal. sqlprovider.Config carries two independent
+// statements, and this pair is a correct, documented configuration:
+//
+//	FetchQuery: SELECT tier, seats, renews_on FROM brands WHERE id = $1
+//	ListQuery:  SELECT 'brand:' || b.id AS id, b.tier FROM brands b
+//
+// Warming from that listing caches a two-field bag under an id whose real bag
+// has four fields, for the whole of the type's TTL. A rule then reads
+// object.seats as ABSENT — not wrong, absent — so every predicate over it is
+// false: an inclusive grant denies, and an EXCLUSIVE grant stops excluding and
+// therefore WIDENS. Nothing in any verdict, trace or note says why, because a
+// short bag is a legal bag.
+//
+// The reverse is a hazard too, which is why the promise is EQUALITY rather than
+// containment. A listing that projects a column the fetch statement does not
+// caches a field Fetch would never produce, and a predicate over it is true for
+// as long as the warmed entry lives and false afterwards.
+//
+// # Why it cannot be checked here
+//
+// The Registry cannot verify the promise by comparing bags. Metadata is opaque
+// host data; an absent key is indistinguishable from a key whose value is
+// genuinely unset (sqlprovider omits a NULL column's field on purpose), so one
+// object's bags agreeing proves nothing about the next object's; and comparing
+// per object would cost the Fetch the warm exists to avoid. The knowledge lives
+// in the implementation, which is where the promise is made.
+//
+// # How the in-tree providers answer
+//
+//   - Static and csvprovider promise unconditionally: all three methods serve the
+//     same map, per object, from the same table.
+//   - sqlprovider DERIVES it from the column projections it has actually
+//     observed — rows.Columns() of each statement, which is the projection and so
+//     is unaffected by any row's NULLs — and answers false until it has seen
+//     both. It is never an operator's declaration.
+//
+// A host provider that reads both answers from one place (a struct scanned once,
+// a shared row mapper) can promise unconditionally too. One that serves Query
+// from a search index and Fetch from the system of record must not.
+//
+// The answer is re-read on every enumeration rather than cached at registration,
+// so a provider that learns its own shape (sqlprovider) can start warming as soon
+// as it knows, and a provider that cannot promise costs one interface method call
+// per enumeration.
+type FetchCompleteLister interface {
+	ObjectProvider
+	// ListedMetadataMatchesFetch reports whether the Metadata this provider
+	// returns from List and Query is, for every Object, the bag its own Fetch
+	// would return for that id. Returning false is always safe: it costs the
+	// enumeration's cache warm and nothing else.
+	ListedMetadataMatchesFetch() bool
 }
 
 // ObjectLister is the enumeration contract the scope package (E2-S1) left as a

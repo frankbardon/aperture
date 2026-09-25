@@ -211,8 +211,12 @@ import (
 	"github.com/frankbardon/aperture/provider"
 )
 
-// compile-time assertion: a *Provider is a usable ObjectProvider.
-var _ provider.ObjectProvider = (*Provider)(nil)
+// compile-time assertion: a *Provider is a usable ObjectProvider, and one whose
+// listings may warm the Registry's metadata cache.
+var (
+	_ provider.ObjectProvider      = (*Provider)(nil)
+	_ provider.FetchCompleteLister = (*Provider)(nil)
+)
 
 // Provider is a CSV-file-backed ObjectProvider for one object-type. It is safe
 // for concurrent use: the file loads once under a write lock and every read
@@ -344,6 +348,19 @@ func (p *Provider) Query(_ context.Context, filter provider.Filter) ([]provider.
 	}
 	return out, nil
 }
+
+// ListedMetadataMatchesFetch is this loader's unconditional
+// provider.FetchCompleteLister promise: a listing through it may warm the
+// Registry's per-type metadata cache.
+//
+// It is true by construction. One CSV row becomes one bag, held once in p.byID,
+// and Fetch, List and Query all hand back that same map by reference — there is a
+// single parse of a single file behind all three, no second projection that could
+// carry fewer or more columns, and Query selects whole objects rather than
+// narrowing them. Reload replaces the whole set atomically, so a listing and a
+// fetch either both see the old file or both see the new one; neither can see a
+// row shaped differently from the other's.
+func (p *Provider) ListedMetadataMatchesFetch() bool { return true }
 
 // column describes one non-id header column and where to read it in each row.
 // elem and delim are set only for a list column; they stay empty for a scalar.

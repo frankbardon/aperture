@@ -25,8 +25,13 @@ const DefaultListLimit = 1000
 // resolved config that built the cache.
 type typeEntry struct {
 	provider ObjectProvider
-	cache    CacheBackend
-	config   CacheConfig
+	// completer is provider again when it also implements FetchCompleteLister,
+	// and nil otherwise. The type assertion is done ONCE, at registration, since
+	// a Go type either has the method or does not; the ANSWER is re-read per
+	// enumeration, because a provider may learn its own shape (sqlprovider does).
+	completer FetchCompleteLister
+	cache     CacheBackend
+	config    CacheConfig
 	// references maps a metadata field this type's provider serves to the
 	// object-type its values identify — the declared references of reference.go,
 	// held here so "what does dataset.current_brands point at?" is a registry
@@ -112,10 +117,12 @@ func (r *Registry) Register(objectType string, provider ObjectProvider, opts ...
 			"provider: object type already has a registered provider",
 			map[string]any{"object_type": objectType})
 	}
+	completer, _ := provider.(FetchCompleteLister)
 	r.entries[objectType] = &typeEntry{
-		provider: provider,
-		cache:    r.newCache(cfg),
-		config:   cfg,
+		provider:  provider,
+		completer: completer,
+		cache:     r.newCache(cfg),
+		config:    cfg,
 	}
 	return nil
 }
@@ -183,10 +190,14 @@ func (r *Registry) Fetch(ctx context.Context, id identity.Identity) (Metadata, e
 
 // List satisfies scope.ObjectLister: it returns up to limit object identities of
 // objectType that match pattern, by querying the type's provider and bounding
-// the result by both the pattern and the limit. It opportunistically warms the
-// per-type cache with each returned object's metadata, since the provider call
-// already paid to produce it. A positive limit is honoured as given — it is not
-// clamped down — and limit <= 0 means DefaultListLimit.
+// the result by both the pattern and the limit. A positive limit is honoured as
+// given — it is not clamped down — and limit <= 0 means DefaultListLimit.
+//
+// It warms the per-type cache with each returned object's metadata ONLY when the
+// type's provider promises, through FetchCompleteLister, that a listed bag is the
+// bag its own Fetch would return. Absent that promise the enumeration returns
+// identities and writes nothing. See warmsFromListing for why the promise is
+// required and what it costs when a provider cannot make it.
 //
 // The signature is byte-for-byte scope.ObjectLister, so a *Registry is wired
 // directly as engine.ScopeDeps{Lister: reg}.
@@ -200,12 +211,16 @@ func (r *Registry) List(ctx context.Context, objectType string, pattern identity
 	if err != nil {
 		return nil, providerError(err)
 	}
+	// Asked AFTER the provider call, once for the whole listing: a provider that
+	// derives its answer from the statement it just ran (sqlprovider) knows it by
+	// now, and asking per object would only re-read the same answer.
+	warm := e.warmsFromListing()
 	out := make([]identity.Identity, 0, len(objs))
 	for _, obj := range objs {
 		if !pattern.Matches(obj.ID) {
 			continue
 		}
-		if obj.Metadata != nil {
+		if warm && obj.Metadata != nil {
 			e.cache.Set(obj.ID.String(), obj.Metadata)
 		}
 		out = append(out, obj.ID)
@@ -214,6 +229,54 @@ func (r *Registry) List(ctx context.Context, objectType string, pattern identity
 		}
 	}
 	return out, nil
+}
+
+// warmsFromListing reports whether this type's provider has promised that the
+// Metadata its List and Query return is the bag its own Fetch would return, which
+// is the only condition under which an enumeration may write the per-type cache.
+//
+// # The cache belongs to Fetch
+//
+// Every read of a cached entry is a Fetch — the decision path's authoritative
+// view of an object, what a rule sees as `object.*` and what an Enumerate's
+// Fields predicate is evaluated against. An entry an enumeration wrote is served
+// back through that seam indistinguishably from one Fetch produced, so warming
+// from a listing whose projection differs substitutes a DISPLAY bag for the
+// authoritative one, for the whole of the type's TTL, for every object the
+// listing returned.
+//
+// The consequence is an access-control change and not a stale read. A narrower
+// listing makes a field ABSENT rather than wrong, and every predicate over an
+// absent field is false: an inclusive grant denies, and an EXCLUSIVE grant stops
+// excluding and therefore WIDENS. A wider listing is the mirror image — a field
+// Fetch would never produce compares true until the entry expires. Neither leaves
+// a trace, because a bag of any shape is a legal bag.
+//
+// This is the same hazard AttributeRegistry.Enumerate had (E3-S5), and the
+// mechanism is identical: two statements the loader's own contract allows to
+// project differently, one cache. The two are FIXED DIFFERENTLY on purpose,
+// because the calls are not the same kind of call. Attribute Enumerate is a
+// system-tier admin listing with no Fetch behind it, so its warm bought nothing
+// and was simply removed. Registry.List is a DECISION-PATH call: it is how a
+// rule-backed inclusive scope gathers its candidates, and a Fetch of every one of
+// them follows immediately in the same candidate walk (engine.walkAllowed), so
+// the warm is repaid inside the same decision. Removing it unconditionally would
+// put a provider round trip per candidate into the widest fan-out Aperture has —
+// exactly the super-linear term bench.TestCheckNFREnumerateBound exists to catch.
+//
+// So the warm is kept, and made conditional on the one thing that makes it
+// correct: the provider saying the two bags are the same bag. The Registry cannot
+// check that itself — metadata is opaque host data and an absent key is
+// indistinguishable from a genuinely unset one, so comparing two bags of one
+// object proves nothing about the next object, and comparing per object would
+// cost the very Fetch the warm avoids. See FetchCompleteLister.
+//
+// A provider that makes no promise costs one enumeration's worth of Fetches per
+// TTL window and stays correct. That is the right way round: a slower decision is
+// an operational problem, and a decision computed from a bag no statement of the
+// host's produces is an authorization one.
+func (e *typeEntry) warmsFromListing() bool {
+	return e.completer != nil && e.completer.ListedMetadataMatchesFetch()
 }
 
 // Identifiers returns every object identity of objectType by calling the type's
@@ -225,10 +288,12 @@ func (r *Registry) List(ctx context.Context, objectType string, pattern identity
 // bounded, pattern-scoped page is enough. An unregistered type yields
 // APERTURE_PROVIDER_UNREGISTERED.
 //
-// It warms the per-type cache with each object's metadata (the provider call
-// already paid to produce it) and returns the ids sorted by canonical string so
-// the result is stable and diffable. Because it is unbounded, prefer List for a
-// provider whose domain is too large to hold in memory.
+// It returns the ids sorted by canonical string so the result is stable and
+// diffable, and it warms the per-type cache on exactly the same condition List
+// does — only when the type's provider promises through FetchCompleteLister that a
+// listed bag is the bag its own Fetch would return (see warmsFromListing).
+// Because it is unbounded, prefer List for a provider whose domain is too large to
+// hold in memory.
 func (r *Registry) Identifiers(ctx context.Context, objectType string) ([]identity.Identity, error) {
 	e, err := r.entry(objectType)
 	if err != nil {
@@ -238,9 +303,10 @@ func (r *Registry) Identifiers(ctx context.Context, objectType string) ([]identi
 	if err != nil {
 		return nil, providerError(err)
 	}
+	warm := e.warmsFromListing()
 	out := make([]identity.Identity, 0, len(objs))
 	for _, obj := range objs {
-		if obj.Metadata != nil {
+		if warm && obj.Metadata != nil {
 			e.cache.Set(obj.ID.String(), obj.Metadata)
 		}
 		out = append(out, obj.ID)

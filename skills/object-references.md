@@ -388,7 +388,7 @@ deliberate refusal, not a gap:
   `Check`s.
 
 Enumeration is the right place for it: the restriction is computed **once**, off
-the `Check` path, against a cache the enumeration was going to warm anyway.
+the `Check` path, against the same per-type cache every candidate in the walk reads.
 
 ## The coded errors
 
