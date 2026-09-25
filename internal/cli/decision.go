@@ -73,6 +73,23 @@ type decisionStack struct {
 	// contested key — which is exactly what an operator debugging an unexpected
 	// attribute value needs told, and which no verdict, trace or note says.
 	attributeCollisions []string
+	// wiringDigest is the content digest of the SHARED wiring set this stack was
+	// built from — the value a background poll compares a later read against to
+	// answer "would this instance be wired differently now?" (wiring_poll.go).
+	//
+	// It is recorded here, at the boot, rather than taken by the poller from its own
+	// first read, and that is load-bearing: a push landing between the boot read and
+	// the first tick would become a self-baselining loop's baseline, so the change
+	// would never be reported and the instance would be stale for its whole lifetime
+	// with nothing saying so.
+	//
+	// It is always set, including for an EMPTY wiring set, whose digest is an
+	// ordinary value like any other. That is what makes the FIRST ever push to a
+	// database detectable: an instance booted on empty tables holds the empty set's
+	// digest, and the push changes it. A "" sentinel for "no wiring" would have made
+	// the one transition that turns a file-wired fleet into a shared-wiring fleet
+	// the single transition nothing noticed.
+	wiringDigest string
 	// conns are the database pools BuildRegistryWithConnections opened for the
 	// seed's `connections:` block — one per named connection, shared by every
 	// `kind: sql` provider entry referencing it. It is the only part of the stack
@@ -223,6 +240,16 @@ func buildDecisionStack(ctx context.Context, cmd *ucli.Command, store model.Stor
 	if err != nil {
 		return decisionStack{}, err
 	}
+	// The digest of what this instance is ABOUT TO BE WIRED WITH, taken before the
+	// set is projected into a document and therefore over exactly the rows that were
+	// read. A background poll (--wiring-poll) compares a later read against it; with
+	// polling off it is computed and never looked at, which costs one hash of a
+	// snapshot already in memory. See decisionStack.wiringDigest for why the boot and
+	// not the poller owns this value.
+	digest, err := wiringDigest(wiring)
+	if err != nil {
+		return decisionStack{}, err
+	}
 	doc := local
 	// buildOpts is empty on the file-only path, deliberately: a DB-wired boot
 	// builds under seed.StrictProviderCollision() because its document was
@@ -357,6 +384,7 @@ func buildDecisionStack(ctx context.Context, cmd *ucli.Command, store model.Stor
 		collisions: doc.ProviderCollisions(),
 
 		attributeCollisions: doc.AttributeCollisions(),
+		wiringDigest:        digest,
 		conns:               conns,
 	}, nil
 }
