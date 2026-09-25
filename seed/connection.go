@@ -77,6 +77,30 @@ const (
 // Like the providers: and objects: sections, this is runtime WIRING and not
 // model state: Apply writes nothing for it and an export never reproduces it.
 //
+// # Only the NAME is shared, and the rest is this instance's ROUTE
+//
+// connections: is one of the four SHARED wiring sections, but what `aperture
+// wiring push` writes is a MANIFEST OF NAMES: one row per name in
+// apt_wiring_connections, and nothing else. Every other key below — DSNEnv, the
+// three pool bounds, QueryTimeout — is deliberately absent from the schema, because
+// which server, which credential and how large a pool are per-instance facts, and
+// a row is copied to a second host that resolves its own.
+//
+// So a declaration here does double duty. On the instance that authors the wiring
+// it is both the name and the route; on any instance reading shared wiring it is
+// purely the ROUTE for a name the manifest already declared. There are three ways
+// to supply one, and they are local to each instance: seed.WithConnectionOpener (a
+// Go host builds the pool itself — the documented seam, and the only one a library
+// host needs), a connections: entry under the same name in this instance's own seed
+// file (used verbatim), or the conventional environment variable
+// APERTURE_CONNECTION_<NAME>_DSN (the CLI's route of last resort, not a second
+// mechanism). A shared name no route answers for refuses the BOOT with
+// APERTURE_WIRING_CONNECTION_UNROUTED, naming every unrouted name at once.
+//
+// A pulled document therefore comes back with an empty dsn_env: for every
+// connection — it is re-pushable but not bootable until the routes are filled in,
+// and that asymmetry is the security rule made visible rather than a defect.
+//
 // # Why there is no dsn: key
 //
 // A seed file is a committed artifact. A DSN carries a password, and a password

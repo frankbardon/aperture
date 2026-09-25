@@ -29,9 +29,17 @@ import (
 // not model state. BuildRegistry turns the declared objects into an in-memory
 // provider.Static registered under each object-type; Apply never writes a row for
 // them, and because the model is exported by reading storage back, an export does
-// not reproduce them. The "never persist provider data as source of truth"
-// Non-Goal (export.go) is untouched: the seed FILE is the source of truth for
-// inline object metadata, exactly as it is for provider wiring.
+// not reproduce them.
+//
+// Unlike the providers section, this one is LOCAL: it is one of the two wiring
+// sections `aperture wiring push` does not share, and the reason is the "never
+// persist provider data as source of truth" Non-Goal (export.go) rather than a gap
+// in the schema. A providers: entry is a POINTER to where metadata lives and is
+// safe to copy to a second instance; the entries here are the metadata, so sharing
+// them would make Aperture's own database the source of truth for a host's domain
+// data. The seed FILE is therefore the whole source of truth for inline object
+// metadata, and an instance that needs metadata its peers also need reaches it
+// through a providers: entry, which IS shared. See skills/shared-wiring.md.
 //
 // The object-type is DERIVED from the identity's terminal segment
 // (account:acme/brand:1 is a "brand"), never declared separately — one fact in

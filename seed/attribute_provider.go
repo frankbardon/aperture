@@ -46,8 +46,17 @@ import (
 // Like providers:, objects:, field_types:, connections: and attributes:, this is
 // runtime WIRING and not model state: Apply writes no row for it, and because
 // Export reads the model back OUT of storage, an export reproduces none of it.
-// See seed/provider.go:17-20, which states the rule for the section this one
-// mirrors.
+//
+// And like providers: — the section it mirrors — it is SHARED wiring, for the same
+// reason: an entry here points a slot AT a source rather than carrying the bags
+// themselves. `aperture wiring push` writes it to apt_wiring_attribute_providers,
+// `aperture wiring pull` reads it back under this key, and where those rows exist
+// they are authoritative on every instance while a local document may only ADD a
+// slot the database never declared. Path is the one field that is never shared
+// (kind: csv is refused at the push, and stays legal here), and a connection is
+// shared by NAME only. attributes:, which lists bags inline, is one of the two LOCAL
+// sections and is never shared at all — see seed/attribute.go. The contract for both
+// halves is skills/shared-wiring.md.
 
 const (
 	// attributeKindCSV is the file-backed attribute source: one CSV whose id

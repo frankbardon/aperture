@@ -26,6 +26,7 @@ name — this guide never re-tabulates them, so the two never drift.
 | [Provisioning](provisioning.md) | `template`, `bulk` | Apply parameterized templates and transactional bulk grant/revoke. |
 | [Portability](portability.md) | `export`, `import` | Serialize the whole model to a state file and apply it back. |
 | [Attributes](attributes.md) | `attributes` | Inspect the host directories a rule reads `principal.*` / `account.*` from, read one, and drop cached bags. |
+| [`wiring`](wiring.md) | `wiring` | Deploy, read, snapshot and diff the four seed sections a whole deployment shares out of its database. |
 | [`serve`](serve.md) | `serve` | Run the HTTP + Twirp server and admin UI. |
 | [`mcp`](mcp.md) | `mcp` | Serve the read-only MCP surface over stdio. |
 

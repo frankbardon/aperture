@@ -86,6 +86,14 @@ The seed **model** itself is authored as YAML (or JSON) and supplied with
 the server turns into a live object-provider registry. Model YAML is data, not
 process config — the two are separate.
 
+A seed file is no longer the only home for that wiring. Four of its six wiring
+sections — `connections:` (names only), `providers:`, `field_types:` and
+`attribute_providers:` — can be pushed into the store every instance of a deployment
+shares, with [`aperture wiring`](../cli/wiring.md); where those rows exist the
+database is authoritative and a local file may only add to it. That is how an
+instance with no `--seed` at all is wired. See
+[Two instances, one store](two-instance-topology.md).
+
 One deployment consequence of that split: a `kind: sql` provider names its
 database through `dsn_env:`, and a **literal `dsn:` in a seed file is refused at
 parse**. So each declared connection needs its environment variable exported

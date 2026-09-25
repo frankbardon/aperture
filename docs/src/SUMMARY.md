@@ -19,6 +19,7 @@
   - [Provisioning](cli/provisioning.md)
   - [Portability](cli/portability.md)
   - [Attributes](cli/attributes.md)
+  - [wiring](cli/wiring.md)
   - [serve](cli/serve.md)
   - [mcp](cli/mcp.md)
 - [Library overview](library/overview.md)

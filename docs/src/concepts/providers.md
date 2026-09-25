@@ -739,7 +739,13 @@ A seed document applies its `references:` blocks in a **second pass, after every
 type is registered**, so a reference may name a target declared further down the
 file or served by the `objects:` section. Like the rest of `providers:`, a
 declaration is runtime wiring: `Apply` writes none of it and an export reproduces
-none of it.
+none of it — and, like the rest of `providers:`, it **is** shared wiring.
+`aperture wiring push` flattens the map into `apt_wiring_provider_references`, one
+row per (`object_type`, `field`), and an instance booting against those rows builds
+the same declarations. The target is still resolved against the registry the wiring
+builds rather than against a table, which is why a declaration may point at a type
+served only by a local `objects:` entry and why that column carries no foreign key.
+See [`aperture wiring`](../cli/wiring.md).
 
 ### What a declaration buys: enumerating through it
 

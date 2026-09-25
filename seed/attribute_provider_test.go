@@ -435,8 +435,14 @@ func TestAttributeProviders_ResolveTheEntryBeforeAnyLoaderSeesIt(t *testing.T) {
 
 // TestAttributeProviderWiringIsNotModelState is TestAttributeWiringIsNotModelState
 // for the external block. Apply writes nothing for it, and because Export reads
-// the model back OUT of storage, an export reproduces none of it — the seed FILE
-// is its only source of truth, exactly as it is for providers:.
+// the model back OUT of storage, an export reproduces none of it.
+//
+// Neither of those says the seed FILE is its only home: attribute_providers: is
+// one of the four SHARED wiring sections, and `aperture wiring push` writes it to
+// apt_wiring_attribute_providers exactly as it writes providers:. What this test
+// pins is that the MODEL-state write and read-back leave it alone — a third
+// question from the one `aperture wiring pull` answers. See
+// skills/shared-wiring.md.
 func TestAttributeProviderWiringIsNotModelState(t *testing.T) {
 	ctx := context.Background()
 	doc := attributeDoc(t, `
