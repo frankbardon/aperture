@@ -380,14 +380,84 @@ func TestTheStoreGoesAwayAndComesBackAndTheAlarmClears(t *testing.T) {
 	case p.LastRefresh.IsZero():
 		t.Error("a successful refresh did not stamp LastRefresh")
 	}
-	// Nothing was adopted — that is E4-S2's job — so the posture must still name
-	// the digest this instance DECIDES FROM and not the one the tables now hold.
-	if p.Digest != baseline {
-		t.Errorf("the posture reports digest %q after a change was merely NOTICED; want the "+
-			"last-good %q, because claiming an adoption that has not happened is the same "+
-			"lie as hiding a staleness", p.Digest, baseline)
+	// The recovering tick ADOPTED the change, so the posture must name the digest
+	// this instance now decides from — which is the pushed one, and no longer the
+	// baseline. The posture's Digest field is "the wiring THIS PROCESS IS DECIDING
+	// FROM", so a value that lagged the adoption would send an operator comparing
+	// digests across a fleet to the wrong conclusion about which instances had
+	// caught up. The opposite direction — never claiming a digest this instance
+	// REFUSED — is asserted where it can actually go wrong, in
+	// TestAnAdoptionThatFailsIsStaleAndNotHealthy.
+	if p.Digest == baseline {
+		t.Errorf("the posture still reports the pre-push digest %q after the recovering tick "+
+			"adopted the change; it must name the wiring this instance now decides from, or a "+
+			"fleet-wide digest comparison reads a caught-up instance as behind", baseline)
+	}
+	if p.Digest != probe.poll.digest {
+		t.Errorf("the posture reports digest %q but the instance is running %q — the two are "+
+			"one fact and must not come apart", p.Digest, probe.poll.digest)
 	}
 	probe.decides(t, "after recovery")
+}
+
+// TestARefusedPushGetsOLDERRatherThanRestartingEveryTick is the number an operator
+// escalates on, on the failure mode where it is easiest to lose.
+//
+// A refused ADOPTION is different from an unreachable store in one way that matters
+// here: the read succeeded. If a tick treated that success as a completed refresh —
+// clearing the alarm on the way past and re-arming it when the adoption failed —
+// the posture would stay Stale and its numbers would be worthless, because
+// WiringHealth.Refreshed zeroes the window and the count. A push refused for four
+// hours would report ONE failure, an age of one tick, and a Since of a moment ago,
+// forever.
+//
+// So this walks the same refusal across several ticks and asserts the age and the
+// count GROW and the window's start does not move. The assertions on the count and
+// on Since are clock-free; StaleFor is read against the probe's pinned clock.
+func TestARefusedPushGetsOLDERRatherThanRestartingEveryTick(t *testing.T) {
+	probe := newStalenessProbe(t)
+	baseline := probe.poll.digest
+
+	// A push that adds a connection name this instance has no route for: the read
+	// and the digest succeed on every tick, and the adoption fails on every tick.
+	set := staleWiringSet(time.Now().UTC())
+	set.Connections = append(set.Connections,
+		model.WiringConnection{Name: "replica", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()})
+	if err := probe.counting.ReplaceWiring(probe.ctx, set); err != nil {
+		t.Fatalf("pushing the wiring: %v", err)
+	}
+
+	const ticks = 4
+	for i := 0; i < ticks; i++ {
+		if probe.poll.tick(probe.ctx) {
+			t.Fatalf("tick %d adopted a push this instance cannot route", i)
+		}
+		probe.decides(t, "while the push is refused")
+		probe.now.advance(30 * time.Second)
+	}
+
+	p := probe.health.Posture()
+	if !p.Stale {
+		t.Fatalf("an instance refusing a push on every tick reports healthy: %+v", p)
+	}
+	if p.Failures != ticks {
+		t.Errorf("Failures = %d after %d refused ticks, want %d. A count that resets means the "+
+			"read's success is being treated as a completed refresh, which throws away the age "+
+			"and the count an operator escalates on", p.Failures, ticks, ticks)
+	}
+	if want := time.Duration(ticks) * 30 * time.Second; p.StaleFor != want {
+		t.Errorf("StaleFor = %s after %d refused ticks, want %s — the window runs continuously "+
+			"from the FIRST refusal, because that is when this instance started running wiring "+
+			"its operator had already replaced", p.StaleFor, ticks, want)
+	}
+	// And last-good throughout: the digest never advanced, so the refusal is
+	// re-detected every tick rather than reported once and forgotten.
+	if probe.poll.digest != baseline {
+		t.Error("a refused adoption advanced the digest")
+	}
+	if p.Digest != baseline {
+		t.Errorf("the posture reports digest %q, want the last-good %q", p.Digest, baseline)
+	}
 }
 
 // TestASuccessfulRefreshWithNoChangeAlsoClearsTheAlarm pins the branch a

@@ -44,11 +44,13 @@ import (
 // of which internal step declined would be four alarms to wire, four to
 // document, and three to forget.
 //
-// So the hot-rebuild story's failure path is `p.alarm(err)` and its success path
-// is advancing p.digest and calling `p.refreshed()`. Neither needs anything here
-// to change, and a rebuild that fails must NOT advance p.digest — see
-// service.WiringHealth.Refreshed for why the digest it is handed is the one the
-// instance RUNS and never the one the tables hold.
+// So a rebuild's failure path is `p.alarm(err)` and its success path is advancing
+// p.digest and calling `p.refreshed()`. A rebuild that fails must NOT advance
+// p.digest — see service.WiringHealth.Refreshed for why the digest it is handed
+// is the one the instance RUNS and never the one the tables hold — and must not
+// clear the alarm either, because staleness that began at the first refusal is
+// CONTINUOUS until an adoption succeeds. See refreshed for why "the read
+// succeeded" is not the same event as "a refresh completed".
 //
 // # The pass-through guard is the load-bearing half
 //
@@ -106,23 +108,33 @@ func (p *wiringPoll) alarm(err error) {
 	p.report("wiring poll: re-reading the shared wiring failed, so this instance keeps the wiring it has: %v", alarm)
 }
 
-// refreshed records that a refresh SUCCEEDED, which clears any standing alarm.
+// refreshed records that a refresh COMPLETED, which clears any standing alarm.
 //
 // It names p.digest — the digest of the wiring this process is DECIDING FROM —
-// and not the digest just read, because a tick that finds a change has not
-// adopted it: the instance goes on running the old wiring until a rebuild swaps
-// it. Handing the new digest over here would make the posture claim an adoption
-// that has not happened.
+// and never the digest just read, so the posture cannot claim an adoption that
+// has not happened. tick therefore calls it only where those two are the same
+// value: on the no-change branch, and after a successful swap has assigned
+// p.digest.
 //
 // p.digest is read without a lock because the loop goroutine owns it (see
 // wiringPoll.digest), and this method is only ever called from the same
 // goroutine that drives tick.
 //
-// Clearing on ANY successful refresh, including one that observed no change, is
-// deliberate: the alarm's subject is "this process could not find out whether
-// the wiring changed", and a completed read answers that question whatever the
-// answer is. An alarm that needed a CHANGE to clear would latch forever on a
-// deployment whose wiring is stable, which is most of them.
+// # A completed refresh is not the same as a successful read
+//
+// There are exactly two of them and tick names both. A tick that observed NO
+// CHANGE completed one — that is almost every tick of almost every deployment,
+// and an alarm that needed a change to clear would latch forever on a fleet
+// whose wiring is stable, which is most of them. A tick that ADOPTED a change
+// completed one too.
+//
+// A tick that read the tables, found a change and could NOT adopt it has
+// completed nothing, and must not reach this method. It is the worst of the
+// three postures — the instance knows the wiring changed and is knowingly
+// running superseded wiring — and clearing on the strength of the read alone
+// would leave the alarm firing with useless NUMBERS: Refreshed zeroes the window
+// and the count, so a push refused for four hours would report one failure and
+// an age of one tick, forever. The age is the half an operator escalates on.
 func (p *wiringPoll) refreshed() {
 	p.health.Refreshed(p.digest)
 }

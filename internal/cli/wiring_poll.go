@@ -559,6 +559,15 @@ func (p *wiringPoll) run(ctx context.Context) {
 // refused change is re-detected and re-reported on every tick until it is adopted
 // or the push is corrected, which is noisy in exactly the direction an operator
 // needs. E4-S4 turns that repetition into an alarm with a staleness duration.
+//
+// The alarm follows the same rule, and there are exactly TWO places a tick declares
+// a refresh COMPLETE: the no-change branch, and after a successful swap. A tick
+// that read the tables, found a change and could not adopt it has not completed
+// anything — it is the worst of the three postures — so nothing on that path
+// clears, and the staleness window it opens runs continuously from the first
+// refusal. Clearing on the strength of the READ alone (before the change branch)
+// leaves the alarm firing but resets its age and its count on every tick, which
+// reports a four-hour refusal as one failure a tick old.
 func (p *wiringPoll) tick(ctx context.Context) bool {
 	p.ticks.Add(1)
 
@@ -578,15 +587,13 @@ func (p *wiringPoll) tick(ctx context.Context) bool {
 		p.alarm(err)
 		return false
 	}
-	// The store answered and its wiring digested, so this process is not stale
-	// whatever the comparison below says: any standing alarm clears HERE, before
-	// the change branch, because a completed refresh settles the question the alarm
-	// asks — "could this instance find out?" — even when the answer is "nothing
-	// changed", which is the answer on almost every tick of almost every
-	// deployment. refreshed() names p.digest, the wiring this process RUNS, which
-	// is still the old one on a tick that is about to report a change.
-	p.refreshed()
 	if digest == p.digest {
+		// The store answered, its wiring digested, and it says this process is running
+		// what the deployment deployed. That is a completed refresh and it clears any
+		// standing alarm — including one raised by a read that failed an hour ago, and
+		// including on the overwhelmingly common tick where nothing changed at all,
+		// which is the answer on almost every tick of almost every deployment.
+		p.refreshed()
 		return false
 	}
 	previous := p.digest
@@ -603,23 +610,31 @@ func (p *wiringPoll) tick(ctx context.Context) bool {
 		// since been edited into an invalid one).
 		p.report("wiring poll: the deployed wiring CHANGED (%s -> %s) but this instance could not adopt it, so it keeps "+
 			"the wiring it has and goes on deciding: %v", shortDigest(previous), shortDigest(digest), err)
-		// And the alarm is RE-ARMED, after refreshed() cleared it above. Both calls
-		// belong here and the order is the contract: the read and the digest both
-		// succeeded, so "could this instance find out?" really was answered yes and
-		// refreshed() was right to clear — but the instance is now KNOWINGLY running
-		// superseded wiring, which is a strictly worse posture than not having looked.
+		// The alarm, and NOTHING has cleared it on the way here. A failed adoption is
+		// the worst posture of the three: the instance read the tables perfectly well,
+		// knows the wiring changed, and is KNOWINGLY running superseded wiring —
+		// strictly worse than not having looked. Without this line it would report on
+		// stderr and read as HEALTHY, which is the one shape of silent staleness no
+		// amount of polling discovers, because every subsequent tick reads fine, fails
+		// to adopt again, and says nothing.
 		//
-		// Without this line a failed adoption reports on stderr and leaves the
-		// posture saying HEALTHY, because the success of the read had already cleared
-		// the alarm three statements earlier. That is the silent staleness this epic
-		// exists to close, and it is the one shape of it that no amount of polling
-		// discovers: every subsequent tick reads fine, clears fine, fails to adopt
-		// again, and says nothing.
+		// Which is also why refreshed() is NOT called before this branch. Clearing on
+		// a successful READ and re-arming here would leave the alarm technically
+		// correct and its NUMBERS useless: Refreshed zeroes the window and the count,
+		// so a push refused for four hours would report one failure and an age of one
+		// tick, forever — and the age is the half an operator escalates on. Staleness
+		// that began at the first refusal is CONTINUOUS until an adoption succeeds, so
+		// nothing on this path is allowed to reset it.
 		p.alarm(err)
 		return false
 	}
 	p.digest = digest
 	p.changes.Add(1)
+	// The adoption succeeded, so this is the completed refresh — and only now is
+	// p.digest the wiring this process runs, which is what refreshed() must be told.
+	// Clearing here rather than before the swap is what makes the posture's digest
+	// right from the instant of the adoption instead of one tick later.
+	p.refreshed()
 	p.report("wiring poll: the deployed wiring CHANGED (%s -> %s) and this instance ADOPTED it; decisions already in "+
 		"flight finish on the wiring they started with", shortDigest(previous), shortDigest(digest))
 	return true

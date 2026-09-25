@@ -1,6 +1,6 @@
 ---
 name: shared-wiring
-description: The shared-wiring contract — the four of a seed document's six wiring sections that live in the deployment's database (`connections:` as names only, `providers:`, `field_types:`, `attribute_providers:`) and the two that stay file-local (`objects:`, `attributes:`), the `aperture wiring push` / `show` / `pull` / `diff` command tree and why it is CLI-only, what a stored row may never carry (no DSN, no credential, not even a `dsn_env:` variable name, no filesystem path — which is why `kind: csv` is refused), the connection NAME versus the three per-instance ROUTES, empty tables meaning "use the local file", the merge authority where the database wins and a local file may only ADD with a collision refused in both directions, why an instance that cannot honour the shared wiring refuses to boot rather than degrading, `ReplaceWiring` being all-or-nothing with every read in canonical order and no per-row write, `declared_keys` telling "not declared" from "declared empty", and `wiring diff` exiting 2 on drift with no `APERTURE_*` code.
+description: The shared-wiring contract — the four of a seed document's six wiring sections that live in the deployment's database (`connections:` as names only, `providers:`, `field_types:`, `attribute_providers:`) and the two that stay file-local (`objects:`, `attributes:`), the `aperture wiring push` / `show` / `pull` / `diff` command tree and why it is CLI-only, what a stored row may never carry (no DSN, no credential, not even a `dsn_env:` variable name, no filesystem path — which is why `kind: csv` is refused), the connection NAME versus the three per-instance ROUTES, empty tables meaning "use the local file", the merge authority where the database wins and a local file may only ADD with a collision refused in both directions, why an instance that cannot honour the shared wiring refuses to boot rather than degrading, `ReplaceWiring` being all-or-nothing with every read in canonical order and no per-row write, `declared_keys` telling "not declared" from "declared empty", and `wiring diff` exiting 2 on drift with no `APERTURE_*` code — plus the HOT-SWAP contract for a running instance: opt-in polling that defaults off, a version rebuilt and installed whole with one atomic pointer store so a request pins one version and never blocks on a wiring read, the connection NAME SET frozen for the life of a process with a name-set-changing push held whole (`APERTURE_WIRING_RESTART_REQUIRED`), and a failed refresh keeping last-good wiring while alarming loudly through the system-admin-gated wiring posture read (`APERTURE_WIRING_REFRESH_FAILED`).
 applies_to: [cli, library]
 ---
 
@@ -310,9 +310,123 @@ The interval vocabulary, how a change is detected, and what a tick costs are all
 `docs/src/cli/global-options.md` ("The wiring is read once, unless you ask for
 more"). They are not restated here.
 
-> **Gap, deliberately left:** what the instance *does* with a change it notices — the
-> hot-swap semantics — is not documented in this file yet. Add it here when that
-> behaviour lands, and do not infer it from the polling flag.
+## What a swap replaces, and what a decision sees
+
+A change that a tick notices is **adopted**, not merely reported. The unit of
+adoption is a **version**: the object provider registry, the field-type
+declarations folded into it, the attribute providers, the rules engine over them,
+the decision engine and the service facade, all built together and installed with
+a single `atomic.Pointer` store (`internal/cli/wiring_swap.go`'s `liveWiring` /
+`wiringVersion`).
+
+Four properties are the contract, and each of them is a thing a plausible
+alternative implementation would get wrong:
+
+- **A version is installed whole or not at all.** A rebuild that fails installs
+  nothing. There is no per-section swap and no partial install, so no decision can
+  observe half of a push.
+- **A request pins one version at its entry and finishes on it.** `liveWiring` is
+  the `serve` handler, and it resolves the version once per request. A swap landing
+  mid-request does not change what that request decides.
+- **A decision never blocks on a wiring read.** Readers do one
+  `atomic.Pointer.Load`; the mutex in `liveWiring` is **writers-only**, so two
+  concurrent swaps serialise and no reader ever waits for one.
+- **The facade extras are re-composed from the same function as the boot** —
+  `internal/cli/serve.go`'s `serveFacadeOptions`. Four of them are built over the
+  stack's *engine*, so composing them anywhere else leaves the authority gate,
+  delegation and impersonation deciding through the superseded engine while `Check`
+  answers through the new one. That is not a torn read inside one decision; it is
+  two engines in one process, and no verdict, trace or note reports it.
+
+A superseded version is never mutated and never `Close`d. Its pools are
+**borrowed** from the boot (`borrowBootPools`), so closing it would close the
+serving instance's connections; one pool per declared connection serves the life of
+the process however many pushes it sees.
+
+Caches do **not** carry across. Each version gets fresh per-type metadata caches
+and fresh per-slot attribute caches, which is a security property before it is a
+performance one: a rebuilt slot must never answer from an entry fetched under the
+superseded configuration's `ttl:`, the window a *revoked* clearance would otherwise
+keep authorizing for. The price is a brief cold period after each push, bounded and
+measured — see
+`docs/src/operations/wiring-refresh.md`.
+
+## The connection name set is frozen for the life of a process
+
+The shared tables carry a connection's **name** and nothing else, because a route
+is a per-instance fact (see [The name is shared; the route is
+per-instance, above). That makes the name
+set a **boot-time** contract between the shared manifest and the routes this
+instance can supply locally, and not a runtime one: a running process can neither
+open a pool for a name that appeared while it was working nor drain one for a name
+that vanished.
+
+So the name set is frozen, in **both** directions, and a push that changes it is
+refused with `APERTURE_WIRING_RESTART_REQUIRED` naming the added and dropped names.
+Two halves of that refusal are decisions rather than consequences:
+
+- **The whole push is held, not the connection part of it.** The providers, field
+  types and attribute providers deployed beside a connection change stay
+  outstanding with it. A push is adopted whole or not at all — applying the parts
+  that happen to fit would leave the instance running a wiring version that was
+  nobody's, and no diff anywhere would show it.
+- **Nothing is torn down.** A name the push *removed* keeps its pool and the
+  instance goes on deciding through it.
+
+The remedy is a restart, after supplying a route for each added name. The boot-time
+counterpart is `APERTURE_WIRING_CONNECTION_UNROUTED`, and the two are deliberately
+different codes: a boot **refuses to start**, and a running process keeps deciding.
+
+## A failed refresh keeps last-good, and says so
+
+An access engine that stops answering takes its host down with it, and Aperture is
+embedded in-process in its first real host. So **no refresh failure stops an
+instance deciding.** An unreachable store, a set that cannot be digested, wiring
+this host cannot build, a rebuild that fails, a frozen name set — all five keep the
+wiring already in memory, and the digest does **not** advance, so the change is
+re-detected and re-reported on every tick until it is adopted or the push is
+corrected.
+
+The price is staleness, and staleness is never silent. Every failure routes through
+one reporter (`wiringPoll.alarm`) and is recorded on a `service.WiringHealth`, which
+the system-admin-gated `service.WiringPosture` read answers from with the code, the
+consecutive failure count and — the half an operator escalates on — **how long**.
+`StaleFor` is computed at read time, so an age cannot under-report a loop that
+stopped dead.
+
+Two things about it are easy to get wrong and are asserted:
+
+- **A failed adoption is stale, not healthy, and its age keeps growing.** A tick
+  declares a refresh COMPLETE in exactly two places — the no-change branch, and
+  after a successful swap — and nowhere else. A tick that read the tables, found a
+  change and could not adopt it has completed nothing: it is the worst of the three
+  postures, because the instance *knows* the wiring changed and is knowingly running
+  superseded wiring. Clearing on the strength of the READ alone is the subtle
+  version of the same bug: the alarm still fires, but `WiringHealth.Refreshed`
+  zeroes the window and the count, so a push refused for four hours reports one
+  failure and an age of one tick, forever — and the age is the half an operator
+  escalates on. Staleness runs continuously from the first refusal until an adoption
+  succeeds (`TestARefusedPushGetsOLDERRatherThanRestartingEveryTick`).
+- **A completed refresh clears it, including one that saw no change.** An alarm that
+  needed a *change* to clear would latch forever on a deployment whose wiring is
+  stable, which is most of them.
+- **The posture's digest is what the instance RUNS.** It advances with the adoption
+  and not with the read, so a fleet-wide digest comparison reads a caught-up
+  instance as caught up and a refusing one as behind.
+
+The alarm **passes the underlying code through** (`wiringRefreshAlarm`'s
+pass-through guard) and `APERTURE_WIRING_REFRESH_FAILED` is the classification of
+last resort, for a failure nothing beneath coded. Burying
+`APERTURE_WIRING_CONNECTION_UNROUTED`, whose fixups name the environment variable
+to export, would cost the operator the remedy.
+
+Staleness is deliberately **not** on `Capabilities` — that surface is open because
+it carries booleans of immutable boot-time configuration, and this is mutable
+runtime fault state whose useful half is a duration. The full reasoning is in
+`service/wiring_posture.go`'s file header and `skills/api-surface.md` ("The wiring
+posture read"). There is no
+metrics subsystem in this repository; the posture read and the poller's stderr lines
+are the two channels.
 
 ## The codes
 
@@ -323,6 +437,8 @@ more"). They are not restated here.
 | `APERTURE_WIRING_CONNECTION_UNDECLARED` | push | an entry cites a connection the pushed manifest does not declare |
 | `APERTURE_WIRING_KIND_UNSHAREABLE` | push **and** boot | a `kind:` that cannot be shared wiring — today `kind: csv` |
 | `APERTURE_WIRING_CONNECTION_UNROUTED` | boot | a shared connection name *this* instance has no route for |
+| `APERTURE_WIRING_RESTART_REQUIRED` | a running instance's refresh | the deployed wiring changes this process's connection NAME SET, which is frozen for its life — nothing in the push is applied, and the instance keeps deciding |
+| `APERTURE_WIRING_REFRESH_FAILED` | a running instance's refresh | a background re-read did not complete and nothing beneath it was coded; the instance keeps last-good wiring and goes on deciding |
 | `APERTURE_WIRING_LOCAL_COLLISION` | boot | the local file declares an object type or slot the shared wiring already declares |
 | `APERTURE_WIRING_NOTHING_DEPLOYED` | pull | the store has no shared wiring, and a pull's file is meant to be pushed back |
 | `APERTURE_WIRING_OUTPUT_EXISTS` | pull | `--out` names an existing path and `--force` was not given — the likeliest file there is the document the pull is to be compared with |
@@ -344,6 +460,19 @@ true are worth knowing:
 - `internal/cli/wiring_diff_test.go`, `wiring_pull_test.go`, `wiring_refuse_test.go`,
   `wiring_declared_keys_test.go` — the report, the file, each refusal, and the three
   `declared_keys` states.
+- `internal/cli/wiring_poll_test.go` — the poll: the closed interval vocabulary, and
+  polling being off by default asserted by **counting store reads** rather than by
+  reading the configuration back.
+- `internal/cli/wiring_swap_test.go`, `wiring_frozen_test.go`, `wiring_stale_test.go`
+  — the swap installed whole, a request pinning one version, the frozen name set in
+  both directions, and last-good with the alarm (including the case that matters
+  most: a refused adoption reports **stale**, not healthy).
+- `bench/wiring_test.go` — what the machinery costs. `TestCheckNFRWiringPoll` runs
+  the hard NFR gate with a live poll loop underneath it, and
+  `TestCheckNFRAfterAWiringSwap` bounds the cold period after a swap and asserts a
+  swapped version still clears the gate. Both are gated, and named so the one
+  documented invocation (`APERTURE_BENCH_ASSERT=1 go test -run TestCheckNFR ./bench/`)
+  picks them up.
 - `storage/storagetest`'s six `Wiring*` conformance cases, plus the wiring rows in
   the referential-integrity cases, run against all three backends;
   `storage/postgres/gate_test.go`'s `requiredConformanceCases` is a **floor**, so
@@ -363,5 +492,10 @@ true are worth knowing:
 - `skills/sql-provider.md` — the statement contract a `kind: sql` entry carries, on
   either side of the push.
 - `docs/src/cli/wiring.md` — the operator-facing narrative for the command tree.
+- `docs/src/cli/serve.md` ("Noticing a push without a restart") — the flag, the
+  interval vocabulary and what a tick costs.
+- `docs/src/operations/wiring-refresh.md` — the fleet-facing account of a push
+  against running instances: the rollout order a connection change needs, how
+  staleness surfaces, and what the poll and the swap were measured to cost.
 - `docs/src/operations/two-instance-topology.md` — the four steps of standing up a
   second instance against a store that already has one.

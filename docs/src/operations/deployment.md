@@ -160,6 +160,9 @@ the constructor order in `internal/cli/serve.go` *is* the deployment topology.
 - [Two instances, one store](two-instance-topology.md) — standing up a second
   instance against a database that already has one: one model, one pushed wiring,
   per-instance connection routes.
+- [Refreshing wiring on a live fleet](wiring-refresh.md) — what a `wiring push`
+  does to instances that are already running, what needs a restart anyway, and how
+  a stale instance surfaces.
 - [Performance & NFR](performance.md) — the decision hot-path budget and how to
   assert it.
 - [Troubleshooting](troubleshooting.md) — reading and acting on `APERTURE_*`

@@ -177,3 +177,11 @@ Operationally, three commands answer the three questions worth asking of a pair:
 
 Run the last one on **each** instance. It restates what that process resolved,
 which is the one thing a shared store cannot tell you.
+
+## After the pair is up
+
+Standing the pair up is the first push. What the *next* one does to instances that
+are already serving — which of them notices, how long the two are allowed to
+disagree, what still needs a restart, and how an instance that stopped keeping up
+surfaces — is
+[Refreshing wiring on a live fleet](wiring-refresh.md).

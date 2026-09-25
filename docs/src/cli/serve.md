@@ -212,7 +212,7 @@ changes it in **either** direction is detected, reported, and **not applied**:
 ```text
 wiring poll: the deployed wiring CHANGED (3f9a1c72 -> 8b40e5de) but this instance
 could not adopt it, so it keeps the wiring it has and goes on deciding:
-[APERTURE_WIRING_CONNECTION_UNROUTED] cli: the deployed wiring changes this
+[APERTURE_WIRING_RESTART_REQUIRED] cli: the deployed wiring changes this
 instance's connection NAME SET — it adds connection name "replica" — and that set
 is FIXED for the life of a process: [...] RESTART THIS INSTANCE to adopt the push.
 ```
@@ -230,10 +230,13 @@ Three things follow, and they are the whole of the behaviour:
   advance, so the condition is re-detected on every tick until the push is adopted
   or corrected — which is the noisy direction on purpose.
 
-The remedy is a restart, after supplying a route for each **added** name. Read
-what the deployment expects with
+The remedy is a restart, after supplying a route for each **added** name — in that
+order, which is why it is a three-step rollout and not a push:
+[Refreshing wiring on a live fleet](../operations/wiring-refresh.md#what-a-push-cannot-change-without-a-restart).
+Read what the deployment expects with
 [`aperture wiring show`](../reference/cli.md#aperture-wiring-show); the fixups on
-`APERTURE_WIRING_CONNECTION_UNROUTED` list the three routes.
+`APERTURE_WIRING_RESTART_REQUIRED` name each added and dropped name, and the ones on
+the boot-time `APERTURE_WIRING_CONNECTION_UNROUTED` list the three routes.
 
 #### Choosing an interval
 
@@ -288,5 +291,8 @@ Full flags: [`serve`](../reference/cli.md#aperture-serve).
 ## Related
 
 - [Global options](global-options.md) — `--seed` / `--store`.
+- [Refreshing wiring on a live fleet](../operations/wiring-refresh.md) — the same
+  machinery from the operator's side: what a push does to a fleet that is already
+  running, how a stale instance surfaces, and what the swap costs.
 - [mcp](mcp.md) — the read-only stdio surface, for MCP clients rather than HTTP.
 - [Command-Line Reference](../reference/cli.md#aperture-serve) — the generated flag table.
