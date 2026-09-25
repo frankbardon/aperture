@@ -204,7 +204,7 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 	// `check` / `enumerate` / `identifiers` / `explain` use, so no surface can
 	// answer a question differently from another (see decision.go). The
 	// serve-specific engine options resolved above are layered on last.
-	stack, err := buildDecisionStack(cmd, store, cmd.String("seed"), engOpts...)
+	stack, err := buildDecisionStack(ctx, cmd, store, cmd.String("seed"), engOpts...)
 	if err != nil {
 		return err
 	}

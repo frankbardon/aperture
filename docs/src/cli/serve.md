@@ -99,11 +99,25 @@ not both do, or each restart re-asserts one instance's model over the other's.
 bin/aperture serve --store 'postgres://aperture@db/aperture' --seed ./model.yaml
 ```
 
+### Where its wiring comes from
+
+Seeding nothing is not the same as being wired by nothing. After `Setup`, `serve`
+reads the [shared wiring tables](../concepts/storage.md) and builds its object
+providers, field types and attribute slots from them — so an instance with a
+`--store` DSN and no seed file on disk at all is a fully wired instance.
+
+When those tables hold no rows — every deployment that has never run
+`aperture wiring push` — the local seed file's wiring is used exactly as it always
+was. There is no flag and nothing to configure; see
+[What an omitted `--seed` means](global-options.md#what-an-omitted---seed-means)
+for the whole rule, including how a shared connection **name** is routed to this
+instance's own DSN.
+
 Under `serve`, the facade is wired with everything the other surfaces expect: the
 admin gate, delegation and impersonation mutators, the append-only audit trail,
-the rules engine over a storage-backed rule source, and the object providers
-declared in the seed's `providers:` section. A rule saved through the admin UI
-takes effect on the next decision with no separate rule store.
+the rules engine over a storage-backed rule source, and the object providers the
+wiring declares. A rule saved through the admin UI takes effect on the next
+decision with no separate rule store.
 
 Full flags: [`serve`](../reference/cli.md#aperture-serve).
 

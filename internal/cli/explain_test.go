@@ -47,7 +47,7 @@ func TestExplainCommandPrintsTheWholeTrace(t *testing.T) {
 		t.Fatalf("buildStore: %v", err)
 	}
 	defer func() { _ = store.Close() }()
-	stack, err := buildDecisionStack(unconfigured(), store, "")
+	stack, err := buildDecisionStack(ctx, unconfigured(), store, "")
 	if err != nil {
 		t.Fatalf("buildDecisionStack: %v", err)
 	}
