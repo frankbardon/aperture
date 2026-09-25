@@ -31,6 +31,7 @@ dependencies:
 | `WithProviders(reg *provider.Registry)` | `ObjectIdentifiers` and `ObjectMetadata` — object enumeration and metadata reads. |
 | `WithAttributes(reg *provider.AttributeRegistry)` | `ListAttributes` and the three attribute-cache invalidations — the gated, system-tier directory reads. It grants nobody anything: the decision path never resolves a bag through this option. |
 | `WithRuleSource(base rules.RuleSource, fetcher rules.MetadataFetcher)` | The what-if preview of an **unsaved** rule via `Simulate`'s `Overlay.Rules`. |
+| `WithDeclaredAttributeKeys(sets map[provider.AttributeSlot]model.DeclaredKeys)` | The wiring's **declared attribute key sets**. Turns on definition-time key enforcement: `ValidateRule`, `PutRule` and `EvaluateRulePreview` refuse a rule reading a key a declaring slot does not name, with `APERTURE_RULE_UNDECLARED_ATTRIBUTE`. Opt-in per slot — without it, and for a slot that declares nothing, every rule that validated before still validates. It reaches no decision. |
 | `WithClock(now func() time.Time)` | Override the facade clock used to stamp entity timestamps on writes (for deterministic tests). |
 
 The `serve` command builds the fully-wired facade so HTTP, Twirp, and the CLI all

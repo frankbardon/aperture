@@ -471,6 +471,14 @@ func (s *Service) EvaluateRulePreview(ctx context.Context, ast *rules.Node, obje
 	if err != nil {
 		return RulePreview{}, err
 	}
+	// The same definition-time declared-key gate the save path applies, for the
+	// same reason it is a method there: a preview that answered for a rule the save
+	// will refuse would teach an author that the rule works. It runs after Compile
+	// so a rule that is not yet a rule reports its structural error first, and it is
+	// a no-op for a deployment that declares nothing.
+	if err := rules.CheckDeclaredAttributeKeys(ast, s.declaredKeys); err != nil {
+		return RulePreview{}, err
+	}
 	now := s.now().UTC()
 	p := RulePreview{
 		Object: md,

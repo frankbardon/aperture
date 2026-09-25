@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"maps"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 
@@ -279,48 +278,20 @@ func recordFloorOnly(sink *NoteCollector, ast *Node, principal, account map[stri
 // counts: a rule handed the whole bag reads whatever is in it, so an empty bag
 // is exactly the surprise this note exists for.
 //
-// The walk covers every field a Node can hang a child off — Left, Right,
-// Children, Items — rather than switching on Type, so a node type that gains a
-// child position cannot silently stop being scanned. It is a diagnostic-path
-// walk over a rule AST (tens of nodes, not thousands), performed once per
-// evaluation only when a collector is installed.
+// The walk itself is walkVarFields (declared.go), which is the one definition of
+// "what does this rule read" in the package — shared with the declared-key
+// refusal, so a note that fires and a refusal that does not cannot come apart
+// over the same expression. It covers every field a Node can hang a child off, so
+// a node type that gains a child position cannot silently stop being scanned, and
+// it is a diagnostic-path walk over a rule AST (tens of nodes, not thousands),
+// performed once per evaluation only when a collector is installed.
 func readsBeyondFloor(n *Node, root string, floor ...string) bool {
-	if n == nil {
-		return false
-	}
-	if n.Type == NodeVar && n.Name != "" {
-		if path, ok := strings.CutPrefix(n.Name, root); ok {
-			switch {
-			case path == "":
-				// The whole bag.
-				return true
-			case path[0] == '.':
-				field := path[1:]
-				if i := indexByte(field, '.'); i >= 0 {
-					field = field[:i]
-				}
-				if !slices.Contains(floor, field) {
-					return true
-				}
-			}
-			// Anything else shares a prefix without sharing a root
-			// (`principality.x`) and is not this root at all.
-		}
-	}
-	if readsBeyondFloor(n.Left, root, floor...) || readsBeyondFloor(n.Right, root, floor...) {
-		return true
-	}
-	for _, c := range n.Children {
-		if readsBeyondFloor(c, root, floor...) {
-			return true
-		}
-	}
-	for _, it := range n.Items {
-		if readsBeyondFloor(it, root, floor...) {
-			return true
-		}
-	}
-	return false
+	return walkVarFields(n, root, func(field string) bool {
+		// The empty field is a bare reference to the root: a rule handed the whole
+		// bag reads whatever is in it, so an empty bag is exactly the surprise this
+		// note exists for.
+		return field == "" || !slices.Contains(floor, field)
+	})
 }
 
 // Engine is the rules engine: it resolves a rule reference, compiles-and-caches

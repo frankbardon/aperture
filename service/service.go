@@ -125,6 +125,14 @@ type Service struct {
 	// system-admin gate. Nil (the default) makes ListAttributes report
 	// APERTURE_UNIMPLEMENTED. Wired with WithAttributes.
 	attrs *provider.AttributeRegistry
+	// declaredKeys is the deployment's DECLARED ATTRIBUTE KEY SET, collapsed from
+	// the wiring's per-slot declarations onto the two rule roots. It is read by the
+	// definition-time rule gate (validateRule, and so PutRule and ValidateRule) and
+	// by the editor's what-if preview, and by nothing on the decision path. Its
+	// zero value declares nothing, so a facade built without
+	// WithDeclaredAttributeKeys enforces nothing and every rule that validated
+	// before declaring existed still validates.
+	declaredKeys rules.DeclaredAttributeKeys
 	// managed is the deployment's boot-time entity-management posture: which of
 	// accounts / principals / memberships this Aperture owns the lifecycle of.
 	// Read once at construction and never mutated. Its zero value means every

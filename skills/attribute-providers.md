@@ -674,6 +674,69 @@ preserved, so `aperture wiring pull` reproduces the author's list rather than a
 sorted paraphrase of it, and `push → pull → push` is a fixed point for a slot that
 declares a set.
 
+#### What enforcement actually refuses
+
+Enforcement is **definition-time**, in rule validation. `service.ValidateRule`,
+`service.PutRule` and `service.EvaluateRulePreview` refuse a rule that names an
+attribute key a declaring root does not declare, with
+`APERTURE_RULE_UNDECLARED_ATTRIBUTE` naming **the key and the slot** whose
+`attribute_providers:` entry has to change. The rule editor renders it on the canvas
+beside the structural and type errors (400 / `invalid_argument` on the wire).
+
+It is refused at **authoring** and never at decision time, deliberately. A
+decision-time refusal would let a bad rule ship and then fail in production — on
+some instances and not others, which is the very divergence being removed, wearing
+an error message. A rule already stored therefore keeps deciding exactly as it did
+if the declared set later narrows: an operator's push must not silently change what
+an existing grant allows.
+
+The gate is on the paths the rule **NAMES**, the same notion `attributes_floor_only`
+uses (`rules.walkVarFields` serves both). A key behind an `&&` that short-circuits,
+inside a list, or under a `not` is still a key the rule's text depends on.
+
+**A whole-bag read is refused too.** A bare `principal` or `account` with no path —
+`hasKey(principal, "clearance")` — reads whatever the bag happens to carry,
+including every key a local layer added, so left legal it would be the one
+expression that makes a declared set decorative.
+
+Only the **first path segment** past the root is compared, because a declared key
+names a top-level key and its value may be a nested metadata value: a declared
+`metadata` permits `principal.metadata.department`.
+
+#### The floor sits above the declared set, and the `principal` root needs both slots
+
+`principal.id`, `principal.kind` and `account.id` are the engine's **floor bags** —
+stamped last over whatever a provider returned, present in every deployment whether
+a provider is wired or not. They are therefore **always readable and never part of a
+declared set**; declaring them is neither required nor an error, merely redundant.
+Refusing `principal.id` because a slot declared only `department` would refuse
+`principal.id == object.owner` — the most common rule there is — over a wiring change
+that has nothing to say about it.
+
+The `account` root is backed by one slot, so it is enforced exactly when that slot
+declares. The `principal` root is backed by **two** (user and machine), and
+`principal.*` resolves to one or the other by the kind of the principal asking,
+which validation cannot know. So:
+
+- the permitted set is the **union** of the principal slots' declared sets. Not the
+  intersection: a rule may legitimately be about one kind —
+  `principal.kind == "machine" && principal.fleet == "batch"` is the documented way
+  to say so — and intersecting would refuse it for a key the machine slot really
+  does guarantee. A user principal reading that key still reads a missing path, but
+  that is per-KIND leniency, which is deployment-wide and identical on every
+  instance; it is not the per-INSTANCE divergence the declared set exists to remove.
+- the root is enforced only when **every** principal slot declares. A slot that
+  declares nothing guarantees nothing and permits everything, so treating one
+  declaring slot as enough would start enforcing machine principals on the strength
+  of a set only the user slot agreed to — the per-slot opt-in, broken.
+
+The collapse from slots to roots happens in exactly one place,
+`service.WithDeclaredAttributeKeys`, and a booting instance collects the sets from
+the wiring rows and its own `attribute_providers:` block
+(`internal/cli/declaredAttributeKeySets`). The inline `attributes:` block is not a
+source: it is the slot's local layer, and a set a local file could widen would be
+one machine deciding which keys every instance's rules may read.
+
 #### Precedence: the external source wins, entirely
 
 When both sections declare the same slot, the `attribute_providers:` entry

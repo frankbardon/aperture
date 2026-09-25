@@ -1321,6 +1321,13 @@ func mapErr(err error) error {
 // and the caller may be fully privileged, but the deployment is not in a state
 // that accepts it, and retrying unchanged never will be.
 //
+// APERTURE_RULE_UNDECLARED_ATTRIBUTE joins its APERTURE_RULE_* siblings at 400,
+// and it is not the default 500 because the fault is in the SUBMITTED RULE: the
+// author named an attribute key the deployment's wiring does not declare, which no
+// retry of the identical request can fix and which the rule editor has to render on
+// the canvas next to the structural and type errors. A 500 would page an on-call
+// for an authoring mistake and tell a retrying client to try again.
+//
 // APERTURE_STORAGE_CONSTRAINT shares that 412 for the same reason, one layer
 // down. It is the storage layer refusing a write that would break referential
 // integrity — overwhelmingly a delete whose children the caller has not removed
@@ -1341,6 +1348,7 @@ func codeToTwirp(code aerr.Code) twirp.ErrorCode {
 		aerr.APERTURE_ACTION_UNDECLARED, aerr.APERTURE_SCOPE_INVALID,
 		aerr.APERTURE_SCOPE_UNKNOWN_STRATEGY, aerr.APERTURE_RULE_INVALID,
 		aerr.APERTURE_RULE_UNKNOWN_VARIABLE, aerr.APERTURE_RULE_TYPE_ERROR,
+		aerr.APERTURE_RULE_UNDECLARED_ATTRIBUTE,
 		aerr.APERTURE_PROVIDER_INVALID, aerr.APERTURE_PROVIDER_REFERENCE_INVALID,
 		aerr.APERTURE_TEMPLATE_INVALID, aerr.APERTURE_TEMPLATE_PARAM:
 		return twirp.InvalidArgument
