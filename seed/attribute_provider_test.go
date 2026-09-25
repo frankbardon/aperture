@@ -250,7 +250,8 @@ attribute_providers:
 // TestBuildAttributeRegistry_CombinesBothSections is the entry point's promise:
 // one registry over attribute_providers: and attributes:, the way BuildRegistry
 // combines providers: and objects: — including the precedence rule for a slot
-// both sections claim.
+// both sections claim, which is now a LAYERING rather than a discard (the shared
+// layer wins a contested key; the local layer keeps its own).
 func TestBuildAttributeRegistry_CombinesBothSections(t *testing.T) {
 	ctx := context.Background()
 	doc := attributeDoc(t, `
@@ -259,8 +260,9 @@ attribute_providers:
     kind: csv
     path: users.csv
 attributes:
-  # Discarded ENTIRELY: the user slot is claimed by an external source.
-  - {subject: user, id: alice, metadata: {department: inline}}
+  # The user slot's LOCAL layer: department is contested and the external source
+  # wins it; team is the local layer's own and survives.
+  - {subject: user, id: alice, metadata: {department: inline, team: atlas}}
   - {subject: machine, id: ci-runner, metadata: {department: eng}}
   - {subject: account, id: acme, metadata: {plan: enterprise}}
 `)
@@ -276,13 +278,16 @@ attributes:
 		t.Fatalf("RegisteredSlots() = %v; want every slot %v", got, want)
 	}
 
-	// The external source wins the slot it claims...
+	// The external source wins the keys it serves...
 	md, err := reg.Fetch(ctx, provider.AttributeSlotUser, "alice")
 	if err != nil {
 		t.Fatalf("Fetch(user, alice): %v", err)
 	}
 	if md["department"] != "external" {
-		t.Errorf("department = %#v; want the external source's value, not the discarded inline one", md["department"])
+		t.Errorf("department = %#v; want the external source's value — the shared layer wins", md["department"])
+	}
+	if md["team"] != "atlas" {
+		t.Errorf("team = %#v; want atlas — the local layer contributes the keys the shared one does not", md["team"])
 	}
 	// ...and the inline section still fills the slots it alone claims.
 	md, err = reg.Fetch(ctx, provider.AttributeSlotAccount, "acme")
@@ -461,10 +466,11 @@ attribute_providers:
 }
 
 // TestAttributeSlotSourcesReportsThePrecedence: the listing a surface prints has
-// to name the source that is actually SERVING each slot, and that is the
-// precedence rule — an attribute_providers: entry wins and the inline bags for
-// that slot are discarded entirely. Defined here, in seed, so a CLI that
-// displays it is not a second implementation of it.
+// to name the source a contested key is actually answered from, and that is the
+// precedence rule — an attribute_providers: entry is the slot's SHARED layer and
+// wins every key both sections serve, with the inline bags layered under it.
+// Defined here, in seed, so a CLI that displays it is not a second implementation
+// of it.
 func TestAttributeSlotSourcesReportsThePrecedence(t *testing.T) {
 	doc := attributeDoc(t, `
 attribute_providers:
