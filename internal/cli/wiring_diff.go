@@ -311,9 +311,6 @@ type wiringDiff struct {
 	// unshareable is the local `kind: csv` entries. They are local-only BY DESIGN —
 	// no push can deploy one — so they are reported and excluded from hasDrift.
 	unshareable []wiringUnshareableEntry
-	// unexpressedDeclaredKeys is the attribute slots whose DECLARED KEY SET the
-	// local document has no key for yet. See reconcileUnexpressedDeclaredKeys.
-	unexpressedDeclaredKeys []string
 }
 
 // wiringDiffSection is one section's three answers.
@@ -351,7 +348,6 @@ func (d wiringDiff) hasDrift() bool {
 // diffWiring compares the deployed wiring against the local one, section by
 // section.
 func diffWiring(deployed, local model.WiringSet) wiringDiff {
-	reconciled, unexpressed := reconcileUnexpressedDeclaredKeys(deployed.AttributeProviders, local.AttributeProviders)
 	return wiringDiff{
 		sections: []wiringDiffSection{
 			diffWiringSection(wiringSectionConnections,
@@ -364,10 +360,9 @@ func diffWiring(deployed, local model.WiringSet) wiringDiff {
 				indexWiring(deployed.FieldTypes, wiringFieldTypeKey, canonicalWiringFieldType),
 				indexWiring(local.FieldTypes, wiringFieldTypeKey, canonicalWiringFieldType)),
 			diffWiringSection(wiringSectionAttributeProviders,
-				indexWiring(reconciled, wiringAttributeProviderKey, canonicalWiringAttributeProvider),
+				indexWiring(deployed.AttributeProviders, wiringAttributeProviderKey, canonicalWiringAttributeProvider),
 				indexWiring(local.AttributeProviders, wiringAttributeProviderKey, canonicalWiringAttributeProvider)),
 		},
-		unexpressedDeclaredKeys: unexpressed,
 	}
 }
 
@@ -530,49 +525,6 @@ func canonicalWiringAttributeProvider(ap model.WiringAttributeProvider) model.Wi
 	return ap
 }
 
-// reconcileUnexpressedDeclaredKeys keeps a declared key set the local document
-// CANNOT EXPRESS from reading as drift on every run.
-//
-// The seed attribute_providers: schema has no key for a declared key set yet — it
-// gains one in its own story — while the column and model.DeclaredKeys have existed
-// since the schema was created, because Setup creates and never migrates. So a slot
-// whose set was written straight to storage is declared in the store and silent in
-// every document, and a diff that compared the field would report drift no edit to
-// the document could ever clear. That is the worst kind of red gate: permanent,
-// unfixable, and about the one field a push cannot deploy.
-//
-// The reconciliation is deliberately ONE-DIRECTIONAL. Only a store-declared,
-// locally-SILENT set is excused, and the slot is named in the report so the excusal
-// is visible rather than assumed. The reverse — the document declares a set and the
-// store does not — stays drift, because that is a real difference a push resolves;
-// it cannot arise until the seed key lands, and it is already handled when it does.
-//
-// WHEN THE SEED KEY LANDS, this function goes away in the same change that starts
-// parsing the key: at that point a silent document really does mean "not declared",
-// the difference is expressible, and excusing it would hide drift instead of noise.
-func reconcileUnexpressedDeclaredKeys(deployed, local []model.WiringAttributeProvider) ([]model.WiringAttributeProvider, []string) {
-	localDeclares := make(map[string]bool, len(local))
-	for _, ap := range local {
-		localDeclares[ap.Subject] = ap.DeclaredKeys.Declared
-	}
-
-	out := make([]model.WiringAttributeProvider, 0, len(deployed))
-	var slots []string
-	for _, ap := range deployed {
-		declaredLocally, present := localDeclares[ap.Subject]
-		// A slot the document does not mention at all is already reported as
-		// only-deployed; there is nothing to excuse on an entry that has no counterpart
-		// to be compared with.
-		if present && ap.DeclaredKeys.Declared && !declaredLocally {
-			slots = append(slots, ap.Subject)
-			ap.DeclaredKeys = model.DeclaredKeys{}
-		}
-		out = append(out, ap)
-	}
-	sort.Strings(slots)
-	return out, slots
-}
-
 // ---- The report ----
 
 // printWiringDiff renders the comparison.
@@ -635,13 +587,6 @@ func printWiringDiff(cmd *ucli.Command, diff wiringDiff, emptyStore bool) error 
 				"local-only by design: %s entry %q selects kind: csv, which `wiring push` refuses — its only data source is a filesystem path — so no push can deploy it and it is not counted as drift\n",
 				e.section, e.entry)
 		}
-	}
-	if len(diff.unexpressedDeclaredKeys) > 0 {
-		fmt.Fprintf(cmd.ErrWriter,
-			"not compared: attribute slot %s declares a key set in the store, which the seed attribute_providers: schema has no key for yet, so this document cannot express it and the difference is not counted as drift\n",
-			strings.Join(quoteEach(diff.unexpressedDeclaredKeys), ", "))
-		fmt.Fprintln(cmd.ErrWriter,
-			"not compared: `aperture wiring show --store <dsn>` prints the declared keys, so they can still be read")
 	}
 	return nil
 }

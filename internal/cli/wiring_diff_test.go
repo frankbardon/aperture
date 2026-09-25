@@ -381,22 +381,24 @@ func TestDiffAgainstAStoreWithNothingDeployedReportsEverythingLocalOnly(t *testi
 	}
 }
 
-// TestDiffDoesNotReportADeclaredKeySetTheDocumentCannotExpress keeps the one
-// currently-inexpressible field from being permanent red.
+// TestDiffReportsADeclaredKeySetTheDocumentDoesNotDeclare is the inverted form of a
+// case that used to assert the opposite.
 //
-// The seed attribute_providers: schema has no key for a declared key set yet, while
-// the column has existed since the schema was created (Setup creates and never
-// migrates). So a slot whose set was written straight to storage is declared in the
-// store and silent in every document, and comparing the field would report drift that
-// no edit to the document could ever clear. It is excused, and the excusal is NAMED —
-// an unreported one would be the same silence the DeclaredKeys struct exists to
-// prevent.
-func TestDiffDoesNotReportADeclaredKeySetTheDocumentCannotExpress(t *testing.T) {
+// While the seed `attribute_providers:` schema had no key for a declared key set, a
+// slot declared in the store was silent in EVERY document, so comparing the field
+// would have reported drift that no edit could clear. The diff excused it and named
+// the excusal. That excusal was correct exactly as long as the field was
+// inexpressible.
+//
+// It is expressible now: `declared_keys:` exists. So a silent document really does
+// mean "not declared", the difference IS resolvable by an edit, and excusing it
+// would hide drift rather than suppress noise — which is worse than the permanent
+// red gate the excusal was avoiding, because a clean report is trusted. Removing a
+// `declared_keys:` line from the committed document is a real change to what rules
+// may name, and it must show.
+func TestDiffReportsADeclaredKeySetTheDocumentDoesNotDeclare(t *testing.T) {
 	dsn := newWiringStore(t, wiringModelSeed)
 	store := openWiringStore(t, dsn)
-	// Written straight to storage, because there is no YAML key to push it through —
-	// which is the situation being excused. Everything else matches the document below
-	// exactly, so the declared key set is the only thing left to report.
 	if err := store.ReplaceWiring(context.Background(), model.WiringSet{
 		Connections: []model.WiringConnection{{Name: "main"}},
 		AttributeProviders: []model.WiringAttributeProvider{{
@@ -411,7 +413,9 @@ func TestDiffDoesNotReportADeclaredKeySetTheDocumentCannotExpress(t *testing.T) 
 		t.Fatalf("replace wiring: %v", err)
 	}
 
-	local := writeWiringSeed(t, `
+	// Everything matches except the declared key set, which this document is silent
+	// about — and silence is now a statement, not an absence of vocabulary.
+	silent := writeWiringSeed(t, `
 connections:
   main:
     dsn_env: APERTURE_TEST_MAIN_DSN
@@ -424,24 +428,39 @@ attribute_providers:
     ttl: 30s
     max_size: 100
 `)
-	out, err := runWiringDiffCLI(t, local, dsn)
+	out, err := runWiringDiffCLI(t, silent, dsn)
+	code, isExit := wiringDiffExit(t, err)
+	if code != wiringDriftExitCode || !isExit {
+		t.Fatalf("a store-declared key set against a silent document exited %d (ExitCoder=%v), want %d: "+
+			"the field is expressible now, so not reporting it hides a real change to what rules may name: %v\n%s",
+			code, isExit, wiringDriftExitCode, err, out)
+	}
+	if !strings.Contains(out, "declared_keys") {
+		t.Errorf("the drift report does not name declared_keys as the differing field:\n%s", out)
+	}
+	if strings.Contains(out, "not compared") {
+		t.Errorf("the field is still being excused, which is what this test exists to forbid:\n%s", out)
+	}
+
+	// And the drift is resolvable by an edit, which is the property that made the
+	// excusal unnecessary. Same store, same command, one line added.
+	declaring := writeWiringSeed(t, `
+connections:
+  main:
+    dsn_env: APERTURE_TEST_MAIN_DSN
+attribute_providers:
+  - subject: user
+    kind: sql
+    connection: main
+    get_one: SELECT department FROM users WHERE id = $1
+    get_all: SELECT u.id AS id, u.department FROM users u
+    ttl: 30s
+    max_size: 100
+    declared_keys: [clearance, department]
+`)
+	out, err = runWiringDiffCLI(t, declaring, dsn)
 	if code, isExit := wiringDiffExit(t, err); code != 0 || isExit {
-		t.Fatalf("a declared key set the document cannot express made the diff exit %d (ExitCoder=%v); "+
-			"no edit to the document could ever clear that report: %v\n%s", code, isExit, err, out)
-	}
-	if strings.Contains(out, "declared_keys") {
-		t.Errorf("the declared key set was reported as a field difference:\n%s", out)
-	}
-	if !strings.Contains(out, "not compared") || !strings.Contains(out, `"user"`) {
-		t.Errorf("the excusal is not reported and names no slot; a silent one is exactly the collapse DeclaredKeys is a struct to prevent:\n%s", out)
-	}
-	if !strings.Contains(out, "wiring show") {
-		t.Errorf("the note does not say where the declared keys can still be read:\n%s", out)
-	}
-	// The keys themselves are not in the note: the slot is what the operator acts on,
-	// and `wiring show` is where the keys are read.
-	if strings.Contains(out, "clearance") {
-		t.Errorf("the note spells a declared key; it names slots:\n%s", out)
+		t.Fatalf("declaring the same key set still reported drift, exit %d (ExitCoder=%v): %v\n%s", code, isExit, err, out)
 	}
 }
 
