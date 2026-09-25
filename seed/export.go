@@ -224,15 +224,24 @@ func canonicalRuleAST(raw json.RawMessage) (json.RawMessage, error) {
 // omitempty is honoured before re-encoding. Both are deterministic given a
 // Document produced by Export, so a re-export is byte-stable.
 func Marshal(doc *Document, format Format) ([]byte, error) {
+	return marshalValue(doc, format)
+}
+
+// marshalValue is the ONE encoder both Marshal and MarshalWiring render through.
+// It is factored out rather than copied because "JSON is indented with a trailing
+// newline, YAML routes through JSON so the json tags and omitempty are honoured
+// first" is the whole reason a re-export is byte-stable, and two copies of it are
+// two byte-stabilities that can drift.
+func marshalValue(v any, format Format) ([]byte, error) {
 	switch format {
 	case FormatJSON:
-		b, err := json.MarshalIndent(doc, "", "  ")
+		b, err := json.MarshalIndent(v, "", "  ")
 		if err != nil {
 			return nil, aerr.Wrap(aerr.APERTURE_STORAGE, "export: marshal JSON", err)
 		}
 		return append(b, '\n'), nil
 	case FormatYAML:
-		jb, err := json.Marshal(doc)
+		jb, err := json.Marshal(v)
 		if err != nil {
 			return nil, aerr.Wrap(aerr.APERTURE_STORAGE, "export: marshal document", err)
 		}
@@ -248,6 +257,51 @@ func Marshal(doc *Document, format Format) ([]byte, error) {
 	default:
 		return nil, aerr.Newf(aerr.APERTURE_INVALID_INPUT, "export: unknown format %q", format)
 	}
+}
+
+// wiringSections is the projection Marshal renders for MarshalWiring: the four
+// SHARED wiring sections of a Document and nothing else, carrying the same yaml
+// and json tags the Document's own fields carry so the bytes are the bytes a seed
+// document spells those sections with.
+//
+// The two remaining wiring sections are deliberately absent. objects: and
+// attributes: carry inline DATA rather than a pointer to data, and belong to the
+// instance whose seed file lists them; there is no shared place they could have
+// been read from.
+type wiringSections struct {
+	Connections        map[string]Connection `yaml:"connections,omitempty" json:"connections,omitempty"`
+	Providers          []Provider            `yaml:"providers,omitempty" json:"providers,omitempty"`
+	FieldTypes         []FieldType           `yaml:"field_types,omitempty" json:"field_types,omitempty"`
+	AttributeProviders []AttributeProvider   `yaml:"attribute_providers,omitempty" json:"attribute_providers,omitempty"`
+}
+
+// MarshalWiring renders ONLY a Document's four shared wiring sections —
+// connections:, providers:, field_types: and attribute_providers: — through
+// exactly the encoder Marshal uses, so the two produce byte-identical bytes for
+// the sections they share and there is one formatter rather than two.
+//
+// It is Marshal's counterpart rather than a variant of it, and the symmetry is the
+// point: Export reads the MODEL out of storage and reproduces no wiring;
+// `aperture wiring pull` reads the WIRING out of storage and must reproduce no
+// model. Rendering a whole Document whose model slices are empty would not be
+// neutral — Document's model sections carry no omitempty, so they marshal as
+// `accounts: null`, `object_types: null` and eight more. Those are a CLAIM about
+// the store, and in the store a pull is aimed at the claim is false: the accounts
+// and object types are there, this read simply did not ask for them. A document
+// that says a populated deployment has no model in it is one somebody will import.
+//
+// Both formats are supported because Marshal supports both, and the format is
+// chosen the same way: seed.FormatFor on the output path, or an explicit flag.
+func MarshalWiring(doc *Document, format Format) ([]byte, error) {
+	if doc == nil {
+		return nil, aerr.New(aerr.APERTURE_INVALID_INPUT, "export: no document to marshal wiring from")
+	}
+	return marshalValue(wiringSections{
+		Connections:        doc.Connections,
+		Providers:          doc.Providers,
+		FieldTypes:         doc.FieldTypes,
+		AttributeProviders: doc.AttributeProviders,
+	}, format)
 }
 
 // FormatFor maps a file path's extension to the state-file Format: .json -> JSON,

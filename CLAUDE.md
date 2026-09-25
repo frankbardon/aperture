@@ -300,6 +300,16 @@ Gated, NOT in `make test` (a loaded runner would flake them):
   of `APERTURE_PG_INTEGRATION` also fails rather than skipping. `make test`
   cannot prove this backend behaves — only that it has not fallen behind its
   twin (the parity gates above).
+- `APERTURE_PG_INTEGRATION=1 APERTURE_PG_DSN=<dsn> go test -run TestPostgresLive ./internal/cli/`
+  — the `aperture wiring push → pull → push` **fixed point** against a real
+  server, in a scratch schema dropped afterwards, plus the parity half: the two
+  backends must pull the same wiring as the **same document**. The dialect-parity
+  gates cannot reach that — they prove the two schemas describe the same database,
+  not that a read of one renders the same bytes as a read of the other, and a pull
+  that reordered a section or dropped a field on one backend only would pass every
+  one of them and make a wiring diff report drift between two identically-wired
+  deployments. Same gate contract (skip ungated, fail on an empty DSN), same two
+  variables, so one exported DSN drives every live suite in one shell.
 
 ## House rules not derivable from the code
 

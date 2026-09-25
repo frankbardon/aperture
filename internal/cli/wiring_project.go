@@ -153,6 +153,124 @@ func wiringFromDocument(doc *seed.Document, now time.Time) (model.WiringSet, err
 	return set, nil
 }
 
+// wiringToDocument is wiringFromDocument's INVERSE: the deployed wiring set
+// rendered back as the four seed sections, so `aperture wiring pull` emits a
+// document `aperture wiring push` accepts unchanged.
+//
+// It is the one projection in this direction, and E5-S2's `wiring diff` must not
+// grow a second. A diff does not need one: both sides of that comparison are
+// model.WiringSet values — the store's, straight from GetWiring, and the local
+// document's, through wiringFromDocument — and comparing them there rather than
+// comparing rendered documents is what keeps the two commands agreeing about what
+// "the same wiring" means. It also side-steps the dsn_env: asymmetry below, which
+// is a property of the FILE and not of the wiring.
+//
+// # Every field that is dropped is dropped because the store does not hold it
+//
+//   - CreatedAt / UpdatedAt: seed has no key for a stamp, and it should not. A push
+//     restamps the whole set to one instant, so a stamp is a fact about the last
+//     push rather than about the wiring — which is also what makes a pull byte-
+//     stable across pushes.
+//   - Connection.DSNEnv, and the whole pool tuning: never stored, by design. The
+//     manifest is names and nothing else. It therefore comes back as `dsn_env: ""`,
+//     which is a re-pushable document and NOT a bootable one: an instance built
+//     from this file refuses at BuildRegistryWithConnections with a coded error
+//     naming the unset variable. That is the right failure — loud, at boot, naming
+//     the per-instance fact the operator has to supply — and it is the visible shape
+//     of the rule that a credential's variable name is per-instance too.
+//   - Provider.Path / AttributeProvider.Path: kind: csv is refused at push, so no
+//     stored entry has one.
+//   - DeclaredKeys: see wiringUnexpressedDeclaredKeys.
+func wiringToDocument(set model.WiringSet) *seed.Document {
+	doc := &seed.Document{}
+
+	if len(set.Connections) > 0 {
+		doc.Connections = make(map[string]seed.Connection, len(set.Connections))
+		for _, c := range set.Connections {
+			doc.Connections[c.Name] = seed.Connection{}
+		}
+	}
+
+	for _, p := range set.Providers {
+		entry := seed.Provider{
+			ObjectType: p.ObjectType,
+			Kind:       p.Kind,
+			Connection: p.Connection,
+			GetOne:     p.GetOne,
+			GetAll:     p.GetAll,
+			IDColumn:   p.IDColumn,
+			TTL:        p.TTL,
+			MaxSize:    p.MaxSize,
+		}
+		if len(p.References) > 0 {
+			entry.References = make(map[string]string, len(p.References))
+			for _, r := range p.References {
+				entry.References[r.Field] = r.TargetType
+			}
+		}
+		doc.Providers = append(doc.Providers, entry)
+	}
+
+	// field_types: is stored one row per (object type, field) and spelled one entry
+	// per object type with a fields: map. The rows arrive sorted by object type then
+	// field, so walking them in order and starting a new entry whenever the object
+	// type changes re-groups them without a second sort — and the entry order is the
+	// stored order, which is what makes the emitted document byte-stable.
+	for _, ft := range set.FieldTypes {
+		if n := len(doc.FieldTypes); n > 0 && doc.FieldTypes[n-1].ObjectType == ft.ObjectType {
+			doc.FieldTypes[n-1].Fields[ft.Field] = ft.DeclaredType
+			continue
+		}
+		doc.FieldTypes = append(doc.FieldTypes, seed.FieldType{
+			ObjectType: ft.ObjectType,
+			Fields:     map[string]string{ft.Field: ft.DeclaredType},
+		})
+	}
+
+	for _, ap := range set.AttributeProviders {
+		doc.AttributeProviders = append(doc.AttributeProviders, seed.AttributeProvider{
+			Subject:    ap.Subject,
+			Kind:       ap.Kind,
+			Connection: ap.Connection,
+			GetOne:     ap.GetOne,
+			GetAll:     ap.GetAll,
+			IDColumn:   ap.IDColumn,
+			TTL:        ap.TTL,
+			MaxSize:    ap.MaxSize,
+		})
+	}
+	return doc
+}
+
+// wiringUnexpressedDeclaredKeys names the slots whose DECLARED KEY SET a pulled
+// document cannot yet carry, so a pull can say so out loud instead of dropping it.
+//
+// The seed attribute_providers: schema has no key for a declared set yet — it
+// gains one in its own story — while the column and model.DeclaredKeys have existed
+// since the schema was created, because Setup creates and never migrates. So a slot
+// whose set was written straight to storage round-trips through a pull as NOT
+// DECLARED, and a re-push would clear it.
+//
+// That is a real gap in the fixed point, and it is reported rather than hidden: the
+// two states DeclaredKeys exists to keep apart are "opted out of enforcement" and
+// "opted in and permits nothing", and silently turning the second into the first is
+// precisely the collapse the type was made a struct to prevent. Refusing the pull
+// instead would be worse — it would make the command unusable for the other three
+// sections over a field nothing enforces yet.
+//
+// WHEN THE SEED KEY LANDS, this function and its warning go away in the same
+// change that starts emitting the key. A warning left behind after the document can
+// express the set would be a false alarm on every pull.
+func wiringUnexpressedDeclaredKeys(set model.WiringSet) []string {
+	var slots []string
+	for _, ap := range set.AttributeProviders {
+		if ap.DeclaredKeys.Declared {
+			slots = append(slots, ap.Subject)
+		}
+	}
+	return slots
+}
+
 // refuseLiteralWiringDSN refuses a literal dsn: anywhere in the wiring being
 // pushed, in exactly the posture seed.Parse already takes: the offending entry is
 // named and the value never is.
