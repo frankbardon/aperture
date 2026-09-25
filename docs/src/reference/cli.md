@@ -681,6 +681,61 @@ they carry inline DATA rather than a pointer to data.
 aperture wiring <command>
 ```
 
+### `aperture wiring pull`
+
+Write the store's deployed shared wiring out as the four seed sections, for diffing against version control
+
+Reads the deployed wiring in ONE atomic snapshot and writes it to --out as
+`connections:`, `providers:`, `field_types:` and `attribute_providers:` — the same
+four sections `wiring push` reads. The file is a seed document `wiring push`
+accepts unchanged, so `push` then `pull` then `push` deploys the identical wiring,
+and two pulls of an unchanged deployment are byte-identical.
+
+WHAT IT IS FOR is answering "is what is deployed what is in the repository?" with
+a diff. `aperture wiring show` answers "what is deployed?" in words and is the
+better command for reading; this one produces a file for a tool.
+
+THE FILE IS RE-PUSHABLE BUT NOT BOOTABLE, and the difference is the security rule
+made visible. Shared wiring holds a connection's NAME and nothing else — no DSN,
+no credential, not even the NAME of the environment variable holding one, and no
+filesystem path — so every connection comes back with an empty `dsn_env:`. Fill
+those in from your own deployment's environment before booting an instance from
+the file; an instance built from it as written refuses at registry build and names
+the unset variable. Nothing in the output is a secret, and the format has no
+`dsn:` key to put one in.
+
+NO MODEL STATE IS WRITTEN. `aperture export` emits the model and no wiring; this
+emits the wiring and no model. The file carries no accounts, principals, objects
+or inline data, because the shared wiring holds none — and it does not spell the
+model sections out as empty either, since a populated deployment's model is not
+empty and a document that said so is one somebody would import.
+
+AN EXISTING --out FILE IS REFUSED unless --force is given. The likeliest thing at
+that path is the version-controlled document the pull is meant to be compared
+with, and overwriting it silently destroys the left-hand side of the comparison.
+The path is checked before the store is opened, so the refusal reads nothing.
+
+A STORE WITH NO WIRING DEPLOYED IS REFUSED, which is the one place this command
+disagrees with `wiring show`. `show` only describes an empty store, and nothing
+deployed is a useful answer there. A pull produces a file whose purpose is to be
+pushed back, and an empty one pushed back replaces the deployment's wiring with
+nothing — while an empty read is also exactly what a mistyped --store naming a
+database Setup just created looks like.
+
+No actor is required, and none is accepted, for the reason `show` accepts none:
+this restates wiring the --store credential already grants full write access to.
+
+```
+aperture wiring pull [options]
+```
+
+| Name | Aliases | Type | Default | Usage |
+| --- | --- | --- | --- | --- |
+| `--force` | — | bool | — | overwrite the --out file if it already exists |
+| `--format` | — | string | — | output format: json or yaml (default: inferred from the --out extension — .json is JSON, anything else is YAML) |
+| `--out` | — | string | — | write the wiring document to this path (required; an existing file is refused unless --force is given, and there is no stdout default because `aperture wiring show` is the command for reading) |
+| `--store` | — | string | — | DSN for the shared store the wiring lives in: a postgres:// or postgresql:// URL for PostgreSQL, any other value as a SQLite path (required — there is nothing to share about an in-memory store). Set APERTURE_POSTGRES_SCHEMA to place Aperture's tables in a named PostgreSQL schema |
+
 ### `aperture wiring push`
 
 Validate a seed document's four shared wiring sections and write them to the store in one transaction

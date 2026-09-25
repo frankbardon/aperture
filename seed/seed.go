@@ -62,9 +62,19 @@ const (
 // FILE's own source of truth: Connections, Providers, Objects, FieldTypes,
 // Attributes, and AttributeProviders. BuildRegistry turns the first four into a
 // live *provider.Registry and BuildAttributeRegistry turns the last two into a
-// live *provider.AttributeRegistry; Apply writes none of them to storage, and because
-// Export reads the model back OUT of storage, none is ever reproduced by an
-// export. Live host domain-object metadata is deliberately not exportable state —
+// live *provider.AttributeRegistry; Apply writes none of them to storage, and
+// because Export reads the model back OUT of storage, Export reproduces none of
+// them.
+//
+// Export is not the only read-back any more, and the distinction is the point.
+// Four of the six — Connections, Providers, FieldTypes and AttributeProviders —
+// are SHARED wiring: `aperture wiring push` writes them to the database every
+// instance of a deployment already shares, and `aperture wiring pull` reads them
+// back out through MarshalWiring below. That path is CLI-only and gated by the
+// store credential, which is what leaves Export's own surface — reachable over
+// Twirp with an admin-tier token — reproducing no wiring at all. The two remaining
+// sections, Objects and Attributes, carry inline DATA rather than a pointer to
+// data and are never shared by either path. Live host domain-object metadata is deliberately not exportable state —
 // that is the provider cache, derived and disposable, never source of truth. The
 // same is true of a subject's attribute bag: it belongs to the host's directory,
 // and Aperture has no column for it.

@@ -387,6 +387,31 @@ const (
 	// deployment's own file, and the instance that reads the seed is the instance
 	// the path belongs to.
 	APERTURE_WIRING_KIND_UNSHAREABLE Code = "APERTURE_WIRING_KIND_UNSHAREABLE"
+	// APERTURE_WIRING_NOTHING_DEPLOYED — `aperture wiring pull` was pointed at a
+	// store that has no shared wiring in it at all.
+	//
+	// An empty set is not an error for `aperture wiring show`, which only DESCRIBES
+	// it: nothing deployed is a real and useful answer, and the listing says so in
+	// words. It is an error here, because a pull produces a FILE whose whole purpose
+	// is to be pushed back — and a document carrying no wiring is a document that,
+	// pushed, REPLACES the deployment's wiring with nothing.
+	//
+	// The two situations behind an empty read are opposites and indistinguishable
+	// from the read alone: either nothing has been pushed to this store yet, or the
+	// --store DSN names a database Setup has just created empty. Writing the file
+	// anyway would commit the first reading of a situation that is usually the
+	// second, and the mistake would only surface as a deployment-wide wiring wipe on
+	// the next push.
+	APERTURE_WIRING_NOTHING_DEPLOYED Code = "APERTURE_WIRING_NOTHING_DEPLOYED"
+	// APERTURE_WIRING_OUTPUT_EXISTS — `aperture wiring pull --out` names a path
+	// that already exists, and --force was not given.
+	//
+	// The file a pull writes is the file an operator diffs against version control,
+	// so the likeliest thing at that path is the very document the pull is meant to
+	// be compared with. Overwriting it silently would destroy the left-hand side of
+	// the comparison and leave nothing to say it had ever been different. The
+	// refusal is the default and --force is the way to say "yes, replace it".
+	APERTURE_WIRING_OUTPUT_EXISTS Code = "APERTURE_WIRING_OUTPUT_EXISTS"
 )
 
 // Metadata describes an Aperture code: the canonical human-readable Message and
@@ -773,6 +798,23 @@ var Registry = map[Code]Metadata{
 			"A csv entry's only data source is a filesystem path; the shared-wiring schema has no path column, because a relative path resolves against the seed file's own directory and an absolute one is a guess about the other host's disk.",
 		},
 	},
+	APERTURE_WIRING_NOTHING_DEPLOYED: {
+		Message: "the store has no shared wiring deployed, so there is nothing to pull",
+		Fixups: []string{
+			"Check the --store DSN first: a typo names a database that does not exist yet, Setup creates it empty, and an empty read is exactly what that looks like.",
+			"If the DSN is right, nothing has been pushed to this deployment yet — run `aperture wiring push --seed <file> --store <dsn>`, and every instance sharing the database will read it.",
+			"`aperture wiring show --store <dsn>` describes an empty store without refusing, which is the command to use when you only want to know whether anything is deployed.",
+			"A pull is refused rather than writing an empty document because that document, pushed back, would replace the deployment's wiring with nothing.",
+		},
+	},
+	APERTURE_WIRING_OUTPUT_EXISTS: {
+		Message: "the --out path already exists and would be overwritten",
+		Fixups: []string{
+			"Write to a new path and compare the two files yourself — the existing file is usually the version-controlled document the pull is meant to be diffed against.",
+			"Pass --force to replace the file deliberately.",
+			"Nothing was read from the store and nothing was written: the path is checked before the wiring is fetched, so a refusal here leaves both the file and the deployment untouched.",
+		},
+	},
 }
 
 // AllCodes is the registry every gate walks. Append new codes here; the
@@ -827,6 +869,8 @@ var AllCodes = []Code{
 	APERTURE_WIRING_OBJECT_TYPE_UNKNOWN,
 	APERTURE_WIRING_CONNECTION_UNDECLARED,
 	APERTURE_WIRING_KIND_UNSHAREABLE,
+	APERTURE_WIRING_NOTHING_DEPLOYED,
+	APERTURE_WIRING_OUTPUT_EXISTS,
 }
 
 // Message returns the canonical message for a code, or empty when the code has

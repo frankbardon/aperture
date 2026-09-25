@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -80,6 +81,7 @@ func wiringCommand() *ucli.Command {
 		Commands: []*ucli.Command{
 			wiringPushCommand(),
 			wiringShowCommand(),
+			wiringPullCommand(),
 		},
 	}
 }
@@ -638,4 +640,271 @@ func renderDeclaredKeys(d model.DeclaredKeys) string {
 		return "(declared empty)"
 	}
 	return strings.Join(d.Keys, ", ")
+}
+
+// ---- Pull ----
+//
+// `aperture wiring pull` reads the deployed wiring back out as the four seed
+// sections it was pushed from, so an operator can diff what is DEPLOYED against
+// what is in version control.
+//
+// # This reverses a written decision, deliberately
+//
+// Aperture's other read-back, service.Export, reproduces no wiring at all, and
+// several places still say an export reproduces none. That remains true OF EXPORT
+// and is not folded into it here: Export is reachable over Twirp with an
+// admin-tier actor, so anything it learns to emit is something a token can
+// exfiltrate. `wiring pull` is CLI-only and gated by the --store credential, and
+// holding that credential already means holding the wiring — the same argument
+// that makes `wiring show` ungated. The exfiltration profile of the RPC surface is
+// therefore unchanged, which is the property the decision was protecting.
+//
+// # push -> pull -> push is a fixed point
+//
+// The output is the push INPUT format, in the canonical order a read returns
+// (model.WiringSet.Sort), rendered through the one encoder seed.Marshal uses. So a
+// pull of a pushed document re-pushes to the identical stored wiring, and two
+// pulls of an unchanged deployment are byte-identical — which is what makes the
+// file diffable at all.
+//
+// What the document cannot carry is what the store does not hold: no stamps, no
+// dsn_env: variable name, no pool tuning, no path. A pulled document is therefore
+// RE-PUSHABLE but not BOOTABLE — each connection comes back with an empty
+// dsn_env:, and an instance built from the file refuses at registry build naming
+// the unset variable. That is the intended failure: the credential's variable name
+// is a per-instance fact, and a pull that invented one would be guessing at
+// another machine's environment.
+
+// wiringPullCommand is `aperture wiring pull`.
+func wiringPullCommand() *ucli.Command {
+	return &ucli.Command{
+		Name:  "pull",
+		Usage: "Write the store's deployed shared wiring out as the four seed sections, for diffing against version control",
+		Description: "Reads the deployed wiring in ONE atomic snapshot and writes it to --out as\n" +
+			"`connections:`, `providers:`, `field_types:` and `attribute_providers:` — the same\n" +
+			"four sections `wiring push` reads. The file is a seed document `wiring push`\n" +
+			"accepts unchanged, so `push` then `pull` then `push` deploys the identical wiring,\n" +
+			"and two pulls of an unchanged deployment are byte-identical.\n\n" +
+			"WHAT IT IS FOR is answering \"is what is deployed what is in the repository?\" with\n" +
+			"a diff. `aperture wiring show` answers \"what is deployed?\" in words and is the\n" +
+			"better command for reading; this one produces a file for a tool.\n\n" +
+			"THE FILE IS RE-PUSHABLE BUT NOT BOOTABLE, and the difference is the security rule\n" +
+			"made visible. Shared wiring holds a connection's NAME and nothing else — no DSN,\n" +
+			"no credential, not even the NAME of the environment variable holding one, and no\n" +
+			"filesystem path — so every connection comes back with an empty `dsn_env:`. Fill\n" +
+			"those in from your own deployment's environment before booting an instance from\n" +
+			"the file; an instance built from it as written refuses at registry build and names\n" +
+			"the unset variable. Nothing in the output is a secret, and the format has no\n" +
+			"`dsn:` key to put one in.\n\n" +
+			"NO MODEL STATE IS WRITTEN. `aperture export` emits the model and no wiring; this\n" +
+			"emits the wiring and no model. The file carries no accounts, principals, objects\n" +
+			"or inline data, because the shared wiring holds none — and it does not spell the\n" +
+			"model sections out as empty either, since a populated deployment's model is not\n" +
+			"empty and a document that said so is one somebody would import.\n\n" +
+			"AN EXISTING --out FILE IS REFUSED unless --force is given. The likeliest thing at\n" +
+			"that path is the version-controlled document the pull is meant to be compared\n" +
+			"with, and overwriting it silently destroys the left-hand side of the comparison.\n" +
+			"The path is checked before the store is opened, so the refusal reads nothing.\n\n" +
+			"A STORE WITH NO WIRING DEPLOYED IS REFUSED, which is the one place this command\n" +
+			"disagrees with `wiring show`. `show` only describes an empty store, and nothing\n" +
+			"deployed is a useful answer there. A pull produces a file whose purpose is to be\n" +
+			"pushed back, and an empty one pushed back replaces the deployment's wiring with\n" +
+			"nothing — while an empty read is also exactly what a mistyped --store naming a\n" +
+			"database Setup just created looks like.\n\n" +
+			"No actor is required, and none is accepted, for the reason `show` accepts none:\n" +
+			"this restates wiring the --store credential already grants full write access to.",
+		Flags: []ucli.Flag{
+			wiringStoreFlag(),
+			&ucli.StringFlag{Name: "out", Usage: "write the wiring document to this path (required; an existing file is refused unless --force is given, and there is no stdout default because `aperture wiring show` is the command for reading)"},
+			&ucli.StringFlag{Name: "format", Usage: "output format: json or yaml (default: inferred from the --out extension — .json is JSON, anything else is YAML)"},
+			&ucli.BoolFlag{Name: "force", Usage: "overwrite the --out file if it already exists"},
+		},
+		Action: runWiringPull,
+	}
+}
+
+// runWiringPull is the whole pull: flags, the overwrite decision, one snapshot,
+// one file.
+//
+// The ORDER is the contract, and each step is ahead of the next because its
+// refusal is the more useful sentence — and, for the third, because it must not
+// have read anything yet:
+//
+//  1. the flags, before anything is opened
+//  2. the FORMAT, resolved from --format or the --out extension, so an unknown
+//     format is reported without a database being touched
+//  3. the --out path, checked for an existing file BEFORE the store is opened, so
+//     a refusal to clobber is a refusal that read no wiring at all
+//  4. the store, opened and Setup but NOT seeded: a read must not apply a
+//     document's model state
+//  5. the snapshot, and the refusal of an empty one
+//  6. the file, written with O_EXCL when --force was not given so the check in (3)
+//     cannot be raced
+func runWiringPull(ctx context.Context, cmd *ucli.Command) error {
+	outPath := cmd.String("out")
+	if outPath == "" {
+		return aerr.New(aerr.APERTURE_INVALID_INPUT,
+			"wiring pull requires --out naming the file the wiring document is written to; there is no stdout default, because the only reason to read the wiring to a stream is to look at it and `aperture wiring show` does that better — this command exists to produce a file you diff and commit")
+	}
+	storeDSN := cmd.String("store")
+	if storeDSN == "" {
+		return aerr.New(aerr.APERTURE_INVALID_INPUT,
+			"wiring pull requires --store naming the SHARED store whose deployed wiring is read; an in-memory store is private to this process and has nothing deployed to it")
+	}
+
+	// exportFormat is `aperture export`'s own resolver, reused rather than
+	// reimplemented so a filename means the same format to every command that takes
+	// one. Its refusal of an unknown --format is already coded.
+	format, err := exportFormat(cmd.String("format"), outPath)
+	if err != nil {
+		return err
+	}
+
+	force := cmd.Bool("force")
+	if !force {
+		if err := refuseExistingWiringOutput(outPath); err != nil {
+			return err
+		}
+	}
+
+	// The empty seed path is what keeps this a read, exactly as it is for `show`.
+	store, err := buildStore(ctx, storeDSN, "")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = store.Close() }()
+
+	set, err := pullWiringSnapshot(ctx, store)
+	if err != nil {
+		return err
+	}
+	if set.IsEmpty() {
+		return aerr.WithContext(aerr.APERTURE_WIRING_NOTHING_DEPLOYED,
+			"cli: this store has no shared wiring deployed, so there is nothing to pull; check the --store DSN first, because a typo names a database that does not exist yet and Setup creates it empty — and if the DSN is right, push the wiring before pulling it. `aperture wiring show` describes an empty store without refusing. A pull is refused rather than writing an empty document, because that document pushed back would replace the deployment's wiring with nothing",
+			map[string]any{"out": outPath})
+	}
+
+	data, err := seed.MarshalWiring(wiringToDocument(set), format)
+	if err != nil {
+		if aerr.CodeOf(err) != "" {
+			return err
+		}
+		return aerr.Wrap(aerr.APERTURE_INVALID_INPUT, "cli: rendering the wiring document", err)
+	}
+	if err := writeWiringPull(outPath, data, force); err != nil {
+		return err
+	}
+	return printWiringPulled(cmd, set, outPath, format)
+}
+
+// pullWiringSnapshot reads the whole wiring in ONE atomic snapshot.
+//
+// It uses GetWiring and NOT the four per-section List reads `wiring show` uses,
+// and the difference is the whole reason the two commands read differently. A
+// listing constructs nothing and can afford to be assembled section by section; a
+// pull produces a document that will be PUSHED BACK, and four independent reads
+// straddling a concurrent push would emit a set that never existed — one section's
+// entries citing another section's superseded connections — which is broken wiring
+// with a clean-looking diff behind it. GetWiring reads all four inside a
+// transaction on the backends that have one.
+func pullWiringSnapshot(ctx context.Context, store model.Storage) (model.WiringSet, error) {
+	set, err := store.GetWiring(ctx)
+	if err != nil {
+		return model.WiringSet{}, wiringReadError("the deployed wiring", err)
+	}
+	return set, nil
+}
+
+// refuseExistingWiringOutput refuses to overwrite an existing --out file.
+//
+// It runs BEFORE the store is opened so the refusal reads no wiring, which is what
+// lets the fixups say so. It is not the only guard: writeWiringPull opens with
+// O_EXCL when --force was not given, because a check followed by a write is a race
+// and the file that appears in between is exactly the one somebody else is writing.
+// Two guards for one rule, and only one of them can be raced.
+func refuseExistingWiringOutput(path string) error {
+	if _, err := os.Stat(path); err != nil {
+		// Anything other than "it is not there" is left to the write, which reports it
+		// against the operation that actually failed.
+		return nil
+	}
+	return outputExistsError(path)
+}
+
+// outputExistsError is the refusal both guards raise, written once so the two
+// cannot say different things about the same rule.
+func outputExistsError(path string) error {
+	return aerr.WithContext(aerr.APERTURE_WIRING_OUTPUT_EXISTS,
+		fmt.Sprintf("cli: %s already exists and would be overwritten; write to a new path and diff the two yourself — the file already there is usually the version-controlled document this pull is meant to be compared with — or pass --force to replace it deliberately. Nothing has been read from the store and nothing has been written", path),
+		map[string]any{"out": path})
+}
+
+// writeWiringPull writes the document, refusing an existing file unless force.
+//
+// The mode is 0o600 rather than `aperture export`'s 0o644, deliberately. There is
+// no secret in the output — the tables have no column that could hold one — but
+// there is no reason for a description of a deployment's statements and connection
+// names to be world-readable either, and a new surface gets the tighter default
+// rather than inheriting the older one.
+func writeWiringPull(path string, data []byte, force bool) error {
+	flags := os.O_WRONLY | os.O_CREATE | os.O_EXCL
+	if force {
+		flags = os.O_WRONLY | os.O_CREATE | os.O_TRUNC
+	}
+	f, err := os.OpenFile(path, flags, 0o600)
+	if err != nil {
+		if os.IsExist(err) {
+			return outputExistsError(path)
+		}
+		return aerr.Wrap(aerr.APERTURE_STORAGE, "cli: creating the wiring file", err)
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return aerr.Wrap(aerr.APERTURE_STORAGE, "cli: writing the wiring file", err)
+	}
+	// Reported, not discarded: on a buffered filesystem the write above can succeed
+	// and the close still fail, and a truncated wiring document that reported
+	// success is one somebody pushes.
+	if err := f.Close(); err != nil {
+		return aerr.Wrap(aerr.APERTURE_STORAGE, "cli: closing the wiring file", err)
+	}
+	return nil
+}
+
+// printWiringPulled reports what was written, in the shape printWiringPushed
+// reports what was pushed, plus the two things a reader of the FILE has to know.
+//
+// The declared-key warning goes to ErrWriter rather than the summary, for the
+// reason reportCollisions does: it is a caveat about the output, not part of it, so
+// a pull whose summary is being redirected still shows it. It names the slots and
+// nothing else — no keys — because the slot is what the operator acts on.
+func printWiringPulled(cmd *ucli.Command, set model.WiringSet, path string, format seed.Format) error {
+	w := tabwriter.NewWriter(cmd.Writer, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "section\trows")
+	fmt.Fprintf(w, "connections\t%d\n", len(set.Connections))
+	fmt.Fprintf(w, "providers\t%d\n", len(set.Providers))
+	fmt.Fprintf(w, "provider references\t%d\n", countWiringReferences(set))
+	fmt.Fprintf(w, "field types\t%d\n", len(set.FieldTypes))
+	fmt.Fprintf(w, "attribute providers\t%d\n", len(set.AttributeProviders))
+	if err := w.Flush(); err != nil {
+		return aerr.Wrap(aerr.APERTURE_INVALID_INPUT, "cli: writing the pull summary", err)
+	}
+	fmt.Fprintf(cmd.Writer, "wrote the deployed wiring to %s as %s\n", path, format)
+	if len(set.Connections) > 0 {
+		fmt.Fprintln(cmd.Writer, "every connection's dsn_env: is empty, because shared wiring holds the connection's NAME and nothing else: fill each one in from your own environment before booting an instance from this file")
+	}
+
+	if slots := wiringUnexpressedDeclaredKeys(set); len(slots) > 0 {
+		// Said out loud, because this is the one place the round trip is lossy and the
+		// loss is silent everywhere else. "Not declared" and "declared empty" are
+		// different answers — the first opts a slot out of key enforcement, the second
+		// opts it in and permits nothing — and a re-push of this document would turn
+		// the second into the first with nothing to say so.
+		fmt.Fprintf(cmd.ErrWriter,
+			"warning: attribute slot %s declares a key set, which the seed attribute_providers: schema has no key for yet, so this document does not carry it; re-pushing this file would leave that slot with NO declared key set\n",
+			strings.Join(quoteEach(slots), ", "))
+		fmt.Fprintln(cmd.ErrWriter,
+			"warning: `aperture wiring show --store <dsn>` prints the declared keys, so they are not lost — only unexpressible in a document")
+	}
+	return nil
 }
