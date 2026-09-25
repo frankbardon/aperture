@@ -61,6 +61,7 @@
 
 - [Deployment](operations/deployment.md)
 - [Two instances, one store](operations/two-instance-topology.md)
+- [Refreshing wiring on a live fleet](operations/wiring-refresh.md)
 - [Performance & NFR](operations/performance.md)
 - [Troubleshooting](operations/troubleshooting.md)
 
