@@ -90,6 +90,28 @@ type decisionStack struct {
 	// the one transition that turns a file-wired fleet into a shared-wiring fleet
 	// the single transition nothing noticed.
 	wiringDigest string
+	// wiringConnections is the CONNECTION NAME SET of the shared wiring this stack
+	// was built from, sorted — the manifest half of a boot-time contract a running
+	// process cannot renegotiate, and therefore the baseline liveWiring.swap
+	// compares a later push against (wiring_swap.go).
+	//
+	// It is the MANIFEST's names and deliberately NOT conns.Names(). The pools this
+	// process opened cover the whole of the LOCAL seed file's connections: block as
+	// well, because that block is a ROUTE TABLE and not wiring (connectionRoutes),
+	// so a name only the local file declares has a pool and was never in the
+	// manifest. A swap that compared a push against the POOL set would read every
+	// locally-routed name as one the push removed, and would then refuse every swap
+	// for the life of any deployment that routes a connection from its own file —
+	// the whole feature off, on a condition nobody configured.
+	//
+	// Recorded here, from the same single read wiringDigest is taken over, for the
+	// same reason: the boot owns both values, and a later reader that derived either
+	// one for itself could disagree with what this instance is actually wired with.
+	//
+	// It is nil for a stack built from empty wiring, which is an answer like any
+	// other: an instance booted on empty tables is frozen on the EMPTY name set, so
+	// the first push that introduces a connection is detected as the add it is.
+	wiringConnections []string
 	// declaredKeys is the DECLARED ATTRIBUTE KEY SET of every shared slot this
 	// instance is wired with — the keys a rule may read off `principal` and
 	// `account`. It is handed to the facade, which refuses a rule naming anything
@@ -441,6 +463,9 @@ func buildWiredStack(storeDSN string, store model.Storage, seedPath string, wiri
 
 		attributeCollisions: doc.AttributeCollisions(),
 		wiringDigest:        digest,
+		// From the wiring, never from doc or from conns: see the field's comment for
+		// why the pool set is the wrong baseline.
+		wiringConnections: wiringConnectionNames(wiring),
 		// From the WIRING and the LOCAL document, not from doc: the DB-wired
 		// projection does not carry a declared set. See declaredAttributeKeySets.
 		declaredKeys: declaredAttributeKeySets(wiring, local),

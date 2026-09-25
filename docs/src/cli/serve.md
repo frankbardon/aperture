@@ -181,10 +181,7 @@ sees all of a push or none of it — never half.
   caches, so a rebuilt slot never answers from an entry fetched under the old
   configuration's [`ttl:`](../concepts/providers.md) — which is the window a
   *revoked* clearance would otherwise keep authorizing for.
-- **The connection *name set* is frozen for the life of the process.** A route is a
-  per-instance fact this instance resolved once, at boot, so the pools are reused
-  and a push that names a connection this process opened no pool for is **not**
-  adopted. It is reported and left outstanding for a restart to pick up.
+- **The connection *name set* is frozen for the life of the process** — see below.
 - **A failed rebuild installs nothing.** The instance keeps the wiring it has and
   goes on deciding, the digest does not advance, and the next tick tries again:
 
@@ -195,6 +192,48 @@ could not adopt it, so it keeps the wiring it has and goes on deciding: [...]
 
 The listener, the authenticator and the HTTP server itself are built once and are
 untouched by a swap; only what sits beneath them is replaced.
+
+#### The connection name set needs a restart
+
+The shared tables carry a connection's **name** and nothing else. Which server,
+which credential, how big a pool and how long a statement may take are
+per-instance facts, and this instance resolves them **once**, at boot — from a Go
+host's `seed.WithConnectionOpener`, from a `connections:` entry in its own
+`--seed` file, or from the conventional `APERTURE_CONNECTION_<NAME>_DSN`. See
+[Where its wiring comes from](#where-its-wiring-comes-from).
+
+That makes the name set a **boot-time contract** between the shared manifest and
+the routes this instance can supply locally, and not a runtime one. A running
+process cannot conjure a route for a name that appeared while it was working, and
+draining a pool for a name that vanished is a different problem from adopting
+wiring. So the name set is frozen for the life of the process, and a push that
+changes it in **either** direction is detected, reported, and **not applied**:
+
+```text
+wiring poll: the deployed wiring CHANGED (3f9a1c72 -> 8b40e5de) but this instance
+could not adopt it, so it keeps the wiring it has and goes on deciding:
+[APERTURE_WIRING_CONNECTION_UNROUTED] cli: the deployed wiring changes this
+instance's connection NAME SET — it adds connection name "replica" — and that set
+is FIXED for the life of a process: [...] RESTART THIS INSTANCE to adopt the push.
+```
+
+Three things follow, and they are the whole of the behaviour:
+
+- **The rest of the push is held, not applied.** A push is adopted whole or not at
+  all, so the providers, field types and attribute providers deployed alongside a
+  connection change stay outstanding with it. Applying the parts that happen to
+  fit would leave this instance running a wiring version that was nobody's.
+- **Nothing is torn down.** A name the push *removed* keeps its pool, and this
+  instance goes on deciding through it. The pools belong to the boot and are
+  closed once, on shutdown.
+- **The instance keeps deciding, and keeps re-reporting.** The digest does not
+  advance, so the condition is re-detected on every tick until the push is adopted
+  or corrected — which is the noisy direction on purpose.
+
+The remedy is a restart, after supplying a route for each **added** name. Read
+what the deployment expects with
+[`aperture wiring show`](../reference/cli.md#aperture-wiring-show); the fixups on
+`APERTURE_WIRING_CONNECTION_UNROUTED` list the three routes.
 
 #### Choosing an interval
 

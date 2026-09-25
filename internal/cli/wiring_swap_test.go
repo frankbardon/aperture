@@ -143,12 +143,32 @@ type swapProbe struct {
 // newSwapProbe boots an instance on department and drives the whole real path:
 // buildStore, buildDecisionStack, newLiveWiring over buildWiredStack, and the
 // poller started from the boot's own digest.
+//
+// The boot sees EMPTY shared wiring, which is the state every deployment that has
+// never run `aperture wiring push` is in.
 func newSwapProbe(t *testing.T, ctx context.Context, department string) *swapProbe {
+	t.Helper()
+	return newSwapProbeWiredWith(t, ctx, department, swapSeed, model.WiringSet{})
+}
+
+// newSwapProbeWiredWith is newSwapProbe over a store that ALREADY carries shared
+// wiring, and over a chosen seed fixture.
+//
+// The frozen-connection-name cases need both: a boot whose manifest declares a
+// connection (so a later push can REMOVE it) and, for the locally-routed case, a
+// seed file with a connections: block of its own. Everything else about the path is
+// identical, because the property under test is what a swap does and not how the
+// boot was assembled.
+//
+// boot is written with ReplaceWiring after buildStore has run Setup and before the
+// stack is built, which is the real order: a DB-wired instance reads rows somebody
+// else pushed before it was started.
+func newSwapProbeWiredWith(t *testing.T, ctx context.Context, department, fixture string, boot model.WiringSet) *swapProbe {
 	t.Helper()
 
 	dir := t.TempDir()
 	seedPath := filepath.Join(dir, "swap.yaml")
-	writeSwapSeed(t, seedPath, department)
+	writeSeedFixture(t, seedPath, fixture, department)
 	dsn := "file:" + filepath.Join(dir, "swap.db")
 
 	store, err := buildStore(ctx, dsn, seedPath)
@@ -156,6 +176,12 @@ func newSwapProbe(t *testing.T, ctx context.Context, department string) *swapPro
 		t.Fatalf("buildStore: %v", err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
+
+	if !boot.IsEmpty() {
+		if err := store.ReplaceWiring(ctx, boot); err != nil {
+			t.Fatalf("seeding the boot wiring: %v", err)
+		}
+	}
 
 	probe := &swapProbe{store: store, seedPath: seedPath, out: &strings.Builder{}}
 	cmd := &ucli.Command{
@@ -202,10 +228,16 @@ func newSwapProbe(t *testing.T, ctx context.Context, department string) *swapPro
 	return probe
 }
 
-// writeSwapSeed writes the fixture with department substituted in.
+// writeSwapSeed writes the default fixture with department substituted in.
 func writeSwapSeed(t *testing.T, path, department string) {
 	t.Helper()
-	if err := os.WriteFile(path, []byte(fmt.Sprintf(swapSeed, department)), 0o600); err != nil {
+	writeSeedFixture(t, path, swapSeed, department)
+}
+
+// writeSeedFixture writes one of this file's fixtures with department substituted in.
+func writeSeedFixture(t *testing.T, path, fixture, department string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(fmt.Sprintf(fixture, department)), 0o600); err != nil {
 		t.Fatalf("write seed: %v", err)
 	}
 }
@@ -508,11 +540,14 @@ func TestASwapCannotBeSeenHalfDone(t *testing.T) {
 // keeps an access engine answering: a refused rebuild leaves the instance exactly as
 // it was rather than half-wired.
 //
-// A connection NAME is the refusal used, because it is the one a running process
-// genuinely cannot satisfy: it resolved its routes once, at boot, and a registry
-// cannot read through a pool that does not exist. E4-S3 turns that into a surfaced
-// "restart required" condition; here it is an ordinary rebuild failure, which is
-// exactly what this case needs one of.
+// A kind: csv provider row is the refusal used, and it has to be something OTHER
+// than a connection name now that E4-S3 refuses a name-set change before the rebuild
+// ever starts: this case needs a push that genuinely reaches the builder and fails
+// there. kind: csv is that push — it is storable (model.ValidateWiringProvider records
+// a kind verbatim) and unbuildable as shared wiring, because its only data source is a
+// filesystem path and the shared tables have no column for one. It touches no
+// connection at all, so the frozen name set is unchanged and the rebuild is what
+// refuses it.
 func TestAFailedRebuildInstallsNothing(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -521,19 +556,19 @@ func TestAFailedRebuildInstallsNothing(t *testing.T) {
 	boot := probe.live.current()
 	baseline := probe.poll.digest
 
-	// A push this instance cannot adopt: a connection name it opened no pool for. The
-	// route EXISTS (routeSharedMain exports the variable), so the refusal is not about
-	// routing — it is that a process resolves its routes once, at boot, and cannot dial
-	// a pool for a name that appeared while it was running.
-	routeSharedMain(t)
 	now := time.Now().UTC()
 	if err := probe.store.ReplaceWiring(ctx, model.WiringSet{
-		Connections: []model.WiringConnection{{Name: "main", CreatedAt: now, UpdatedAt: now}},
+		Providers: []model.WiringProvider{{
+			ObjectType: "document",
+			Kind:       "csv",
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		}},
 	}); err != nil {
-		t.Fatalf("pushing the set that adds a connection name: %v", err)
+		t.Fatalf("pushing the set the rebuild cannot construct: %v", err)
 	}
 	if probe.poll.tick(ctx) {
-		t.Fatal("a set naming a connection this process opened no pool for was ADOPTED")
+		t.Fatal("a set carrying a kind: csv provider row was ADOPTED")
 	}
 
 	if probe.live.current() != boot {
@@ -548,7 +583,7 @@ func TestAFailedRebuildInstallsNothing(t *testing.T) {
 			"the instance stale for the rest of its life with nothing saying so")
 	}
 	report := probe.out.String()
-	for _, want := range []string{"CHANGED", "could not adopt", "keeps the wiring it has", "main"} {
+	for _, want := range []string{"CHANGED", "could not adopt", "keeps the wiring it has", "document"} {
 		if !strings.Contains(report, want) {
 			t.Errorf("the refusal report does not mention %q. Report:\n%s", want, report)
 		}

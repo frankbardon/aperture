@@ -46,13 +46,14 @@ import (
 //
 // The seams the rest of the epic builds on are named where they are:
 //
-//   - E4-S3 (the frozen connection-name set) belongs in liveWiring.swap, BEFORE
-//     the rebuild: a set whose connections: manifest differs from the one this
-//     instance resolved routes for at boot cannot be adopted by a process that
-//     has already opened pools. Today such a set is refused by borrowBootPools as
-//     an ordinary rebuild failure — correct and last-good, but reported as a log
-//     line rather than as the surfaced "restart required" condition that story
-//     owes an operator.
+//   - The CONNECTION NAME SET is frozen for the life of a process, so a set whose
+//     connections: manifest differs from the one this instance resolved routes for
+//     at boot is refused WHOLE by liveWiring.swap before anything is rebuilt, in
+//     either direction, and latched as a standing "restart required" condition a
+//     posture reader can see without watching this writer
+//     (liveWiring.restartRequired). The error reaches the swap branch below like
+//     any other, so the line it prints is the same line — what differs is that the
+//     condition outlives the line.
 //   - E4-S4 (last-good on failure, and the alarm) owns tick's THREE failure
 //     branches: the read, the digest and now the swap. Last-good is already the
 //     behaviour in all three; the alarm is what is missing.
