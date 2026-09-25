@@ -477,8 +477,9 @@ attribute_providers:
   - {subject: user, kind: csv, path: users.csv}
   - {subject: machine, kind: sql, connection: main, get_one: "SELECT 1"}
 attributes:
-  # user collides with the csv entry above: the external source wins, so the
-  # listing must say csv and never inline.
+  # user is also filled by the csv entry above: that entry is the slot's SHARED
+  # layer and wins every key both serve, so the listing must name the winner —
+  # csv — and never inline.
   - {subject: user, id: alice, metadata: {department: eng}}
   - {subject: account, id: acme, metadata: {plan: enterprise}}
 `)

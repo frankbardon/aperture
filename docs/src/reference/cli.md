@@ -167,15 +167,24 @@ Prints one row per slot — user, machine, account — with the source the seed
 declares for it (csv, sql, or inline), the cache freshness window, the cached-bag
 cap, and how many bags this process currently holds.
 
+A SLOT CAN HAVE TWO SOURCES, AND THE SOURCE COLUMN NAMES THE WINNER. An
+`attribute_providers:` entry is the slot's SHARED layer and an `attributes:` block
+is its LOCAL one; a fetch reads their merge and the shared layer wins every key
+both serve, so nothing is discarded and the inline bags still contribute the keys
+the external source does not carry. A slot declared both ways therefore reports
+csv or sql — the source a contested key is answered from — and `ttl` is that
+layer's window, since each layer caches on its own declaration.
+
 THE TTL COLUMN IS THE REVOCATION WINDOW. A slot's cached bag keeps authorizing
 until it expires, so `ttl` is the longest a removed clearance can keep working.
 `never` means a bag, once fetched, is only dropped by eviction or by an explicit
 `aperture attributes invalidate` — correct for a fixed inline block, dangerous
 for a live directory.
 
-The `cached` column counts THIS process's cache. A one-shot invocation starts
-cold, so it reads 0; it is the number that matters in a long-running
-`aperture serve`.
+The `cached` column counts THIS process's cache, summed across a slot's layers —
+a subject both layers serve is held twice, because it is cached twice. A one-shot
+invocation starts cold, so it reads 0; it is the number that matters in a
+long-running `aperture serve`.
 
 No actor is required: this reports the wiring in the seed file you passed and
 the configuration this process built from it. It contacts no provider and prints

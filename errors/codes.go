@@ -148,11 +148,12 @@ const (
 	// denies silently.
 	APERTURE_ATTRIBUTE_SLOT_UNKNOWN Code = "APERTURE_ATTRIBUTE_SLOT_UNKNOWN"
 	// APERTURE_ATTRIBUTE_PROVIDER_INVALID — an attribute provider registration or
-	// an attribute key is unusable: a nil provider, a second provider for a slot
+	// an attribute key is unusable: a nil provider, a second provider in a LAYER
 	// that already has one, a record declared twice, an empty key, or the account
-	// wildcard "*" as a key. The wildcard is refused at the seam because the only
-	// bag that could answer "the attributes of every account" is one account's
-	// data served as another's.
+	// wildcard "*" as a key. A slot holds one shared and one local provider, so a
+	// third registration is refused whichever layer it names. The wildcard is
+	// refused at the seam because the only bag that could answer "the attributes of
+	// every account" is one account's data served as another's.
 	APERTURE_ATTRIBUTE_PROVIDER_INVALID Code = "APERTURE_ATTRIBUTE_PROVIDER_INVALID"
 	// APERTURE_ATTRIBUTE_PROVIDER_UNREGISTERED — attributes were requested for a
 	// slot that is within the closed set but has no registered provider. It is
@@ -670,7 +671,7 @@ var Registry = map[Code]Metadata{
 	APERTURE_ATTRIBUTE_PROVIDER_INVALID: {
 		Message: "attribute provider registration or attribute key is invalid",
 		Fixups: []string{
-			"Register a non-nil provider, and at most one per slot; a duplicate is refused rather than replaced so one directory cannot silently shadow another.",
+			"Register a non-nil provider, and at most one per LAYER: Register fills a slot's shared layer and RegisterLocal its local one, so a slot holds two and a third is refused. A duplicate within a layer is refused rather than replaced, so one directory cannot silently shadow another.",
 			"Declare each attribute key at most once within a provider.",
 			"Fetch with a real key: a principal id for the user and machine slots, an account id for the account slot. An empty key names nobody.",
 			"Resolve the account wildcard \"*\" to a concrete account before fetching attributes; it is never a legal attribute key.",

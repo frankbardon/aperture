@@ -221,11 +221,14 @@ func TestEveryCollidingSectionIsRefusedByName(t *testing.T) {
 			names: []string{"user", "attribute_providers:"},
 		},
 		{
-			// The inline DATA section, on the axis where a silent discard is
-			// worst: the external source wins a slot ENTIRELY, every read of it
-			// then returns an empty bag, and an empty bag does not deny — it
-			// WIDENS an exclusive grant, with nothing in the verdict saying a bag
-			// went missing.
+			// The inline DATA section. Within ONE seed document this pairing is a
+			// LAYERING and not a collision — the shared entry wins every key both
+			// serve and the inline bags layer under it — so the refusal here is
+			// about the two AUTHORS, not about the merge: shared rows pushed by
+			// whoever administers the deployment, and a file belonging to this
+			// machine, declaring the same slot without either having seen the
+			// other. Refused in both directions like every other section, rather
+			// than resolved by a precedence nobody chose.
 			name: "an inline attributes: entry for a shared slot",
 			local: &seed.Document{Attributes: []seed.Attribute{
 				{Subject: "user", ID: "alice"},

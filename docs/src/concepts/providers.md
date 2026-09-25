@@ -468,7 +468,7 @@ normalisation in every loader. There is no second model, so
 `principal.clearance == 3` answers identically whether the bag was authored in
 YAML, read from a CSV `:int` column, or read from a SQL `integer`.
 
-### The registry, the per-slot cache, and the revocation window
+### The registry, the two layers, and the revocation window
 
 `provider.AttributeRegistry` binds each slot to a provider plus **its own**
 cache — its own TTL, size cap, and counters — because the three slots have
@@ -480,11 +480,42 @@ attrs.MustRegister(provider.AttributeSlotUser, dir, provider.WithTTL(60*time.Sec
 attrs.MustRegister(provider.AttributeSlotAccount, tenants)
 ```
 
-Registering a slot twice is **refused**, not replaced: "last writer wins" is how
-one deployment's directory quietly shadows another's during wiring, and the
-failure then surfaces as attributes that are merely *wrong* rather than absent. A
-slot left unregistered is not an error — a deployment with no machine principals
-wires no machine provider.
+A slot holds up to **two** providers, in two named layers, and the method picks the
+layer. `Register` / `MustRegister` fills the **shared** layer
+(`provider.AttributeLayerShared`) — the deployment's own wiring: a shared wiring row,
+a seed `attribute_providers:` entry, the one directory a host administers fleet-wide.
+`RegisterLocal` / `MustRegisterLocal` fills the **local** layer
+(`AttributeLayerLocal`) — this instance's own: a seed `attributes:` block, or a
+provider this binary registers for itself.
+
+A fetch reads the two layers' **merge**, and the **shared layer wins every key both
+serve**. The local layer can only *add* keys the shared layer does not serve, never
+change one it does — because a rule is written against a **deployment**, and if a
+local bag could override a shared key then a file on one machine would change what
+`principal.clearance >= 3` compares against on that machine only: the same rule, a
+different verdict, with nothing in a verdict or a trace to say which layer answered.
+The precedence is fixed and does not depend on registration order. It is the engine's
+[floor bag](rules.md#the-floor-bag-and-principalkind) one tier down, floor included:
+the winner is stamped last over a fresh map and the floor then stamps over both, so
+the tiers compose in one direction — **floor over shared over local**.
+
+A second registration **in the same layer** is still **refused**, not replaced: "last
+writer wins" is how one deployment's directory quietly shadows another's during
+wiring, and the failure then surfaces as attributes that are merely *wrong* rather
+than absent. A slot therefore accepts exactly two providers and a third is
+`APERTURE_ATTRIBUTE_PROVIDER_INVALID` whichever layer it names. A slot with only one
+registration behaves exactly as it always did — one provider, one cache, the bag
+verbatim — whichever layer it sits in, and a slot left unregistered is not an error:
+a deployment with no machine principals wires no machine provider.
+
+Each **layer** caches independently, and that is deliberate: a layer's TTL is its own
+revocation window, declared by whoever declared that layer, so one pooled cache per
+slot could honour at most one of two declarations. Taking the longer window would
+silently lengthen the time a revoked shared attribute keeps authorizing; taking the
+shorter one would silently ignore a declaration an operator made. `CacheConfigFor`
+reports the governing (shared, when filled) layer's configuration,
+`CacheConfigForLayer` one layer's, and `Stats` sums them — so a key both layers serve
+counts twice, because it really is cached twice.
 
 Staleness is not only a tuning knob here. An object's metadata going stale for a
 TTL is usually tolerable: a document's category is a fact about a thing. An
@@ -494,8 +525,11 @@ against access the host may have **already taken away**. Pick a slot's TTL for
 how fast its revocations must land, and close the window explicitly when you
 cannot wait: `Invalidate(slot, id)` drops one subject (and reports whether an
 entry was present), `InvalidateSlot(slot)` a whole directory, `InvalidateAll()`
-everything. Invalidation is **process-local**: it clears the caches of the
-process that runs it and cannot reach a different one.
+everything. All three clear **every layer** of every slot they name — clearing one
+and leaving the other would be worse than not clearing at all, since the operator has
+been told the window is shut while half of it is open. Invalidation is
+**process-local**: it clears the caches of the process that runs it and cannot reach a
+different one.
 
 ### Leniency: a missing bag decides, a broken directory does not
 
@@ -521,6 +555,12 @@ surfaces **verbatim**, keeping its code and its registry fixups, and every
 consumer treats it as a **non-decision**. That distinction is the point of the
 seam: an outage must not read as "this principal has no attributes", because that
 is an authorization change wearing an infrastructure failure's clothes.
+
+Leniency is asked of the **slot**, not of a layer, and two layers do not widen it.
+Inside a fetch, one layer's `APERTURE_NOT_FOUND` means only *this layer* has no record
+for the key, and the other layer's bag is the answer; every other error surfaces
+verbatim from whichever layer raised it, so an unreachable shared directory is never
+quietly answered out of the local file.
 
 Leniency leaves one hazard, and it is accepted rather than solved. An absent
 attribute makes every comparison against it **false**. In an **inclusive** grant
@@ -581,8 +621,14 @@ subject it already named.
 ### The listing does not write the decision path's cache
 
 `AttributeRegistry.Enumerate` is read-only all the way down: it never warms the
-slot's cache. `Fetch` still caches its own answer; only the listing's bags are
-excluded.
+slot's cache — neither layer's. `Fetch` still caches its own answer, per layer; only
+the listing's bags are excluded.
+
+On a slot with two layers, `Enumerate` queries both and merges the records **per key**,
+the shared layer winning exactly as a fetch's merge does, so a listing shows the bag a
+fetch of that key would return. `Fields` and the limit are re-enforced on the
+**merged** bag: filtering per layer would drop a record whose merged bag does match,
+and a limit applied per layer would truncate before the merge could finish a record.
 
 `Fetch` and `Query` answer different questions, and nothing in `AttributeProvider`
 makes their bags equal. The SQL loader makes the inequality **legal**:
@@ -617,7 +663,11 @@ about the two, deliberately.
 Declaratively, a seed document's [`attributes:`](seed.md#inline-subject-attributes)
 block lists bags inline and
 [`attribute_providers:`](seed.md#external-attribute-sources) points a slot at a
-file or a connection. Both are runtime **wiring**, never model state.
+file or a connection. Both are runtime **wiring**, never model state. A slot the
+document fills **both** ways gets both, in the two layers above — the
+`attribute_providers:` entry shared, the inline block local, the shared one winning
+every key both serve, and nothing dropped. See [Precedence: two layers, and the shared
+layer wins](seed.md#precedence-two-layers-and-the-shared-layer-wins).
 
 One asymmetry is worth repeating here because nothing can catch it: an attribute
 provider's keys are **bare** ids. A CSV `id` column holds `alice`, not
