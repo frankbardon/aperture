@@ -226,6 +226,19 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 	defer func() { _ = stack.Close() }()
 	stack.reportCollisions(cmd.ErrWriter)
 
+	// The staleness recorder is built HERE, between the stack and the facade, for
+	// the one reason that matters: the facade and the poller must share ONE
+	// pointer. The facade answers WiringPosture from it and the poller writes to
+	// it, and a facade holding a recorder of its own would report a permanently
+	// healthy instance no matter what the loop observed — silent staleness, which
+	// is precisely what the alarm exists to prevent (see wiring_stale.go).
+	//
+	// It is constructed unconditionally, including when polling is off. A
+	// non-positive interval yields a recorder that reports Polling false and can
+	// never report stale, which is the honest posture for a boot-only instance and
+	// saves every call site below a condition.
+	wiringHealth := service.NewWiringHealth(pollEvery, stack.wiringDigest, nil)
+
 	// Wire the append-only audit trail (E4-S2) through the same store so the
 	// mutation/impersonation/delegation record is durable and the E6-S4 audit
 	// viewer has data to query. Mutations are always recorded; decisions are
@@ -249,6 +262,7 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 		service.WithAudit(rec),
 		service.WithRuleSource(stack.ruleSource, stack.fetcher),
 		service.WithManagedEntities(managed),
+		service.WithWiringHealth(wiringHealth),
 	)
 
 	handler := server.Authenticate(authn, server.New(svc))
@@ -273,7 +287,10 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 	//
 	// The baseline is the digest the STACK was built from, never the loop's own first
 	// read — see startWiringPoll for what a self-baselining loop silently loses.
-	poll := startWiringPoll(ctx, store, pollEvery, stack.wiringDigest, cmd.ErrWriter)
+	// The recorder handed over here is the SAME pointer the facade above holds, so
+	// a refresh that fails is readable through the gated WiringPosture read and not
+	// only on stderr.
+	poll := startWiringPoll(ctx, store, pollEvery, stack.wiringDigest, cmd.ErrWriter, wiringHealth)
 	defer func() { _ = poll.Close() }()
 
 	serveErr := make(chan error, 1)

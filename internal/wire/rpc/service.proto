@@ -51,6 +51,33 @@ service ApertureService {
   // service being reachable at all, and it is knowingly public.
   rpc Capabilities(Empty) returns (CapabilitiesResponse);
 
+  // ---- Deployment health (requires system-admin) ----
+  // WiringPosture reports whether this instance's SHARED WIRING is stale — that
+  // is, whether its background re-read of the wiring tables is failing, so the
+  // instance is still deciding from the last wiring it successfully read — and,
+  // the half an operator escalates on, FOR HOW LONG.
+  //
+  // It is deliberately NOT part of Capabilities, and the reason is the paragraph
+  // above. Capabilities is open because it carries three booleans of BOOT-TIME
+  // configuration; this carries mutable runtime state about a FAULT, a duration,
+  // a failure count and a coded reason. "This instance has been enforcing
+  // configuration its operator already replaced, and has been for four hours" is
+  // operational intelligence — it says the enforced policy is not the intended
+  // policy, and how long the window has been open — which is a fact for the
+  // operator and not for every anonymous caller.
+  //
+  // So it requires an authenticated principal holding system-admin authority,
+  // the same gate the attribute-directory read uses. An instance that does not
+  // poll answers with polling=false and stale=false rather than refusing: "this
+  // instance is boot-only, and is therefore not stale" is true and useful, and a
+  // refusal would make the read unusable as a fleet-wide probe.
+  // It takes an Actor rather than Empty for the reason every other system-tier
+  // call on this wire does: system-admin authority is resolved in the caller's
+  // ACTIVE ACCOUNT, and only the caller knows which of its accounts that is. The
+  // principal on the wire is ignored as always — the authenticated one is used —
+  // so the field selects an account and can never impersonate.
+  rpc WiringPosture(WiringPostureRequest) returns (WiringPostureResponse);
+
   // ---- Schema entities (reads require auth; writes require system-admin) ----
   rpc PutObjectType(EntityRequest) returns (Empty);
   rpc GetObjectType(GetRequest) returns (EntityResponse);
@@ -192,6 +219,69 @@ message CapabilitiesResponse {
   // Independent of the other two — a deployment can master accounts and
   // principals upstream while still deciding who belongs to what.
   bool manage_memberships = 3;
+}
+
+// WiringPostureRequest names the account the caller's system-admin authority is
+// resolved in. The principal on the Actor is ignored; the authenticated one from
+// the request context is used, exactly as on every mutation.
+message WiringPostureRequest {
+  Actor actor = 1;
+}
+
+// WiringPostureResponse is the whole answer of the WiringPosture RPC: whether
+// this instance re-reads the shared wiring at all, whether the last re-read
+// FAILED, and how long that has been true.
+//
+// Durations are Go duration TEXT ("30s", "4h12m") and instants are RFC3339, which
+// is the convention the rest of this file uses for a time (ImpersonationSession)
+// and the convention the wiring tables use for a ttl. The point of the read is
+// that an operator can curl it and understand the answer; a count of milliseconds
+// would have to be divided by hand at the moment somebody is already paged.
+//
+// Every field is empty or false on a healthy instance, so "nothing is wrong"
+// needs no interpretation.
+message WiringPostureResponse {
+  // polling: this instance re-reads the shared wiring on an interval. False is
+  // the default and the state of every deployment that has not set
+  // --wiring-poll: such an instance is wired once, at boot, and cannot become
+  // stale in this sense because it never looks again.
+  bool polling = 1;
+  // poll_interval: the interval, as a Go duration; empty when polling is false.
+  // It is what makes "stale for 40s" readable as one missed tick rather than
+  // thirteen.
+  string poll_interval = 2;
+  // digest: the content digest of the wiring this instance is DECIDING FROM —
+  // the last-good set, when stale. A hash of wiring the operator pushed; it
+  // carries no account, principal or object data.
+  string digest = 3;
+  // stale: the most recent refresh attempt FAILED, so this instance is still
+  // deciding from the wiring it last succeeded with. It does NOT say the deployed
+  // wiring has changed: a failed read cannot know, which is exactly why the
+  // instance keeps what it has instead of stopping.
+  bool stale = 4;
+  // stale_for: how long the current run of failures has lasted, as a Go
+  // duration; empty when stale is false. This is the field to alert on.
+  string stale_for = 5;
+  // stale_since: when the current run of failures began (RFC3339); empty when
+  // stale is false. Reported alongside stale_for because a duration is what an
+  // operator judges and an instant is what they correlate against a deploy.
+  string stale_since = 6;
+  // failures: consecutive failed refreshes in the current run; 0 when stale is
+  // false. A long duration with one failure is a loop that stopped looking; a
+  // long duration with many is a store that keeps refusing.
+  int32 failures = 7;
+  // code: the APERTURE_* code of the most recent failure; empty when stale is
+  // false. It is the UNDERLYING failure's own code wherever there was one — the
+  // store's APERTURE_STORAGE_SCHEMA_INCOMPATIBLE,
+  // APERTURE_WIRING_CONNECTION_UNROUTED — and only APERTURE_WIRING_REFRESH_FAILED
+  // when nothing beneath it was coded, so the operator reaches the fixups that
+  // name the actual remedy.
+  string code = 8;
+  // reason: that failure's message. It carries the failing subsystem's own words
+  // and never an account, principal or object id.
+  string reason = 9;
+  // last_refresh: when a refresh last succeeded (RFC3339); empty when none has.
+  string last_refresh = 10;
 }
 
 // ---- Server-side list filtering ----

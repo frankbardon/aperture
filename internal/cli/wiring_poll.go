@@ -13,6 +13,7 @@ import (
 
 	aerr "github.com/frankbardon/aperture/errors"
 	"github.com/frankbardon/aperture/model"
+	"github.com/frankbardon/aperture/service"
 
 	ucli "github.com/urfave/cli/v3"
 )
@@ -54,9 +55,13 @@ import (
 //     a swap: a set whose connections: manifest differs from the one this
 //     instance resolved routes for at boot cannot be adopted by a process that
 //     has already opened pools.
-//   - E4-S4 (last-good on failure, and the alarm) owns tick's two failure
-//     branches and the question the digest advance below deliberately settles the
-//     easy way for now.
+//   - E4-S4 (last-good on failure, and the alarm) owns tick's failure branches,
+//     and has landed: a failure records an alarm on a service.WiringHealth and
+//     keeps the wiring it has, and a successful refresh clears it. wiring_stale.go
+//     holds the whole account, and wiringPoll.alarm / wiringPoll.refreshed are the
+//     two calls a rebuild attaches to — a failed rebuild is p.alarm(err) with
+//     p.digest left exactly where it is, and a successful swap advances p.digest
+//     and calls p.refreshed().
 //
 // # Why the change check is a digest of a full read
 //
@@ -384,6 +389,15 @@ type wiringPoll struct {
 	// is operational narration and stdout is a surface's output.
 	log io.Writer
 
+	// health is where a failed refresh is RECORDED, as distinct from merely
+	// reported: it is what service.Service.WiringPosture answers from, so an
+	// operator reads the staleness and — the half they escalate on — its DURATION
+	// without tailing this poller's stderr. Every method on it is nil-safe, so a
+	// caller that wires no recorder costs nothing and branches nowhere. See
+	// wiring_stale.go for why the alarm exists at all and why it is not a
+	// Capabilities boolean.
+	health *service.WiringHealth
+
 	// digest is the digest of the wiring THIS PROCESS IS RUNNING. It is owned by
 	// the loop goroutine (and by whichever single goroutine drives tick in a test),
 	// never read from outside, which is what keeps the type free of a mutex.
@@ -424,7 +438,13 @@ type wiringPoll struct {
 // ctx governs the loop's lifetime as well as Close does: under `serve` it is the
 // signal context, so a SIGINT stops the reader at once and the deferred Close then
 // only waits for it.
-func startWiringPoll(ctx context.Context, store model.Storage, every time.Duration, booted string, log io.Writer) *wiringPoll {
+// health is the recorder a failure is announced on, and the caller must hand the
+// poller the SAME pointer it handed service.WithWiringHealth: a facade holding a
+// recorder of its own would answer for a loop that never wrote to it, and report
+// a permanently healthy instance no matter what the loop observed — the silent
+// staleness this epic exists to close, reintroduced one layer up. It may be nil,
+// which records nothing and reports only on stderr.
+func startWiringPoll(ctx context.Context, store model.Storage, every time.Duration, booted string, log io.Writer, health *service.WiringHealth) *wiringPoll {
 	if every <= 0 {
 		return nil
 	}
@@ -433,6 +453,7 @@ func startWiringPoll(ctx context.Context, store model.Storage, every time.Durati
 		store:  store,
 		every:  every,
 		log:    log,
+		health: health,
 		digest: booted,
 		cancel: cancel,
 		done:   make(chan struct{}),
@@ -498,19 +519,28 @@ func (p *wiringPoll) tick(ctx context.Context) bool {
 
 	set, err := readSharedWiring(ctx, p.store)
 	if err != nil {
-		// E4-S4 owns this branch: last-good is already the behaviour (nothing is
-		// swapped, so the instance keeps deciding with the wiring it has), and what
-		// is missing is the ALARM — a failing poll that is only a stderr line is a
-		// failure nobody is paged for. The digest deliberately does not advance, so
-		// the next successful read still sees the change.
-		p.report("wiring poll: re-reading the shared wiring failed, so this instance keeps the wiring it has: %v", err)
+		// Last-good, and LOUD. Nothing is swapped, so the instance keeps deciding
+		// with the wiring it has; the digest deliberately does not advance, so the
+		// next successful read still sees a change this one could not confirm; and
+		// the alarm is RECORDED as well as reported, so the staleness and its age
+		// are readable without tailing stderr. alarm passes the store's own code
+		// through untouched — see wiring_stale.go.
+		p.alarm(err)
 		return false
 	}
 	digest, err := wiringDigest(set)
 	if err != nil {
-		p.report("wiring poll: digesting the shared wiring failed, so this instance keeps the wiring it has: %v", err)
+		p.alarm(err)
 		return false
 	}
+	// The store answered and its wiring digested, so this process is not stale
+	// whatever the comparison below says: any standing alarm clears HERE, before
+	// the change branch, because a completed refresh settles the question the alarm
+	// asks — "could this instance find out?" — even when the answer is "nothing
+	// changed", which is the answer on almost every tick of almost every
+	// deployment. refreshed() names p.digest, the wiring this process RUNS, which
+	// is still the old one on a tick that is about to report a change.
+	p.refreshed()
 	if digest == p.digest {
 		return false
 	}

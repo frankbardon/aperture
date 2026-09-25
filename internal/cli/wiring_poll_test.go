@@ -8,12 +8,14 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	aerr "github.com/frankbardon/aperture/errors"
 	"github.com/frankbardon/aperture/model"
+	"github.com/frankbardon/aperture/service"
 
 	ucli "github.com/urfave/cli/v3"
 )
@@ -90,6 +92,41 @@ type pollProbe struct {
 	stack    decisionStack
 	poll     *wiringPoll
 	out      *bytes.Buffer
+	// health is the SAME recorder the poller writes to, held here so a case can
+	// read the posture a facade would answer with (E4-S4). now is the clock behind
+	// it, so StaleFor is a value a test can assert rather than a race with the wall
+	// clock.
+	health *service.WiringHealth
+	now    *pollClock
+}
+
+// pollClock is the pinnable clock behind a probe's recorder. StaleFor is the
+// field the staleness surface exists FOR, and a duration driven by time.Now can
+// only ever be asserted as "more than nothing" — which would pass just as well
+// for a recorder that reported one nanosecond forever.
+//
+// It is mutex-guarded rather than an atomic because the poll loop reads it from
+// its own goroutine while a test advances it, and `go test -race` is part of this
+// story's gate.
+type pollClock struct {
+	mu sync.Mutex
+	at time.Time
+}
+
+func newPollClock() *pollClock {
+	return &pollClock{at: time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)}
+}
+
+func (c *pollClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.at
+}
+
+func (c *pollClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.at = c.at.Add(d)
 }
 
 // newPollProbe boots a stack and starts the poll exactly as runServe does: parse
@@ -111,7 +148,7 @@ func newPollProbe(t *testing.T, ctx context.Context, storeDSN, seedPath string, 
 	}
 	t.Cleanup(func() { _ = inner.Close() })
 
-	probe := &pollProbe{counting: &pollingWiringReads{Storage: inner}, out: &bytes.Buffer{}}
+	probe := &pollProbe{counting: &pollingWiringReads{Storage: inner}, out: &bytes.Buffer{}, now: newPollClock()}
 	cmd := &ucli.Command{
 		Name:  "probe",
 		Flags: append(storeFlags(), wiringPollFlag()),
@@ -125,7 +162,10 @@ func newPollProbe(t *testing.T, ctx context.Context, storeDSN, seedPath string, 
 				return err
 			}
 			probe.stack = stack
-			probe.poll = startWiringPoll(ctx, probe.counting, every, stack.wiringDigest, probe.out)
+			// The recorder is built and shared exactly as runServe builds and shares
+			// it: one pointer, handed to the facade and to the poller.
+			probe.health = service.NewWiringHealth(every, stack.wiringDigest, probe.now.now)
+			probe.poll = startWiringPoll(ctx, probe.counting, every, stack.wiringDigest, probe.out, probe.health)
 			return nil
 		},
 	}
@@ -430,7 +470,7 @@ func TestTheLoopStopsOnContextCancellationAndLeaksNoGoroutine(t *testing.T) {
 	}
 
 	before := runtime.NumGoroutine()
-	poll := startWiringPoll(ctx, probe.counting, 5*time.Millisecond, probe.stack.wiringDigest, probe.out)
+	poll := startWiringPoll(ctx, probe.counting, 5*time.Millisecond, probe.stack.wiringDigest, probe.out, nil)
 	if poll == nil {
 		t.Fatal("a 5ms interval started no poller")
 	}
@@ -490,10 +530,10 @@ func TestAClosedPollerIsNilSafe(t *testing.T) {
 	if err := p.Close(); err != nil {
 		t.Errorf("(*wiringPoll)(nil).Close() = %v, want nil", err)
 	}
-	if got := startWiringPoll(context.Background(), nil, 0, "", nil); got != nil {
+	if got := startWiringPoll(context.Background(), nil, 0, "", nil, nil); got != nil {
 		t.Errorf("startWiringPoll with a zero interval returned %v, want nil — off means no goroutine", got)
 	}
-	if got := startWiringPoll(context.Background(), nil, -time.Second, "", nil); got != nil {
+	if got := startWiringPoll(context.Background(), nil, -time.Second, "", nil, nil); got != nil {
 		t.Errorf("startWiringPoll with a negative interval returned %v, want nil", got)
 	}
 }

@@ -91,6 +91,14 @@ Full surface:
   `ExplainAttributeAuthority(actor)` returns the engine `Trace` behind that
   authority decision so a refused operator can see why. See
   [the attribute directory read](#the-attribute-directory-read).
+- **Wiring posture (SYSTEM-tier read)**: `WiringPosture(actor)` reports whether
+  this instance's background re-read of the SHARED WIRING tables is failing — so
+  the instance is still deciding from the last wiring it successfully read — and
+  **for how long**, plus the failure count, the `APERTURE_*` code of the most
+  recent failure and the digest it is deciding from. It is wired with
+  `WithWiringHealth` and gated directly through
+  `authz.Gate.RequireSystemAdmin`, like `ListAttributes` and in the same order.
+  See [the wiring posture read](#the-wiring-posture-read).
 - **Rules (E7-S3)**: `Put/Get/List/Delete` for `Rule` (the named rule-AST
   definitions the node editor authors and rule-backed scope strategies resolve;
   the AST rides as `rule_json`/`rules_json`, the exact `rules.Node` serialization).
@@ -471,6 +479,61 @@ system-tier read: `RequireSystemAdmin` directly, the shape `Export` uses, never 
 - **It is not the only way a value is seen.** An `Explain` trace carries the
   bags a decision was evaluated against, values included (E5-S1) — a deliberate
   disclosure. The gate closes the bulk-read door, not every door.
+
+## The wiring posture read
+
+`WiringPosture` reports whether this instance's shared wiring is STALE — its
+background re-read (`--wiring-poll`) is failing, so it keeps deciding from the
+last wiring it successfully read — and **how long** that has been true. The
+staleness is never silent: each failure also emits an `APERTURE_*` coded alarm on
+stderr, and a slot's `ttl:` is the precedent for taking a window like this
+seriously rather than as tuning.
+
+- **Why it is NOT on `Capabilities`.** `Capabilities` is an open, unauthenticated
+  call, and its contract is what licenses that: booleans and nothing else, read
+  from immutable boot-time configuration, unable to fail. A staleness field breaks
+  all three — it is mutable runtime state, its useful half is a DURATION, and the
+  admin shell caches `Capabilities` once on page load so the answer would be
+  permanently whatever it was then. And the disclosure matters on its own: "this
+  instance has been enforcing configuration its operator already replaced, for
+  four hours" tells an anonymous caller the enforced policy is not the intended
+  policy and how long the window has been open. Splitting it — a bare boolean left
+  open, the duration behind auth — is theatre, because the boolean carries the
+  disclosure. Both halves live here instead, and `service/wiring_posture.go` and
+  `service.Capabilities`' own doc comment both say so, so the next reader does not
+  re-litigate it.
+- **The gate is `RequireSystemAdmin`, and the ORDER is the contract.** It runs
+  before the recorder is consulted, so a refused caller's error is byte-identical
+  for a healthy instance, one that does not poll, and one four hours stale —
+  otherwise the refusal is a probe for "is this instance degraded?". The gate's
+  error passes through VERBATIM (`Wrap` re-stamps).
+- **An unwired recorder is an ANSWER, not a refusal.** A facade built without
+  `WithWiringHealth`, and an instance that does not poll, both report
+  `Polling: false, Stale: false` — which is true, because boot-only wiring is the
+  wiring the instance was told to run. Refusing would make the read useless as a
+  fleet-wide probe: an operator sweeping ten instances would have to read a refusal
+  as either "fine" or "broken" and would be wrong about one of them. This is the
+  deliberate difference from `ListAttributes`, which has no true answer to give
+  when no registry is wired.
+- **The code is the UNDERLYING failure's.** `Posture().Code` carries the store's
+  own `APERTURE_STORAGE_SCHEMA_INCOMPATIBLE`, E2-S3's
+  `APERTURE_WIRING_CONNECTION_UNROUTED`, and so on; `APERTURE_WIRING_REFRESH_FAILED`
+  is the classification of last resort for a failure nothing else coded. Burying a
+  specific code under the alarm's costs the operator that code's registry fixups,
+  which are the remedy.
+- **Recovery CLEARS it, completely.** Any successful refresh — including one that
+  observed no change, which is almost every tick of almost every deployment —
+  resets the window, the count, the code and the reason. An alarm that latches past
+  its own remedy trains an operator to ignore the channel, which is silent
+  staleness by a longer route.
+- **On the wire it is `WiringPosture(WiringPostureRequest)`.** It takes an `Actor`
+  rather than `Empty` because system-admin authority is resolved in an ACTIVE
+  ACCOUNT and only the caller knows which of its accounts that is; the principal on
+  the wire is ignored as always. Durations are Go duration text (`"4h0m0s"`) and
+  instants RFC3339, because the person reading it has just been paged.
+- **It carries no model data.** Digests, durations, counts and coded errors only —
+  never an object type, an id or a key — the same restriction the poll's stderr
+  reports carry.
 
 ## Wire encoding
 
