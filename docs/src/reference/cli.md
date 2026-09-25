@@ -33,6 +33,7 @@
 | [`search`](#aperture-search) | Rank the objects a principal may act on by a free-text name |
 | [`serve`](#aperture-serve) | Run the Aperture HTTP server |
 | [`template`](#aperture-template) | Manage and apply provisioning templates |
+| [`wiring`](#aperture-wiring) | Manage the shared wiring a deployment keeps in its database |
 
 ## `aperture attributes`
 
@@ -646,4 +647,86 @@ aperture template put [options]
 | `--principal` | — | string | — | authenticated principal performing the mutation (env: `APERTURE_PRINCIPAL`) |
 | `--seed` | — | string | — | path to a JSON/YAML seed model to apply on startup (when omitted: the embedded example for the in-memory store, and nothing at all for a --store DSN) |
 | `--store` | — | string | — | DSN for the backing store: a postgres:// or postgresql:// URL for PostgreSQL, any other value as a SQLite path (defaults to in-memory). Set APERTURE_POSTGRES_SCHEMA to place Aperture's tables in a named PostgreSQL schema; unset uses the connection's search_path |
+
+## `aperture wiring`
+
+Manage the shared wiring a deployment keeps in its database
+
+SHARED WIRING is the part of a seed document that belongs to the DEPLOYMENT
+rather than to one instance: which object types are served and by what
+statements (`providers:`), which metadata fields hold dates (`field_types:`),
+the manifest of connection NAMES an entry may cite (`connections:`), and where
+each attribute slot's bags come from (`attribute_providers:`).
+
+Push it once and every instance sharing that database reads the same wiring —
+including an instance that has no seed file at all.
+
+WIRING IS NOT MODEL STATE. The model says who exists and who may do what;
+wiring says where a decision reads object metadata and attribute bags FROM.
+The two are pushed by different commands, and wiring for a model that is not
+there is refused rather than stored.
+
+WHAT IS NEVER STORED: no DSN, no credential, not even the NAME of the
+environment variable holding one, and no filesystem path. Those are
+per-instance facts — each instance resolves its own credentials and sizes its
+own pool — so the manifest carries connection names and nothing else, and
+`kind: csv` is refused because its only data source is a path. A csv entry
+stays legal in the LOCAL seed file, where the path belongs to the instance
+that reads it.
+
+The two remaining sections, `objects:` and `attributes:`, are never shared:
+they carry inline DATA rather than a pointer to data.
+
+```
+aperture wiring <command>
+```
+
+### `aperture wiring push`
+
+Validate a seed document's four shared wiring sections and write them to the store in one transaction
+
+Reads `providers:`, `field_types:`, `connections:` and `attribute_providers:` out
+of --seed, validates every entry, and REPLACES the store's wiring with them in a
+single transaction. The document's other sections are not read: no model state
+is applied, and the two local wiring sections (`objects:`, `attributes:`) are
+untouched.
+
+THE PUSH IS ALL OR NOTHING. Every rule below is checked before anything is
+written, and the write itself replaces the whole set in one transaction, so a
+refusal leaves the deployed wiring exactly as it was. Wiring is only meaningful
+whole — an entry naming a connection the manifest does not list is not half-valid
+wiring, it is broken wiring — and an instance booting against a half-written set
+would build a registry missing exactly the entries whose write failed, while
+reporting nothing.
+
+REPLACE, not merge. What is in the document is what the deployment will run;
+an entry dropped from the document is dropped from the store. Push the whole
+wiring every time.
+
+A push is refused when:
+
+```text
+  * the store holds NO MODEL STATE at all — apply the model first, and check the
+    --store DSN, because a typo names an empty database Setup will create
+  * an entry selects `kind: csv` — its only data source is a filesystem path,
+    and a path is machine-local
+  * a provider serves an `object_type` the store has no row for (named in the
+    refusal)
+  * an entry names a `connection:` the pushed `connections:` manifest does not
+    declare (named in the refusal)
+  * anything carries a literal `dsn:` — only `dsn_env:`, a variable NAME, is ever
+    accepted, and shared wiring stores neither
+```
+
+No actor is required: the store credential is the authority, exactly as it is for
+`aperture import`.
+
+```
+aperture wiring push [options]
+```
+
+| Name | Aliases | Type | Default | Usage |
+| --- | --- | --- | --- | --- |
+| `--seed` | — | string | — | path to the JSON/YAML seed document whose four SHARED wiring sections are pushed (required; no model state is applied from it and there is no embedded-example fallback) |
+| `--store` | — | string | — | DSN for the shared store the wiring is written to: a postgres:// or postgresql:// URL for PostgreSQL, any other value as a SQLite path (required — there is nothing to share about an in-memory store). Set APERTURE_POSTGRES_SCHEMA to place Aperture's tables in a named PostgreSQL schema |
 

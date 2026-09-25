@@ -329,6 +329,64 @@ const (
 	// message says "manage" rather than "create". Reads are unaffected, and the
 	// decision path — Check / Enumerate / Explain — never consults the switches.
 	APERTURE_ENTITY_UNMANAGED Code = "APERTURE_ENTITY_UNMANAGED"
+	// APERTURE_WIRING_NO_MODEL_STATE — `aperture wiring push` was pointed at a
+	// store that holds no model state at all, so there is nothing for the pushed
+	// wiring to be wiring FOR.
+	//
+	// Wiring says where a decision reads object metadata and attribute bags FROM;
+	// the model says who exists and who may do what. An empty store is therefore
+	// almost always the wrong store — a typo'd DSN opens (and Setup creates) a
+	// perfectly valid, perfectly empty database, and without this refusal the
+	// wiring lands there, the push reports success, and the instance that actually
+	// serves decisions never sees it. The refusal is deliberately not conditional
+	// on the pushed set naming an object type: a connection-only push into an
+	// empty database is the same mistake with fewer symptoms.
+	APERTURE_WIRING_NO_MODEL_STATE Code = "APERTURE_WIRING_NO_MODEL_STATE"
+	// APERTURE_WIRING_OBJECT_TYPE_UNKNOWN — a pushed provider entry serves an
+	// object type the model's object-type table has no row for. The message names
+	// the missing type.
+	//
+	// apt_wiring_providers.object_type carries a real foreign key ON DELETE
+	// RESTRICT, so the database would refuse the row anyway — but a raw foreign-key
+	// violation says "constraint failed", not "you have no object type called
+	// dataset", and the operator has to go and read the schema to learn which of
+	// the two names in the statement was the wrong one. This code is that refusal
+	// with the type named.
+	//
+	// It applies to PROVIDER entries only. A field-type declaration may legally
+	// name a type whose objects a seed lists inline, which needs no object-type
+	// row at all, and apt_wiring_field_types.object_type carries no edge for
+	// exactly that reason.
+	APERTURE_WIRING_OBJECT_TYPE_UNKNOWN Code = "APERTURE_WIRING_OBJECT_TYPE_UNKNOWN"
+	// APERTURE_WIRING_CONNECTION_UNDECLARED — a pushed provider or
+	// attribute-provider entry names a connection the pushed connections: manifest
+	// does not declare. The message names the undeclared connection and lists the
+	// ones that were declared.
+	//
+	// The column carries no foreign key on purpose — an entry of a non-database
+	// kind names no connection, and absence is the empty string rather than a NULL
+	// — so nothing below this layer can catch the typo. It has to be caught at the
+	// push, because one connections: entry is one POOL: a name with no manifest
+	// entry does not fall back to a default pool, it fails the registry build on
+	// the next boot of every instance that reads the wiring.
+	APERTURE_WIRING_CONNECTION_UNDECLARED Code = "APERTURE_WIRING_CONNECTION_UNDECLARED"
+	// APERTURE_WIRING_KIND_UNSHAREABLE — a pushed provider or attribute-provider
+	// entry selects a kind that cannot be SHARED wiring, which today means
+	// kind: csv.
+	//
+	// A csv entry's data source is a filesystem path, and a path is a machine-local
+	// fact. A relative one is resolved against the seed FILE's own directory
+	// (seed/provider.go, seed/attribute_provider.go), which database-sourced wiring
+	// has none of; an absolute one is a guess about the other instance's disk. So
+	// the shared-wiring schema has no path column at all, and an entry whose only
+	// data source is a path has nothing to store. It is refused rather than stored
+	// pathless, because a pathless csv entry would read back as wiring and then
+	// serve nothing.
+	//
+	// kind: csv remains entirely legal in a LOCAL seed document. It is this
+	// deployment's own file, and the instance that reads the seed is the instance
+	// the path belongs to.
+	APERTURE_WIRING_KIND_UNSHAREABLE Code = "APERTURE_WIRING_KIND_UNSHAREABLE"
 )
 
 // Metadata describes an Aperture code: the canonical human-readable Message and
@@ -683,6 +741,38 @@ var Registry = map[Code]Metadata{
 			"This is not a permission problem: no grant, role, or admin tier lifts it, and it refuses a system-admin exactly as it refuses anyone else.",
 		},
 	},
+	APERTURE_WIRING_NO_MODEL_STATE: {
+		Message: "the target store holds no model state, so there is nothing for the pushed wiring to be wiring for",
+		Fixups: []string{
+			"Apply model state to this store first — `aperture import --store <dsn>`, `aperture serve --store <dsn> --seed <file>`, or the mutation commands — and then push the wiring.",
+			"Check the --store DSN: a typo names a database that does not exist yet, Setup creates it empty, and the wiring would land somewhere no instance reads.",
+			"Two instances sharing wiring must share the MODEL too; wiring says where object metadata and attribute bags are read from, not who exists.",
+		},
+	},
+	APERTURE_WIRING_OBJECT_TYPE_UNKNOWN: {
+		Message: "a pushed provider entry serves an object type the model does not declare",
+		Fixups: []string{
+			"Declare the object type named in the message in the store's object_types: (apply the model state, then push the wiring again).",
+			"Check the spelling against `aperture list object-type --store <dsn>`: the wiring's object_type: must equal the object type's name exactly.",
+			"Field-type declarations are exempt — they may name a type whose objects a local seed lists inline — so only providers: entries need a row.",
+		},
+	},
+	APERTURE_WIRING_CONNECTION_UNDECLARED: {
+		Message: "a pushed entry names a connection the wiring's connections: manifest does not declare",
+		Fixups: []string{
+			"Add the connection named in the message to the document's connections: block, with dsn_env: naming the environment variable that holds its DSN.",
+			"Or fix the entry's connection: to match one of the declared names the message lists — one connections: entry is one pool, so a typo opens no pool rather than a second one.",
+			"Only the NAME is shared: every instance resolves that connection's DSN and pool settings from its own environment, so the manifest is a list of names and nothing else.",
+		},
+	},
+	APERTURE_WIRING_KIND_UNSHAREABLE: {
+		Message: "a pushed entry selects a kind that cannot be shared wiring",
+		Fixups: []string{
+			"Replace the kind: csv entry named in the message with kind: sql reading through a connections: entry, so every instance reaches the same data without a shared filesystem.",
+			"Or leave that entry out of the pushed wiring and keep it in the LOCAL seed document, where the path belongs to the instance that reads it.",
+			"A csv entry's only data source is a filesystem path; the shared-wiring schema has no path column, because a relative path resolves against the seed file's own directory and an absolute one is a guess about the other host's disk.",
+		},
+	},
 }
 
 // AllCodes is the registry every gate walks. Append new codes here; the
@@ -733,6 +823,10 @@ var AllCodes = []Code{
 	APERTURE_TEMPLATE_PARAM,
 	APERTURE_AUTHZ_DENIED,
 	APERTURE_ENTITY_UNMANAGED,
+	APERTURE_WIRING_NO_MODEL_STATE,
+	APERTURE_WIRING_OBJECT_TYPE_UNKNOWN,
+	APERTURE_WIRING_CONNECTION_UNDECLARED,
+	APERTURE_WIRING_KIND_UNSHAREABLE,
 }
 
 // Message returns the canonical message for a code, or empty when the code has
