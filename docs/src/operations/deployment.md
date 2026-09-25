@@ -149,6 +149,9 @@ the constructor order in `internal/cli/serve.go` *is* the deployment topology.
 ## Related
 
 - [serve](../cli/serve.md) — the command page, with the flag walkthrough.
+- [Two instances, one store](two-instance-topology.md) — standing up a second
+  instance against a database that already has one: one model, one pushed wiring,
+  per-instance connection routes.
 - [Performance & NFR](performance.md) — the decision hot-path budget and how to
   assert it.
 - [Troubleshooting](troubleshooting.md) — reading and acting on `APERTURE_*`

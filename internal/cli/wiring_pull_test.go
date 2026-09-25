@@ -2,8 +2,6 @@ package cli
 
 import (
 	"context"
-	"database/sql"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,7 +12,6 @@ import (
 	"github.com/frankbardon/aperture/model"
 	"github.com/frankbardon/aperture/seed"
 	"github.com/frankbardon/aperture/storage/memory"
-	"github.com/frankbardon/aperture/storage/postgres"
 )
 
 // E5-S1, driven through the real command tree, against a real store.
@@ -684,63 +681,19 @@ field_types:
 //
 // Never put a DSN in a file; pass it in the environment.
 //
-// Ungated it SKIPS. Gated with an empty DSN it FAILS — asking for the live proof and
-// silently not getting it is the outcome a gate must never produce.
-const (
-	pullPGGateEnv = "APERTURE_PG_INTEGRATION"
-	pullPGDSNEnv  = "APERTURE_PG_DSN"
-)
+// Ungated it SKIPS. Gated with an empty DSN it FAILS, and gated with a value that is
+// neither on nor off it FAILS too — asking for the live proof and silently not getting
+// it is the outcome a gate must never produce. The gate itself, its three outcomes and
+// the scratch-schema helper below all live in live_gate_test.go, which owns them for
+// the whole package: two gates over the same two variables that behaved differently
+// would be the drift both of them exist to stop.
 
-// requireLivePostgres skips unless the gate is on, and returns the DSN.
-func requireLivePostgres(t *testing.T) string {
-	t.Helper()
-	if os.Getenv(pullPGGateEnv) != "1" {
-		t.Skipf("skipping the live PostgreSQL proof: set %s=1 and %s=<dsn> to run it", pullPGGateEnv, pullPGDSNEnv)
-	}
-	dsn := os.Getenv(pullPGDSNEnv)
-	if strings.TrimSpace(dsn) == "" {
-		t.Fatalf("%s=1 but %s is empty: the gate is on and there is no database to run against. Export %s=<dsn> in the environment, never in a file", pullPGGateEnv, pullPGDSNEnv, pullPGDSNEnv)
-	}
-	return dsn
-}
-
-// livePostgresWiringStore gives one test its OWN PostgreSQL schema, creates
-// Aperture's tables in it, applies the model state a push needs, and drops the
-// schema afterwards so a live run leaves no residue in whatever database the
-// operator pointed it at.
-//
-// The schema is chosen through APERTURE_POSTGRES_SCHEMA rather than a flag because
-// that variable IS the knob — there is no --store-schema — and buildStore reads it
-// where it opens the backend. t.Setenv restores it, and it also fails the test if
-// the package is ever made parallel, which is the right outcome: two tests sharing
-// one process cannot each have their own value of it.
+// livePostgresWiringStore gives one test its OWN PostgreSQL schema (through
+// liveScratchSchema, which also drops it afterwards), creates Aperture's tables in it,
+// and applies the model state a push needs.
 func livePostgresWiringStore(t *testing.T, ctx context.Context, dsn string) string {
 	t.Helper()
-	name := fmt.Sprintf("aperture_cli_pull_%d", time.Now().UnixNano())
-	if err := postgres.ValidateSchemaName(name); err != nil {
-		t.Fatalf("this test's own generated schema name is not one Aperture accepts: %v", err)
-	}
-	// "pgx" is registered by storage/postgres, which internal/cli already imports; the
-	// admin handle is only here to create and drop the scratch schema.
-	admin, err := sql.Open("pgx", dsn)
-	if err != nil {
-		t.Fatalf("sql.Open: %v", err)
-	}
-	// Registered FIRST so it runs LAST: cleanups run in reverse order, and a
-	// `defer admin.Close()` would close the pool before the DROP below.
-	t.Cleanup(func() { _ = admin.Close() })
-	if err := admin.PingContext(ctx); err != nil {
-		t.Fatalf("ping %s: %v", pullPGDSNEnv, err)
-	}
-	t.Cleanup(func() {
-		// Reported, not discarded. A cleanup that cannot fail is a cleanup nobody finds
-		// out has stopped working, and this one is what keeps a live run residue-free.
-		if _, err := admin.Exec(`DROP SCHEMA IF EXISTS "` + name + `" CASCADE`); err != nil {
-			t.Errorf("dropping the scratch schema %s left residue behind: %v", name, err)
-		}
-	})
-
-	t.Setenv(postgres.EnvSchema, name)
+	liveScratchSchema(t, ctx, dsn, "aperture_cli_pull")
 	// buildStore with an empty seed path opens the backend and runs Setup, which
 	// creates the schema and the tables. The model state then goes in through the same
 	// loader newWiringStore uses, so the two backends' fixtures are the same fixture.
@@ -797,16 +750,5 @@ func TestPostgresLiveWiringPullMatchesTheSQLitePull(t *testing.T) {
 	fromPostgres := pullFrom(livePostgresWiringStore(t, ctx, live), "postgres")
 	if fromSQLite != fromPostgres {
 		t.Errorf("the two backends pull the same wiring as different documents:\n--- sqlite ---\n%s\n--- postgres ---\n%s", fromSQLite, fromPostgres)
-	}
-}
-
-// TestTheLiveGateSharesItsVariablesWithTheOtherLiveSuites: one exported DSN has to
-// drive every live suite in one shell, so the two variable names are asserted rather
-// than left as a convention nobody rechecks. The DSN itself is never in a file —
-// there is no connection string in this package, only the two names below.
-func TestTheLiveGateSharesItsVariablesWithTheOtherLiveSuites(t *testing.T) {
-	if pullPGGateEnv != "APERTURE_PG_INTEGRATION" || pullPGDSNEnv != "APERTURE_PG_DSN" {
-		t.Errorf("this suite gates on %s/%s, which are not the variables storage/postgres and seed use; "+
-			"one exported DSN must drive every live suite", pullPGGateEnv, pullPGDSNEnv)
 	}
 }

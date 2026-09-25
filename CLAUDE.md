@@ -312,9 +312,29 @@ Gated, NOT in `make test` (a loaded runner would flake them):
   one of them and make a wiring diff report drift between two identically-wired
   deployments. `aperture wiring diff` is in the same suite, for the same reason and
   in both halves: clean against the document it was pushed from, and the **same
-  report** from both backends for the same drift. Same gate contract (skip ungated,
-  fail on an empty DSN), same two variables, so one exported DSN drives every live
-  suite in one shell.
+  report** from both backends for the same drift. It also carries the DB-wired
+  BOOT: a row this instance cannot construct and a connection name it has no route
+  for each refuse the boot, a **disjoint** boot builds both the database's
+  providers/slots and the local file's, and a colliding local `providers:` or
+  inline `objects:` entry is refused by name — the E2-S2 probe, on the backend the
+  deployment it describes actually uses. And it carries the effort's **premise**:
+  two decision stacks over ONE store — one wired from the database rows, one from
+  the equivalent seed file — return identical `Check` / `Enumerate` / `Search` /
+  `Explain` across a fixture set that reads object metadata, both attribute roots
+  and a shared `field_types:` declaration, with `Search` ⊆ `Enumerate` re-asserted
+  on each stack (`internal/cli/wiring_identical_test.go`; it also runs under `make
+  test` against memory and SQLite). **The fixture set is the whole value there** —
+  one that exercised no rule, no metadata read and no attribute read would pass on
+  two stacks that were identically wrong and read as proof, so every fixture pins
+  the verdict the model implies and says in a comment which projection bug it
+  catches. The gate contract is exact: skip ungated, **FAIL** on an empty
+  `APERTURE_PG_DSN`, and **FAIL** (never skip) on a value of
+  `APERTURE_PG_INTEGRATION` that is neither on nor off — it is a pure function
+  (`decideLiveGate` in `internal/cli/live_gate_test.go`, which owns the gate for
+  the package) so all three outcomes are asserted in `make test` with no server.
+  Same two variables as the suites above, so one exported DSN drives every live
+  suite in one shell, and each suite creates and drops its own schema so a shared
+  container is safe.
 
 ## House rules not derivable from the code
 
