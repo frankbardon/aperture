@@ -728,5 +728,49 @@ aperture wiring push [options]
 | Name | Aliases | Type | Default | Usage |
 | --- | --- | --- | --- | --- |
 | `--seed` | — | string | — | path to the JSON/YAML seed document whose four SHARED wiring sections are pushed (required; no model state is applied from it and there is no embedded-example fallback) |
-| `--store` | — | string | — | DSN for the shared store the wiring is written to: a postgres:// or postgresql:// URL for PostgreSQL, any other value as a SQLite path (required — there is nothing to share about an in-memory store). Set APERTURE_POSTGRES_SCHEMA to place Aperture's tables in a named PostgreSQL schema |
+| `--store` | — | string | — | DSN for the shared store the wiring lives in: a postgres:// or postgresql:// URL for PostgreSQL, any other value as a SQLite path (required — there is nothing to share about an in-memory store). Set APERTURE_POSTGRES_SCHEMA to place Aperture's tables in a named PostgreSQL schema |
+
+### `aperture wiring show`
+
+Print the shared wiring this store has deployed, one table per section
+
+Reads the five shared-wiring tables and prints them: the connection manifest, the
+provider entries with their reference declarations, the field-type declarations,
+the attribute-provider entries, and the statement set every database-backed entry
+runs. It answers "what is this deployment actually wired to?" without a database
+client.
+
+AN EMPTY STORE IS AN ANSWER, not an error. A store nothing has been pushed to says
+so plainly: every instance booting against it builds its wiring from its own
+--seed file instead. It is also what a mistyped --store looks like, because a DSN
+naming a database that does not exist yet is one Setup creates — so check the DSN
+before concluding a push was lost.
+
+THE COLUMNS AN OPERATOR WOULD OTHERWISE HAVE TO GUESS AT are spelled as words
+rather than left blank. `ttl` and `max-size` read `(default)` when the entry sets
+neither, because the registry's own default applies and `0` would read as
+"caches nothing". `connection` and `id-column` read `-` when the kind does not use
+them. An attribute slot with no `get_all` is reported as FETCH-ONLY: every
+decision path works unchanged and only the system-tier directory read refuses.
+
+THE DECLARED KEY SET distinguishes three states, because two of them are
+different answers a blank column would merge: `(not declared)` is a slot that
+opted out of key enforcement entirely, `(declared empty)` is a slot that opted IN
+and permits no keys at all, and a list is the keys the slot guarantees.
+
+No actor is required, and none is accepted. This restates the wiring that the
+--store credential you just supplied already grants full write access to, so
+requiring an authority on top of it would only mean nobody could diagnose "is
+anything even deployed?" without already holding the authority the diagnosis
+explains — the same reason `aperture attributes slots` is ungated. It contacts no
+provider, opens no host connection, and prints no account, principal or object
+identity, because the shared wiring holds none.
+
+```
+aperture wiring show [options]
+```
+
+| Name | Aliases | Type | Default | Usage |
+| --- | --- | --- | --- | --- |
+| `--store` | — | string | — | DSN for the shared store the wiring lives in: a postgres:// or postgresql:// URL for PostgreSQL, any other value as a SQLite path (required — there is nothing to share about an in-memory store). Set APERTURE_POSTGRES_SCHEMA to place Aperture's tables in a named PostgreSQL schema |
 
