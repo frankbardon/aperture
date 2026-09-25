@@ -238,9 +238,8 @@ func (r *AttributeRegistry) Fetch(ctx context.Context, slot AttributeSlot, id st
 
 // Enumerate returns up to filter.Limit records of slot that satisfy
 // filter.Fields, by querying the slot's provider and re-enforcing both bounds on
-// what comes back. It opportunistically warms the slot's cache with each
-// returned bag, since the provider call already paid to produce it. A positive
-// limit is honoured as given; a non-positive one means DefaultListLimit.
+// what comes back. A positive limit is honoured as given; a non-positive one
+// means DefaultListLimit.
 //
 // This read is UNCAPPED on purpose. It is the SYSTEM-TIER ADMIN READ of a
 // directory, and an operator answering "who is in the user slot?" may legitimately
@@ -250,6 +249,43 @@ func (r *AttributeRegistry) Fetch(ctx context.Context, slot AttributeSlot, id st
 // AttributeRegistry for why each part of it differs from scope.ObjectLister.List.
 // What keeps it safe is the authority required to reach it (service tier), not a
 // number in this package.
+//
+// # It does NOT write the slot's cache, and that is the contract
+//
+// The slot's cache is FETCH's cache — the decision path's view of a subject. An
+// enumeration's bags are Query's answer, and nothing in the AttributeProvider
+// contract says Query returns the same bag Fetch does. The SQL loader makes the
+// divergence explicit and legal: AttributeConfig.ListQuery is OPTIONAL and is
+// only required to select a bare id, so
+//
+//	get_one: SELECT department, clearance, to_jsonb(teams) AS teams FROM users WHERE id = $1
+//	get_all: SELECT u.id AS id, u.department FROM users u
+//
+// is a correct, documented pair in which Query's bag is a strict SUBSET of
+// Fetch's. Warming the fetch cache from it substitutes the DISPLAY projection for
+// the authoritative bag, for the whole of the slot's ttl, for every subject the
+// listing returned.
+//
+// The consequence is an access-control change, not a stale read: `principal.teams`
+// is then ABSENT rather than wrong, so every membership predicate over it is
+// false. In an inclusive grant that denies; in an EXCLUSIVE one a rule that stops
+// selecting stops EXCLUDING, so an administrator running
+// `aperture attributes query user` silently widens access until the ttl expires,
+// and no verdict, trace or note says why. That is the same hazard
+// rules.TestAMissingBagWidensAnExclusiveGrant describes, reached from the other
+// direction — a bag that is present but shorter.
+//
+// There is no cheap way to make the warm safe. Aperture cannot compare the two
+// projections: an attribute bag is opaque host data, an absent key is
+// indistinguishable from a key whose value is genuinely unset (metadataValue maps
+// a NULL to an OMITTED field on purpose), and a provider may legitimately answer
+// Query from a search index and Fetch from the system of record.
+//
+// The object Registry.List keeps its warm, and the asymmetry is deliberate: List
+// is a DECISION-PATH call whose Fetch follows immediately in the same candidate
+// walk, so the warm is paid back within the same decision. Enumerate has no Fetch
+// behind it — it is an admin listing rendered to an operator — so the warm bought
+// nothing and cost the decision path its bag.
 //
 // Fields is re-enforced through MatchFields rather than trusted to the provider.
 // The object Registry leaves Fields entirely to its provider because there
@@ -274,9 +310,9 @@ func (r *AttributeRegistry) Enumerate(ctx context.Context, slot AttributeSlot, f
 		if !MatchFields(rec.Attributes, filter.Fields) {
 			continue
 		}
-		if rec.Attributes != nil {
-			e.cache.Set(rec.ID, rec.Attributes)
-		}
+		// Deliberately no e.cache.Set here. See the doc comment above: the
+		// slot's cache is the DECISION PATH's, and this bag is Query's
+		// projection, which the loaders' own contract allows to be narrower.
 		out = append(out, rec)
 		if len(out) >= limit {
 			break

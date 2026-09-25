@@ -448,8 +448,46 @@ directory, and an operator asking "who is in the user slot?" may legitimately ne
 all of it; a page size chosen inside the registry would only make the honest
 answer arrive in pieces. What keeps the read safe is the authority required to
 reach it (`service.requireAttributeAdmin`), not a number in `provider`.
-`Enumerate` opportunistically warms the slot's cache with each returned bag, since
-the provider call already paid to produce it.
+### `Enumerate` never writes the slot's cache
+
+The per-slot cache is **`Fetch`'s** cache — the decision path's view of a subject —
+and `Enumerate` is forbidden from writing it. `Fetch` still caches its own answer;
+only the listing's bags are excluded.
+
+The reason is that `Fetch` and `Query` answer different questions and nothing in
+`AttributeProvider` makes their bags equal. The SQL loader makes the inequality
+explicit and legal: `AttributeConfig.ListQuery` is **optional** and is only
+required to select a bare id, so
+
+```yaml
+get_one: SELECT department, clearance, to_jsonb(teams) AS teams FROM users WHERE id = $1
+get_all: SELECT u.id AS id, u.department FROM users u
+```
+
+is a correct pair in which `Query`'s bag is a strict **subset** of `Fetch`'s.
+Warming the fetch cache from it substituted the display projection for the
+authoritative bag, for the whole of the slot's `ttl`, for every subject the
+listing returned.
+
+That is an access-control change, not a stale read. An absent key is not a wrong
+key: every predicate over it goes false, so an inclusive grant **denies** and an
+**exclusive** grant stops excluding and therefore **widens** — one operator
+running `aperture attributes query user` silently reopens access until the `ttl`
+expires, and no verdict, trace or note says why. It is
+["The hazard leniency leaves"](#the-hazard-leniency-leaves-an-exclusive-grant-widens)
+reached from the other direction: a bag that is present but shorter.
+
+There is no cheap way to make the warm safe. Aperture cannot compare the two
+projections — an attribute bag is opaque host data, an absent key is
+indistinguishable from a key whose value is genuinely unset (`sqlprovider` maps a
+`NULL` to an **omitted** field on purpose), and a provider may legitimately answer
+`Query` from a search index and `Fetch` from the system of record.
+
+The object `provider.Registry.List` **keeps** its cache warm, and the asymmetry is
+deliberate: `List` is a decision-path call whose `Fetch` follows immediately in the
+same candidate walk, so the warm is repaid inside the same decision. `Enumerate`
+has no `Fetch` behind it — it is an admin listing rendered to an operator — so the
+warm bought nothing and cost the decision path its bag.
 
 ## Wiring
 
@@ -654,6 +692,11 @@ recs, err := svc.ListAttributes(ctx, actor, "user", provider.AttributeFilter{
   resolves one bag for a subject it already named. The two paths reach the same
   registry through different seams — the resolvers for a decision,
   `service.WithAttributes` for the admin read.
+- **The admin read cannot change a decision.** It is read-only all the way down —
+  it does not write the slot's cache either, for the reason in
+  [`Enumerate` never writes the slot's cache](#enumerate-never-writes-the-slots-cache).
+  An operator diagnosing a deployment must not be able to alter a verdict by
+  looking at it.
 - The three `Invalidate*Attribute*` facade methods are gated identically, through
   the same `requireAttributeAdmin` in the same order. Invalidation writes nothing
   and discloses no bag, but its boolean says whether this process had that key
