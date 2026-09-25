@@ -61,12 +61,18 @@ describe a cache it does not have.)
   a registry a host wired in Go rather than from the seed, and `(unwired)` for a
   slot this deployment declares no source for. An unwired slot is not an error:
   every decision for it resolves the [floor
-  bag](../concepts/rules.md#the-floor-bag-and-principalkind) and proceeds.
+  bag](../concepts/rules.md#the-floor-bag-and-principalkind) and proceeds. When a
+  slot is filled **both** ways it reports the **winner** — the
+  `attribute_providers:` kind — because that is the source a contested key is
+  answered from; the inline bags are still there, layered under it.
 - **`ttl` is the revocation window.** `never` means a fetched bag is dropped only
   by eviction or by an explicit `invalidate` — correct for a fixed inline block,
-  dangerous for a live directory.
+  dangerous for a live directory. On a slot with two layers it is the **winning**
+  layer's window, since each layer caches on its own declaration.
 - **`cached` counts *this* process.** A one-shot invocation starts cold and reads
-  `0`; it is the number that matters in a long-running [`serve`](serve.md).
+  `0`; it is the number that matters in a long-running [`serve`](serve.md). It sums
+  a slot's layers, so a subject both layers serve is counted twice — it really is
+  cached twice, and two `ttl`s will expire it.
 
 `slots` needs **no actor**. It discloses nothing the caller did not already
 supply: it reads the seed file named on the command line plus the cache
@@ -77,8 +83,12 @@ without already holding the authority the diagnosis exists to explain.
 
 When a seed declares one slot in **both** `attribute_providers:` and
 `attributes:`, every command that builds the stack prints a warning naming the
-affected slots — the external entry wins and the inline bags for that slot are
-discarded entirely. Only slot names are named, never keys.
+affected slots. Nothing is discarded: the `attribute_providers:` entry is that
+slot's **shared** layer, the inline bags **layer under it**, and the shared layer
+wins every key both serve. The warning exists to say **which layer answers a
+contested key** — the one thing no verdict, trace or note says. Only slot names are
+named, never keys. See [Precedence: two layers, and the shared layer
+wins](../concepts/seed.md#precedence-two-layers-and-the-shared-layer-wins).
 
 ## `query` — read a directory (system-admin)
 
@@ -129,6 +139,11 @@ the operator did not ask to clear.
 (`no cached user bag for "alice"`): an operator invalidating a subject they
 believe is cached wants to know their key did not match. Note that `--id` takes
 the **bare** subject id — `alice`, never `user:alice`.
+
+Every form clears **both layers** of every slot it names. A slot fed by an external
+source and an inline block caches each independently, and dropping one would leave the
+revoked value still being read out of the other — a window reported shut with half of
+it open.
 
 It is gated for the same reason `query` is, even though it writes nothing and
 discloses no bag: the result says whether *this process* had that key cached,

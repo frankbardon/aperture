@@ -362,6 +362,14 @@ an unknown variable, rejected at validation:
   directory and no machine directory keeps deciding. Any other failure surfaces
   verbatim and the resolver treats it as a non-decision: an outage must not read
   as "this principal has no attributes".
+  A slot may hold **two layers** — a `shared` one (the deployment's wiring row or
+  `attribute_providers:` entry) and a `local` one (this instance's `attributes:`
+  block or its own Go registration) — and the bag the resolver returns is their
+  merge, with the **shared layer winning every key both serve**. That is beneath the
+  floor, not beside it: the tiers compose in one direction, **floor over shared over
+  local**, so `principal.id` and `principal.kind` are unshadowable by either layer.
+  `skills/attribute-providers.md` ("Precedence: two layers, and the shared layer
+  wins") has the argument.
   `principal.kind` exists because per-kind providers make a rule silently
   kind-dependent — a rule written against the user directory reads nothing for a
   machine principal, which denies safely in an **inclusive** grant but **widens**
@@ -394,7 +402,10 @@ an unknown variable, rejected at validation:
   can satisfy both this seam and `PrincipalResolver`; Go has no overloading, and
   the registry already holds both directories and both caches. The account slot
   with **no registered provider**, and a registered one with no record for the
-  account, both yield the floor and **no error**, exactly as for a principal.
+  account, both yield the floor and **no error**, exactly as for a principal. The
+  account slot layers exactly as a principal slot does — a `shared` layer over a
+  `local` one, the shared winning every contested key, and the floor `{id}` over
+  both.
   **`"*"` is never an attribute fetch key.** It is the all-accounts grant
   sentinel, not an account — `ValidateAccount` refuses to store a row for it, and
   the only bag that could answer "the attributes of every account" is one

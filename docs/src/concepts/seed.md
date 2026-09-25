@@ -539,8 +539,8 @@ refused with `APERTURE_ATTRIBUTE_PROVIDER_INVALID`.
 
 `Document.BuildAttributeRegistry(baseDir)` turns the block into a live
 `*provider.AttributeRegistry`, registering one in-memory provider per declared
-slot with a TTL of 0. It always returns a usable registry, so a host wires it
-unconditionally:
+slot — in that slot's **local** layer, with a TTL of 0. It always returns a usable
+registry, so a host wires it unconditionally:
 
 ```go
 attrs, err := doc.BuildAttributeRegistry(filepath.Dir(seedPath))
@@ -557,8 +557,10 @@ deny-safe rather than a non-decision. See
 [Wiring a `*provider.AttributeRegistry`](rules.md#wiring-a-providerattributeregistry).
 
 To back a slot with the host's real directory instead of an inline list, declare
-it under [`attribute_providers:`](#external-attribute-sources) — and note that
-when both sections claim one slot, the external entry wins it outright.
+it under [`attribute_providers:`](#external-attribute-sources). The two sections are
+not exclusive: when both claim one slot, the external entry becomes that slot's
+**shared** layer and the inline bags **layer under it** — see
+[Precedence: two layers, and the shared layer wins](#precedence-two-layers-and-the-shared-layer-wins).
 
 ### Why it is not a `metadata:` field on `principals:`
 
@@ -594,7 +596,10 @@ attribute_providers:
 ```
 
 `subject:` names the slot exactly as it does on `attributes:` — `user`,
-`machine`, or `account` — and each slot may be declared **at most once**.
+`machine`, or `account` — and each slot may be declared **at most once in this
+section**. Declaring it in `attributes:` as well is not a conflict: that block
+becomes the slot's local layer, under this entry
+([Precedence](#precedence-two-layers-and-the-shared-layer-wins)).
 `kind:` is the implementation, `csv` or `sql`; the two words are why the slot is
 spelled `subject:` here rather than `kind:`. Everything Aperture can check
 without reading a file or dialling a database is checked **at build**: the
@@ -608,7 +613,9 @@ genuinely different change rates and cardinalities, and one number covering all
 of them would tune for whichever entry was declared last. `ttl: "0"` never
 expires. A slot's TTL is the window a **revoked** clearance keeps authorizing
 for — see [`aperture attributes`](../cli/attributes.md), which reads it back and
-can close it.
+can close it. It is also per **layer**: a slot with an external source and an inline
+block caches each independently, so this `ttl:` is this source's own window and the
+inline bags' `0` is not averaged into it.
 
 `dsn:` is refused **by name** wherever it appears, here as on a `providers:`
 entry: credentials belong to a `connections:` entry's `dsn_env:`.
@@ -759,25 +766,52 @@ lazily on the first decision that needed the database.
 Slots are filled in slot order (`user`, `machine`, `account`), not file order, so
 a document with two bad slots always fails on the same one.
 
-### Precedence: the external source wins, entirely
+### Precedence: two layers, and the shared layer wins
 
-When both sections declare the same slot, the `attribute_providers:` entry
-**wins and every inline `attributes:` entry for that slot is discarded
-entirely**. There is no per-subject merge and no fallback: an inline id the
-external source happens to lack is simply not resolvable, exactly as if the entry
-had never been written. It is the [`providers:` / `objects:`
-rule](#when-both-sections-claim-a-type) at slot granularity, and for the same
-reason — field-level merging is the most useful-sounding behaviour and the most
-impossible to debug, because a rule reading a department the directory silently
-did not override is a support ticket nobody can reproduce.
+When both sections declare the same slot, **nothing is discarded**. The
+`attribute_providers:` entry becomes that slot's **shared** layer, the inline
+`attributes:` block becomes its **local** layer, a fetch reads their **merge**, and
+the shared layer **wins every key both serve**. So an inline id the external source
+lacks *is* resolvable — that is what the local layer is for — while an inline value
+for a key the external source does serve is never read, on any instance.
 
-The discard is **not silent**. `Document.AttributeCollisions()` reports the
-affected slots and the caller surfaces them (`aperture` prints a warning). Only
+This is deliberately **not** the [`providers:` / `objects:`
+rule](#when-both-sections-claim-a-type) at slot granularity. That one really is a
+discard. These two sections are not two candidates for one slot: a shared directory
+the deployment administers and a block in one instance's file are two **layers** of
+it, and refusing the second meant an instance could not add a field the directory
+does not carry without abandoning the directory.
+
+Which section is which layer is not a choice. `attribute_providers:` names a source
+every instance of the deployment reads — a [shared wiring
+row](storage.md) projected back into that section, or a directory — while
+`attributes:` is data written into one instance's file. If the file could override a
+key the directory serves, a file on one machine would change what
+`principal.clearance >= 3` compares against **on that machine only**: the same rule,
+the same grant, a different verdict, with nothing in a verdict, a trace or a note to
+say which layer answered. The precedence is fixed, unconfigurable, and independent of
+the order things were registered in. It mirrors the engine's [floor
+bag](rules.md#the-floor-bag-and-principalkind) one tier down, so the three tiers
+compose in one direction: **floor over shared over local**.
+
+What remains refused is field-level merging with a *configurable* or order-dependent
+winner — a rule reading a department one machine's file silently overrode is a support
+ticket nobody can reproduce. A fixed winner that is the deployment-wide source makes a
+contested key read the same on every instance, and
+[`declared_keys:`](#declared_keys--the-keys-a-slot-guarantees) is the other half: the
+keys only a local layer serves are unreachable from any rule the deployment can
+validate.
+
+The layering is **not silent**. `Document.AttributeCollisions()` reports the affected
+slots and the caller surfaces them (`aperture` prints a warning) — for a different
+reason than the object case. There the warning says data was discarded; here it says
+**which layer answers a contested key**, which is what an operator debugging an
+unexpected attribute value needs told and which no verdict, trace or note says. Only
 slot **names** are reported, never keys, so the warning cannot leak a directory's
-contents. `Document.AttributeSlotSources()` reports where each slot's bags come
-from — `"csv"`, `"sql"`, or `"inline"` — so a surface that displays the wiring
-reads the precedence rule instead of re-deriving it and eventually disagreeing
-with it.
+contents. `Document.AttributeSlotSources()` reports where each slot's bags come from —
+`"csv"`, `"sql"`, or `"inline"` — naming the **winner** for a slot both sections fill,
+so a surface that displays the wiring reads the rule instead of re-deriving it and
+eventually disagreeing with it.
 
 ## What is *not* in the file
 

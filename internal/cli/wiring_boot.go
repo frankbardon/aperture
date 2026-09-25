@@ -140,9 +140,11 @@ import (
 //     still in the file is an ordinary migration step.
 //   - attributes: against a shared attribute_providers: entry — refused by
 //     layerAttributeProviders, because the attribute builder takes no BuildOption
-//     and the posture has nowhere else to be stated. The hazard there is the worse
-//     of the two: a discarded inline bag is a MISSING bag, and a missing bag
-//     WIDENS an exclusive grant with nothing in the verdict saying so.
+//     and the posture has nowhere else to be stated. Note that WITHIN one document
+//     that pairing is not a discard at all but a layering, shared over local (see
+//     layerAttributeProviders and provider.AttributeLayer); what is refused here is
+//     two AUTHORS declaring one slot without either having seen the other's, which
+//     is the same thing every other section on this axis refuses.
 
 // connectionDSNEnvPrefix and connectionDSNEnvSuffix bracket the environment
 // variable a DB-declared connection name is read through when the local seed
@@ -346,17 +348,25 @@ func layerFieldTypes(shared []model.WiringFieldType, local *seed.Document) ([]se
 // the same collision arriving through the data section.
 //
 // The inline half has to be refused here rather than by a build option, because
-// BuildAttributeRegistryWithConnections takes none: the attribute seam's
-// external-wins-entirely precedence has no strict posture to turn on, so this is
-// the only place the additive rule can be stated for it.
+// BuildAttributeRegistryWithConnections takes none: there is no strict posture to
+// turn on for the attribute seam, so this is the only place the additive rule can be
+// stated for it.
 //
-// It is also the worse of the two hazards, and the reason the check is not
-// "tidiness". The external source wins a slot ENTIRELY — no per-subject merge, no
-// fallback — so a push on another host silently replaces this instance's inline
-// bags with a directory that has never heard of its subjects. Every read of that
-// slot then returns an empty bag, and an empty bag does not deny: it WIDENS an
-// exclusive grant, because a rule that excluded on an attribute no longer sees the
-// attribute. Nothing in the resulting verdict says a bag went missing.
+// WHAT THIS IS NOT. It is not the seed document's own precedence rule. Inside ONE
+// document a slot declared in both sections is a LAYERING and not a collision: the
+// attribute_providers: entry is the slot's shared layer, the inline attributes: block
+// is its local one, a fetch reads their merge, the shared layer wins every key both
+// serve, and nothing is dropped (provider.AttributeLayer is the full account). That
+// is why this refusal is about the AUTHORS rather than about the merge: the shared
+// rows were pushed by whoever administers the deployment and the local file belongs
+// to this machine, so a slot named by both is two authors declaring the same wiring
+// without either having seen the other's — which is the merge-authority rule every
+// other section here applies, refused in both directions rather than resolved.
+//
+// Refusing it keeps the boot honest at the cost of being stricter than the registry
+// needs to be: two layers could carry these two sources exactly as they carry one
+// document's. Relaxing it is a deliberate decision about the DB-vs-local axis and
+// not a consequence of the layering, so it is not made here.
 func layerAttributeProviders(shared []model.WiringAttributeProvider, local *seed.Document) ([]seed.AttributeProvider, error) {
 	out := make([]seed.AttributeProvider, 0, len(shared))
 	declared := make(map[string]struct{}, len(shared))
