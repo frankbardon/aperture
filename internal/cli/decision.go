@@ -62,11 +62,16 @@ type decisionStack struct {
 	// reports the fact and the caller surfaces it (reportCollisions).
 	collisions []string
 	// attributeCollisions are the attribute SLOTS declared in BOTH the seed's
-	// `attribute_providers:` and `attributes:` sections. The external source wins
-	// and the inline bags for those slots are discarded entirely — the same
-	// documented default, at slot granularity — and it is reported for the same
-	// reason: discarding data silently would be hostile, and `seed` has no logging
-	// path of its own.
+	// `attribute_providers:` and `attributes:` sections. Unlike collisions above,
+	// this is NOT a discard: the `attribute_providers:` entry becomes the slot's
+	// SHARED layer, the inline block becomes its LOCAL layer, and a fetch reads
+	// their merge with the shared layer winning every key both serve
+	// (`provider.AttributeLayer`). Nothing is dropped.
+	//
+	// It is still reported, for a different reason than the object case. There the
+	// warning says data was discarded; here it says which layer answers a
+	// contested key — which is exactly what an operator debugging an unexpected
+	// attribute value needs told, and which no verdict, trace or note says.
 	attributeCollisions []string
 	// conns are the database pools BuildRegistryWithConnections opened for the
 	// seed's `connections:` block — one per named connection, shared by every
