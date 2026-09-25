@@ -156,6 +156,21 @@ func (s decisionStack) reportCollisions(w io.Writer) {
 //     every existing single-instance deployment gives: no flag, no configuration,
 //     no behaviour change.
 //
+// # Wiring this instance cannot construct or route fails the boot HERE
+//
+// Nothing below this function degrades gracefully, because nothing below it can:
+// an object type with no working provider yields absent metadata, which a rule
+// reads as a missing path, and an attribute slot with no working provider yields a
+// NIL BAG, which widens an exclusive grant instead of denying. So every one of the
+// refusals this builder can meet takes the whole boot with it and the process exits
+// non-zero — two from wiringDocument (a stored kind no second host can construct,
+// naming the object type or the slot; a connection NAME this instance has no route
+// for, naming the connection), and the rest from seed's own builders, which already
+// name the entry they refused. What this function owes all of them is the
+// pass-through guard below: bootError re-stamps nothing that already carries a
+// code, because the code and its registry fixups ARE the remedy. See
+// wiring_boot.go's "Refusing to start beats degrading".
+//
 // ctx is the boot's context, and it is here rather than on a package-level
 // convenience because reading the wiring is a database read on the same store the
 // rest of this function decides through: a cancelled boot must stop at it.

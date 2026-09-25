@@ -315,11 +315,17 @@ func TestADurableStoreWithNoSeedIsWiredByNothingAtAll(t *testing.T) {
 // needs no change.
 func TestASharedConnectionNameRoutesThroughTheHostsOwnOpener(t *testing.T) {
 	set := sharedWiringSet(time.Now().UTC())
+	// Set BEFORE the projection, because the projection is where the route is
+	// resolved and a name with no route at all is refused there
+	// (APERTURE_WIRING_CONNECTION_UNROUTED — see
+	// TestASharedConnectionNameWithNoRouteRefusesTheBoot). The opener still decides
+	// what the pool actually is; the variable only says this instance HAS a route
+	// for the name.
+	t.Setenv(connectionDSNEnvVar("main"), unroutedDSN)
 	doc, err := wiringDocument(set, &seed.Document{})
 	if err != nil {
 		t.Fatalf("wiringDocument: %v", err)
 	}
-	t.Setenv(connectionDSNEnvVar("main"), unroutedDSN)
 
 	var opened []string
 	reg, conns, err := doc.BuildRegistryWithConnections("",
@@ -388,26 +394,23 @@ func TestALocalConnectionsEntryIsTheRouteForASharedName(t *testing.T) {
 
 // TestAnUnroutedSharedConnectionNamesTheVariableItWanted keeps the third route
 // honest. A name nothing routes is not silently dropped and does not fail on the
-// first decision that needed the database: it fails at BUILD, naming the variable
-// the operator has to export.
+// first decision that needed the database: it fails while the route is being
+// RESOLVED, naming the variable the operator has to export.
+//
+// E2-S3 moved the refusal earlier and gave it its own code. It used to be seed's
+// APERTURE_SQL_PROVIDER_CONNECTION, raised when the registry was built — a true
+// statement whose remedy points at a document's connections: block, which a
+// DB-declared name does not appear in. The requirement is unchanged (seed still
+// refuses an unset dsn_env, and still would if this check were deleted); what
+// changed is that the refusal now says the name came out of the shared wiring and
+// lists all three routes.
 func TestAnUnroutedSharedConnectionNamesTheVariableItWanted(t *testing.T) {
-	doc, err := wiringDocument(sharedWiringSet(time.Now().UTC()), nil)
-	if err != nil {
-		t.Fatalf("wiringDocument: %v", err)
-	}
 	t.Setenv(connectionDSNEnvVar("main"), "")
 
-	_, _, err = doc.BuildRegistryWithConnections("")
-	if err == nil {
-		t.Fatal("a shared connection name with no route built a registry anyway")
-	}
-	if got := aerr.CodeOf(err); got != aerr.APERTURE_SQL_PROVIDER_CONNECTION {
-		t.Fatalf("code = %q, want %q", got, aerr.APERTURE_SQL_PROVIDER_CONNECTION)
-	}
-	if want := connectionDSNEnvVar("main"); !strings.Contains(err.Error(), want) {
-		t.Fatalf("the refusal must name %q so an operator knows what to export; got %q",
-			want, err.Error())
-	}
+	_, err := wiringDocument(sharedWiringSet(time.Now().UTC()), nil)
+	mustRefuse(t, "a shared connection name with no route", err,
+		aerr.APERTURE_WIRING_CONNECTION_UNROUTED,
+		"main", connectionDSNEnvVar("main"))
 }
 
 // TestTwoSharedNamesCannotDeriveOneEnvironmentVariable refuses the ambiguity the
@@ -435,7 +438,11 @@ func TestTwoSharedNamesCannotDeriveOneEnvironmentVariable(t *testing.T) {
 	}
 
 	// A LOCAL route for one of them resolves it, because the collision is an
-	// artefact of the convention and not of the names.
+	// artefact of the convention and not of the names. The other one keeps the
+	// conventional route, which this instance must therefore have — an unrouted
+	// name is refused in its own right (APERTURE_WIRING_CONNECTION_UNROUTED), and
+	// this case is about the ambiguity and not about that.
+	t.Setenv(connectionDSNEnvVar("main_db"), unroutedDSN)
 	local := &seed.Document{Connections: map[string]seed.Connection{
 		"main-db": {DSNEnv: "ONE_URL"},
 	}}
@@ -580,11 +587,13 @@ func TestASharedProvidersReferencesSurviveTheProjection(t *testing.T) {
 	})
 	model.SortWiringProviders(set.Providers)
 
+	// Routed first: the projection resolves each shared name to this instance's
+	// route for it and refuses one it has none for.
+	t.Setenv(connectionDSNEnvVar("main"), unroutedDSN)
 	doc, err := wiringDocument(set, nil)
 	if err != nil {
 		t.Fatalf("wiringDocument: %v", err)
 	}
-	t.Setenv(connectionDSNEnvVar("main"), unroutedDSN)
 
 	reg, conns, err := doc.BuildRegistryWithConnections("",
 		seed.WithConnectionOpener(func(string, seed.ConnectionSettings) (seed.Pool, error) {

@@ -386,7 +386,53 @@ const (
 	// kind: csv remains entirely legal in a LOCAL seed document. It is this
 	// deployment's own file, and the instance that reads the seed is the instance
 	// the path belongs to.
+	//
+	// It is raised at BOTH ends of the wiring, for the same condition and with the
+	// same remedy: at the push, where the mistake is made, and on the BOOT that
+	// reads the rows back, where a row that got there anyway — written by hand,
+	// written by an older build, or written by a push that predates the check — is
+	// refused before the instance serves a decision. Without the boot half such a
+	// row reaches seed's own builder, which refuses it for the missing path: a true
+	// statement whose remedy ("add a path:") cannot be carried out, because the
+	// shared-wiring schema has no path column to add one to.
 	APERTURE_WIRING_KIND_UNSHAREABLE Code = "APERTURE_WIRING_KIND_UNSHAREABLE"
+	// APERTURE_WIRING_CONNECTION_UNROUTED — the shared wiring declares a connection
+	// NAME this instance has no route for. The message names the connection and the
+	// environment variable the conventional route reads its DSN from.
+	//
+	// The shared tables carry a connection's name and nothing else: which server,
+	// which credential, how big a pool and how long a statement may take are
+	// per-instance facts, and two instances may legitimately reach one logical
+	// database differently. So each name is resolved locally — a host's
+	// seed.WithConnectionOpener, a connections: entry under the same name in this
+	// instance's own seed file, or the conventional APERTURE_CONNECTION_<NAME>_DSN
+	// — and a name none of the three answers for is refused at boot.
+	//
+	// It is distinct from APERTURE_WIRING_CONNECTION_UNDECLARED, and the two are
+	// opposite halves of one question. That one is a PUSH-time refusal: an entry
+	// named a connection the pushed manifest does not list, which is a mistake in
+	// the document being deployed and is the same mistake on every instance. This
+	// one is a BOOT-time refusal: the manifest lists the name perfectly well and
+	// THIS HOST has nowhere to point it, which is a per-instance fact and is
+	// routinely true on one instance of a fleet and false on its peers.
+	//
+	// It is distinct from APERTURE_SQL_PROVIDER_CONNECTION, which seed raises for
+	// an unset dsn_env, because the remedy differs and the remedy is the whole
+	// point: that refusal sends an operator to a document's connections: block, and
+	// a DB-declared name does not appear in this instance's document at all. An
+	// operator told only "connection "main" reads its DSN from a variable that is
+	// unset" greps a seed file that has never mentioned main, because the name came
+	// out of a database somebody else pushed to.
+	//
+	// It is a boot refusal rather than a decision-time one because a connection
+	// that fails under a decision does not fail AS a failure. An object provider
+	// that cannot reach its database yields no metadata, and a rule reading
+	// object.tier against absent metadata reads a missing path; an attribute
+	// provider that cannot reach its database yields a nil bag under the leniency
+	// contract, and a missing bag WIDENS an exclusive grant. Both authorize more
+	// than the deployment asked for, and nothing in either verdict says a route was
+	// missing.
+	APERTURE_WIRING_CONNECTION_UNROUTED Code = "APERTURE_WIRING_CONNECTION_UNROUTED"
 	// APERTURE_WIRING_LOCAL_COLLISION — this instance's LOCAL seed file declares
 	// an object type or an attribute slot the shared wiring in its database
 	// already declares. The message names the colliding entries and the two
@@ -817,6 +863,17 @@ var Registry = map[Code]Metadata{
 			"Replace the kind: csv entry named in the message with kind: sql reading through a connections: entry, so every instance reaches the same data without a shared filesystem.",
 			"Or leave that entry out of the pushed wiring and keep it in the LOCAL seed document, where the path belongs to the instance that reads it.",
 			"A csv entry's only data source is a filesystem path; the shared-wiring schema has no path column, because a relative path resolves against the seed file's own directory and an absolute one is a guess about the other host's disk.",
+			"On a BOOT this refusal means the row is already deployed — written by hand, or by a build that predates the check. Re-push a wiring document without it (`aperture wiring push`), or read the same data through kind: sql; there is no path column to add a path to.",
+		},
+	},
+	APERTURE_WIRING_CONNECTION_UNROUTED: {
+		Message: "the shared wiring declares a connection name this instance has no route for",
+		Fixups: []string{
+			"Export the environment variable the message names — APERTURE_CONNECTION_<NAME>_DSN — with this instance's DSN for that connection. It is the conventional route and needs no seed file.",
+			"Or declare a connections: entry under the same name in this instance's --seed file, with dsn_env: naming a variable of your choosing; a local entry is that name's route, not a competing declaration, and it also carries the pool sizes and query_timeout.",
+			"Or, in a Go host, supply seed.WithConnectionOpener and build the pool for that name yourself — the one seam a host needs, and the only one that never reads a DSN from the environment.",
+			"Check which names this deployment expects with `aperture wiring show --store <dsn>`: the shared tables carry the connection NAME and nothing else, so every instance must supply its own route for each one.",
+			"Do not work around it by removing the entry that uses the connection: an object provider that cannot reach its database yields no metadata, and an attribute provider that cannot yields a nil bag — which widens an exclusive grant rather than denying.",
 		},
 	},
 	APERTURE_WIRING_LOCAL_COLLISION: {
@@ -899,6 +956,7 @@ var AllCodes = []Code{
 	APERTURE_WIRING_OBJECT_TYPE_UNKNOWN,
 	APERTURE_WIRING_CONNECTION_UNDECLARED,
 	APERTURE_WIRING_KIND_UNSHAREABLE,
+	APERTURE_WIRING_CONNECTION_UNROUTED,
 	APERTURE_WIRING_LOCAL_COLLISION,
 	APERTURE_WIRING_NOTHING_DEPLOYED,
 	APERTURE_WIRING_OUTPUT_EXISTS,

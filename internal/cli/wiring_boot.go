@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"slices"
 	"sort"
 	"strings"
@@ -75,6 +76,35 @@ import (
 // on any later decision — it surfaces as a different verdict, on an instance
 // that looks identically configured.
 //
+// # Refusing to start beats degrading, and the reason is not tidiness
+//
+// Three things can be in the shared wiring that THIS instance cannot turn into a
+// working registry, and all three fail the boot rather than being skipped:
+//
+//   - A kind no second host can construct from a row — today kind: csv, whose only
+//     data source is a filesystem path the tables have no column for. Refused by
+//     layerProviders / layerAttributeProviders through checkWiringKind, the same
+//     function the push calls, naming the object type or the slot.
+//   - An incomplete statement set, an unparseable ttl, a reference to a type the
+//     registry does not serve, a field type outside the two-word vocabulary. NOT
+//     refused here: those belong to seed's own builders, they already name the
+//     entry, and restating them would be the rule-in-two-places hazard this file's
+//     whole design avoids. What this layer owes them is only that buildDecisionStack
+//     does not BURY them — see bootError's pass-through guard.
+//   - A connection name this instance has no route for. Refused by
+//     connectionRoutes / refuseUnroutedConnections, naming the connection.
+//
+// Degrading instead would be silent in the one direction that matters. An object
+// type with no working provider does not error on a decision: a rule reading
+// object.tier reads a missing path. An attribute slot with no working provider is
+// worse — the leniency contract collapses a provider failure to a NIL BAG, and a
+// rule that excluded on an attribute it can no longer see stops excluding, so the
+// grant WIDENS (rules/attribute_leniency_test.go,
+// TestAMissingBagWidensAnExclusiveGrant). Neither shows up in a verdict, a trace or
+// a note. A per-decision refusal is not the alternative either: it would let a
+// misconfigured instance serve traffic for the types it happened to have, which is
+// a fleet that answers the same question two ways and no operator looking.
+//
 // # Where the collision check lives, and why part of it is not here
 //
 // The rule is about the REGISTRY, not about which syntax declared the entry, so
@@ -133,6 +163,24 @@ import (
 const (
 	connectionDSNEnvPrefix = "APERTURE_CONNECTION_"
 	connectionDSNEnvSuffix = "_DSN"
+)
+
+// sharedProvidersSection and sharedAttributeProvidersSection are the section
+// names a BOOT refusal spells, where a PUSH refusal spells "providers" and
+// "attribute_providers".
+//
+// The word "shared" is the whole difference and it is load-bearing. checkWiringKind
+// is one function reached from both ends of the wiring — it is called at the push
+// (wiring_project.go) and again here, on the boot that reads the rows back — and
+// its message says which SECTION the offending entry is in. At a push that section
+// is a key in the document the operator is holding; at a boot it is a row in a
+// database somebody else pushed to, possibly from another host, and an operator
+// sent to look in "providers:" would grep a local seed file that never mentioned
+// the type. Naming the section differently is how one message serves both without
+// sending half its readers to the wrong file.
+const (
+	sharedProvidersSection          = "shared providers:"
+	sharedAttributeProvidersSection = "shared attribute_providers:"
 )
 
 // wiringDocument projects a non-empty shared wiring set into the four wiring
@@ -220,10 +268,22 @@ func wiringBuildOptions() []seed.BuildOption {
 // file is the only place a csv provider can ever be declared, and dropping it
 // from a DB-wired boot would make pushing any wiring at all a silent loss of
 // every csv-backed type.
+//
+// Which is exactly why a SHARED entry's kind is checked here and a local one's is
+// not. The two sections are held to different vocabularies on purpose: the local
+// file may say anything seed's builder implements, and the shared rows may only say
+// what a second host can construct from a row (checkWiringKind — today, kind: sql).
+// The refusal is the same function the push calls, so there is one vocabulary in
+// one place with two call sites, and it names the OBJECT TYPE, which is the thing
+// an operator can go and look up.
 func layerProviders(shared []model.WiringProvider, local *seed.Document) ([]seed.Provider, error) {
 	out := make([]seed.Provider, 0, len(shared))
 	declared := make(map[string]struct{}, len(shared))
 	for _, p := range shared {
+		if err := checkWiringKind(p.Kind, sharedProvidersSection,
+			map[string]any{"object_type": p.ObjectType}); err != nil {
+			return nil, err
+		}
 		out = append(out, wiringSeedProvider(p))
 		declared[p.ObjectType] = struct{}{}
 	}
@@ -301,6 +361,15 @@ func layerAttributeProviders(shared []model.WiringAttributeProvider, local *seed
 	out := make([]seed.AttributeProvider, 0, len(shared))
 	declared := make(map[string]struct{}, len(shared))
 	for _, ap := range shared {
+		// The kind is checked for the same reason it is on the provider side, and
+		// the stakes are the worse of the two: a shared kind: csv row projects to a
+		// pathless entry, and a slot whose provider cannot be constructed is a slot
+		// that answers with a nil bag — which widens an exclusive grant instead of
+		// denying. Refused before a registry exists, naming the SLOT.
+		if err := checkWiringKind(ap.Kind, sharedAttributeProvidersSection,
+			map[string]any{"subject": strings.TrimSpace(ap.Subject)}); err != nil {
+			return nil, err
+		}
 		out = append(out, wiringSeedAttributeProvider(ap))
 		declared[strings.TrimSpace(ap.Subject)] = struct{}{}
 	}
@@ -374,11 +443,15 @@ func plural(one, many string, n int) string {
 //
 // Path is left empty deliberately, and there is nothing to leave out: kind: csv
 // cannot be SHARED wiring (a filesystem path is machine-local), so the shared
-// tables have no path column and a stored entry can never want one. A row that
-// nevertheless spells kind: csv — hand-written, or written by an older build — is
-// refused by seed's own buildObjectProvider for the missing path, which is the
-// right refusal for the wrong reason; the reason is stated at the push, where the
-// mistake is made.
+// tables have no path column and a stored entry can never want one.
+//
+// A row that nevertheless spells kind: csv — hand-written, or written by a build
+// that predates the push check — never reaches this function: layerProviders
+// refuses it first, with checkWiringKind's APERTURE_WIRING_KIND_UNSHAREABLE naming
+// the object type. Letting it through would have reached seed's own
+// buildObjectProvider, which refuses a pathless csv entry for the missing path —
+// the right refusal for the wrong reason, and a remedy an operator cannot carry
+// out, because there is no path column to put a path in.
 func wiringSeedProvider(p model.WiringProvider) seed.Provider {
 	var refs map[string]string
 	if len(p.References) > 0 {
@@ -469,10 +542,12 @@ func wiringSeedAttributeProvider(ap model.WiringAttributeProvider) seed.Attribut
 //     (connectionDSNEnvVar), which is what `aperture serve --store <dsn>` with no
 //     --seed has left.
 //
-// A name with no route at all is not refused here. It resolves to a dsn_env:
-// naming a variable, and seed.resolveConnection refuses an unset one by name with
-// APERTURE_SQL_PROVIDER_CONNECTION — the same refusal, with the same remedy, that
-// a local file's own connection raises.
+// A name none of the three answers for is refused HERE, before a pool is opened
+// and long before a decision is made, with APERTURE_WIRING_CONNECTION_UNROUTED
+// naming the connection and the variable the conventional route wanted
+// (refuseUnroutedConnections, which also explains why leaving it to
+// seed.resolveConnection's APERTURE_SQL_PROVIDER_CONNECTION hands the operator a
+// remedy pointing at a file that never mentioned the name).
 //
 // # Why the WHOLE local block is carried, not only the shared names it routes
 //
@@ -527,10 +602,83 @@ func connectionRoutes(manifest []model.WiringConnection, local *seed.Document) (
 				strings.Join(quoteEach(names), ", "), env),
 			map[string]any{"connections": names, "dsn_env": env})
 	}
+	// The ambiguity above is checked FIRST, deliberately: an ambiguous manifest is
+	// a deployment-wide mistake and every instance in the fleet must report the
+	// same one, where an absent route is a per-instance fact that is routinely
+	// true here and false on the peer.
+	if err := refuseUnroutedConnections(derived); err != nil {
+		return nil, err
+	}
 	if len(out) == 0 {
 		return nil, nil
 	}
 	return out, nil
+}
+
+// refuseUnroutedConnections fails the boot for every DB-declared connection name
+// that fell through to the conventional environment variable and found it unset or
+// empty — that is, a name this instance has no route for at all.
+//
+// derived maps each conventional variable to the names that resolved to it, so only
+// names the local document did NOT route are in it. A locally-routed name is that
+// name's route and is never examined here; a Go host does not reach this function
+// at all, because wiringDocument is unexported in an internal package and a host
+// embedding the library builds its own document and answers for every name through
+// seed.WithConnectionOpener.
+//
+// # Why this is not the same check twice
+//
+// seed.resolveConnection already refuses an unset dsn_env, and it runs on this
+// path: openConnections resolves EVERY declared connection before it opens any
+// pool, ahead of the ConnectionOpener, so nothing here relaxes a requirement and
+// nothing here adds one. What it adds is the REMEDY, and the remedy is the whole
+// reason it exists. seed's refusal reads "connection "main" reads its DSN from
+// APERTURE_CONNECTION_MAIN_DSN, which is unset" and its fixups send an operator to
+// a document's connections: block — and a DB-declared name is not in this
+// instance's document, so the operator greps a seed file that has never mentioned
+// main. This refusal says the name came out of the SHARED WIRING and lists the
+// three routes, one of which is "export this variable" and needs no file at all.
+//
+// The duplication cannot drift in the dangerous direction, which is the reason it
+// is acceptable at all. Both checks are refusals of the same absence: if seed's
+// were ever relaxed this one still fails the boot, and if this one were deleted
+// seed's still does. There is no combination in which an unrouted name boots.
+//
+// Every unrouted name is named in one refusal, sorted, so an operator exports one
+// batch of variables rather than rediscovering the next missing one on each
+// restart.
+func refuseUnroutedConnections(derived map[string][]string) error {
+	type unrouted struct {
+		name string
+		env  string
+	}
+	var missing []unrouted
+	for _, env := range sortedMapKeys(derived) {
+		if strings.TrimSpace(os.Getenv(env)) != "" {
+			continue
+		}
+		names := derived[env]
+		sort.Strings(names)
+		for _, name := range names {
+			missing = append(missing, unrouted{name: name, env: env})
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	pairs := make([]string, 0, len(missing))
+	names := make([]string, 0, len(missing))
+	envs := make([]string, 0, len(missing))
+	for _, m := range missing {
+		pairs = append(pairs, fmt.Sprintf("%q (%s)", m.name, m.env))
+		names = append(names, m.name)
+		envs = append(envs, m.env)
+	}
+	return aerr.WithContext(aerr.APERTURE_WIRING_CONNECTION_UNROUTED,
+		fmt.Sprintf("cli: the shared wiring in this instance's database declares connection %s %s, and this instance has no route for %s: the shared tables carry a connection's NAME and nothing else, because which server, which credential and how big a pool are per-instance facts. Export the variable named beside each one with this instance's DSN, or declare a connections: entry under the same name in this instance's --seed file naming a dsn_env: of your choosing (a Go host supplies seed.WithConnectionOpener instead). It is refused at BOOT rather than at the first decision that needed the database, because an object provider that cannot reach its database yields no metadata and an attribute provider that cannot yields a nil bag — and a missing bag WIDENS an exclusive grant instead of denying it",
+			plural("name", "names", len(pairs)), strings.Join(pairs, ", "),
+			plural("it", "them", len(pairs))),
+		map[string]any{"connections": names, "dsn_env": envs})
 }
 
 // connectionDSNEnvVar is the environment variable a DB-declared connection name

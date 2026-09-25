@@ -122,8 +122,32 @@ name, in one of three ways — a Go host's `seed.WithConnectionOpener`, a
 `connections:` entry under the same name in this instance's own seed file, or the
 conventional environment variable `APERTURE_CONNECTION_<NAME>_DSN` (every
 character that is not a letter or digit becomes an underscore, so `main` reads
-`APERTURE_CONNECTION_MAIN_DSN`). A name with no route at all refuses the boot,
-naming the variable it wanted.
+`APERTURE_CONNECTION_MAIN_DSN`). A name with no route at all refuses the boot with
+`APERTURE_WIRING_CONNECTION_UNROUTED`, naming the connection and the variable it
+wanted — every unrouted name in one refusal, so a new instance is configured in one
+pass rather than one restart per connection.
+
+### An instance will not start on wiring it cannot construct
+
+A pushed entry whose `kind:` this instance cannot build from a row refuses the boot
+with `APERTURE_WIRING_KIND_UNSHAREABLE`, naming the object type or the attribute
+slot. In practice that is a stored `kind: csv` — `aperture wiring push` refuses one,
+so reaching a boot means the row was written by hand or by an older build, and there
+is no `path:` to add because the shared tables have no column for one. The other
+refusals a boot can raise come from the seed builders and already name the entry
+they refused: an incomplete statement set, an unparseable `ttl:`, a `references:`
+target no provider serves, a `field_types:` word outside `date`/`datetime`.
+
+Refusing to start is the deliberate choice, and degrading is not the gentler
+option. An object type with no working provider does not error on a decision — a
+rule reading `object.tier` reads a *missing path*. An attribute slot with no working
+provider is worse: the [leniency contract](../concepts/providers.md) collapses the
+failure to an empty bag, so a rule that excluded on an attribute it can no longer
+see stops excluding, and the grant **widens**. Nothing in the resulting verdict,
+trace or note says a provider was missing. A per-decision refusal was rejected for
+the same reason: it would let a misconfigured instance keep serving traffic for the
+types it happened to have, so two instances that look identically configured answer
+one question two ways.
 
 ## Scoping a decision: `--account`
 
