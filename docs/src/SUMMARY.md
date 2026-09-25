@@ -59,6 +59,7 @@
 # Operations
 
 - [Deployment](operations/deployment.md)
+- [Two instances, one store](operations/two-instance-topology.md)
 - [Performance & NFR](operations/performance.md)
 - [Troubleshooting](operations/troubleshooting.md)
 
