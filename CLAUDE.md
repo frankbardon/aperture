@@ -308,8 +308,11 @@ Gated, NOT in `make test` (a loaded runner would flake them):
   not that a read of one renders the same bytes as a read of the other, and a pull
   that reordered a section or dropped a field on one backend only would pass every
   one of them and make a wiring diff report drift between two identically-wired
-  deployments. Same gate contract (skip ungated, fail on an empty DSN), same two
-  variables, so one exported DSN drives every live suite in one shell.
+  deployments. `aperture wiring diff` is in the same suite, for the same reason and
+  in both halves: clean against the document it was pushed from, and the **same
+  report** from both backends for the same drift. Same gate contract (skip ungated,
+  fail on an empty DSN), same two variables, so one exported DSN drives every live
+  suite in one shell.
 
 ## House rules not derivable from the code
 
