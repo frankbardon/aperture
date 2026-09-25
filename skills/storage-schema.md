@@ -1,6 +1,6 @@
 ---
 name: storage-schema
-description: The contract Aperture's own database schema keeps — the apt_ identifier convention, the one timestamp encoding (int64 Unix nanoseconds, 0 means unset, 1677-2262), the eleven foreign-key edges with their ON DELETE/ON UPDATE actions, the three integrity checks SQL cannot express (the two wildcard-bearing account_id columns and the polymorphic grant subject), the columns that deliberately carry NO foreign key and why touching that decision breaks the audit trail, the five shared-wiring tables and the secret they may never carry, the SQLite/Postgres dialect divergences, the gates that keep the two schema files honest, and the operator facts (schema qualifier, DSN selection, account teardown, seed write order) that are otherwise misdiagnosed as bugs.
+description: The contract Aperture's own database schema keeps — the apt_ identifier convention, the one timestamp encoding (int64 Unix nanoseconds, 0 means unset, 1677-2262), the eleven foreign-key edges with their ON DELETE/ON UPDATE actions, the three integrity checks SQL cannot express (the two wildcard-bearing account_id columns and the polymorphic grant subject), the columns that deliberately carry NO foreign key and why touching that decision breaks the audit trail, the five shared-wiring tables and the secret they may never carry, their all-or-nothing ReplaceWiring/GetWiring surface and why DeclaredKeys is a struct rather than a slice, the SQLite/Postgres dialect divergences, the gates that keep the two schema files honest, and the operator facts (schema qualifier, DSN selection, account teardown, seed write order) that are otherwise misdiagnosed as bugs.
 applies_to: [library, cli, http]
 ---
 
@@ -106,11 +106,18 @@ cannot carry the nanosecond-exact round trip `storagetest` asserts.
 with **no default**. An audit record with no instant is not a record.
 
 **`stampedEntities()` in `storage/storagetest/storagetest.go` is the suite's
-definition of "every stamped entity"** — today ten: Account, Membership,
-ObjectType, Permission, Principal, Role, Group, Grant, Template, Rule. Adding a
-`CreatedAt`/`UpdatedAt` pair to a new model entity means **adding it there**. If
-you do not, the unset round-trip, precision, boundary and out-of-range cases
-silently skip it and nothing goes red.
+definition of "every stamped entity"** — today fourteen: Account, Membership,
+ObjectType, Permission, Principal, Role, Group, Grant, Template, Rule, and the
+four stamped wiring entities WiringConnection, WiringProvider, WiringFieldType,
+WiringAttributeProvider. Adding a `CreatedAt`/`UpdatedAt` pair to a new model
+entity means **adding it there**. If you do not, the unset round-trip, precision,
+boundary and out-of-range cases silently skip it and nothing goes red.
+
+There are fourteen and not fifteen because `apt_wiring_provider_references`
+carries no timestamps — its history is its provider entry's, and the `CASCADE`
+edge means it cannot outlive it. The wiring entries' `put` is a whole-set
+`ReplaceWiring` carrying one entity, because that is the only write those tables
+have; see "The wiring read and write surface" below.
 
 `normTime(t) = t.UTC().Round(0)` is the suite's normalisation: it fixes location
 and strips the monotonic reading, and it does **not** truncate. No tolerance or
@@ -355,6 +362,76 @@ Four properties are load-bearing, and three of them are about what is **absent**
 owned child tables carry none: its history is its provider entry's, and the
 `CASCADE` edge means it cannot outlive it.
 
+### The wiring read and write surface
+
+The Go side lives in `model/wiring.go` (`WiringConnection`, `WiringProvider`,
+`WiringReference`, `WiringFieldType`, `WiringAttributeProvider`, `DeclaredKeys`,
+`WiringSet`) and on `model.Storage`:
+
+| Method | What it is |
+|---|---|
+| `ReplaceWiring(ctx, WiringSet)` | the **only** write. All of it or none of it. |
+| `GetWiring(ctx)` | the boot read: all four sections, one snapshot. |
+| `ListWiring{Connections,Providers,FieldTypes,AttributeProviders}` | the per-section reads `wiring show` uses. |
+| `GetWiring{Connection,Provider,FieldType,AttributeProvider}` | per-entity reads, `APERTURE_NOT_FOUND` for an absent key. |
+
+Five things about that surface are decisions rather than details:
+
+- **There is no per-row `Put`/`Delete`.** Wiring is only meaningful whole. A
+  provider entry naming a connection the manifest does not list is not half-valid
+  wiring, and an instance booting against a half-written set would build its
+  registries missing exactly the entries whose write failed, while reporting
+  nothing. `ReplaceWiring` validates the whole set, empties all five tables, and
+  writes the new one in a single transaction. Pushing a zero `WiringSet` clears
+  the wiring; **that** is the delete.
+- **`GetWiring` is transactional for the mirror reason.** A boot that read the
+  provider list from before a push and the field-type list from after it would
+  build a registry that never existed in the database at any instant.
+- **An empty set is an answer, not a failure.** `WiringSet.IsEmpty()` on a
+  database nothing has been pushed to is what tells a booting instance to fall
+  back to its local seed file.
+- **Every read returns canonical order** — connections by name, providers by
+  object type, a provider's references by field, field types by object type then
+  field, attribute slots by subject. A read back has to be re-pushable byte for
+  byte, so map or insertion order is not an option, and Postgres pins it with
+  `COLLATE "C"` like every other `ORDER BY` in that backend.
+- **Two refusals, deliberately different codes.** A malformed set — an empty key,
+  a negative `max_size`, the same object type or slot declared twice — is
+  `APERTURE_INVALID_INPUT` from `model.ValidateWiringSet`, because a collision
+  inside one pushed set is a bad push and not a database failure, and saying so in
+  the model is what lets the in-memory backend refuse the same set with the same
+  code as the two with primary keys. A provider entry serving an object type the
+  model does not have is `APERTURE_STORAGE_CONSTRAINT`, from the real foreign key.
+
+**`model.DeclaredKeys` is a struct and not a `[]string`,** and that is the
+`''`-versus-`'[]'` distinction made unlosable. A nil-versus-empty slice expresses
+it and loses it silently: `storage/memory`'s `cloneStrings` returns nil for an
+empty input, and `encoding/json` renders a nil slice as `null` and an empty one as
+`[]`, so three different layers could flatten *declared empty* into *never
+declared* with nothing going red. The explicit `Declared` bit cannot be dropped by
+accident, and `DeclaredKeys.Encode` / `model.ParseDeclaredKeys` are the one
+encoder both SQL backends call — the single place this repository's
+"every statement is written twice" rule is suspended, because a drifted twin here
+would not produce a visibly wrong row, it would produce a slot that silently
+stopped being enforced.
+
+**Storage validates STRUCTURE only.** It does not check that a `kind` is one the
+builder implements, that a `connection` appears in the manifest (the column
+carries no foreign key on purpose), that a `declared_type` is `date` or
+`datetime`, or that a `ttl` parses as a duration. Those belong to the layer that
+BUILDS the wiring, which owns the vocabulary; duplicating them here would put each
+rule in two places that can disagree.
+
+**The `apt_wiring_provider_references` CASCADE is asymmetric between the
+backends, on purpose.** The two SQL backends must **not** write the reference
+cleanup by hand — the schema's `ON DELETE CASCADE` is the only implementation
+there, for the reason every cascading edge gives: two halves that cover for each
+other leave the conformance suite green when either one breaks. `storage/memory`
+has no schema to do it, so it holds the references *inside* the provider entry
+(`WiringProvider.References`), exactly as a principal's role list lives inside the
+principal — which makes the cascade structural rather than remembered, because
+there is no separate reference map to forget to clear.
+
 ## The two dialects, and where they legitimately differ
 
 `storage/postgres/schema.sql` is the peer of the SQLite file: same 19 tables, same
@@ -525,6 +602,14 @@ Update-Demand rows live in `CLAUDE.md`. In short:
 - **A wiring column** → both `schema.sql` files, the wiring table above, and
   `docs/src/concepts/storage.md`. A column that could carry a DSN, a credential or
   a filesystem path is not a wiring column; see the section above for why.
+- **The wiring read/write surface** (`model/wiring.go`, or a wiring method on
+  `model.Storage`) → all four implementors, `stampedEntities()` if the entity is
+  stamped, the wiring conformance cases in `storage/storagetest`,
+  "The wiring read and write surface" above, and the same section in
+  `docs/src/concepts/storage.md`. Two properties are the contract rather than the
+  implementation: `ReplaceWiring` is **all-or-nothing** and a read is **canonical
+  order**, because both are what make a push-and-read-back round trip
+  re-pushable.
 - **`physicalTypes` / `refusedTypes`** in `internal/schemagate` → the dialect
   divergence list above and the affected `schema.sql` header. Changing that table
   changes what "the dialects agree" *means*, which is not a refactor.

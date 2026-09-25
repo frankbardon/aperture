@@ -9,16 +9,23 @@ import (
 	"github.com/frankbardon/aperture/storage/memory"
 )
 
-// This file is the proof that the in-memory backend enforces, by hand, the same
-// nine referential edges storage/sqlite/schema.sql declares as foreign keys —
-// six ON DELETE RESTRICT and three ON DELETE CASCADE — in BOTH directions: a
-// write may not name a parent that does not exist, and a delete either is
+// This file is the proof that the in-memory backend enforces, by hand, the NINE
+// MODEL-STATE referential edges storage/sqlite/schema.sql declares as foreign
+// keys — six ON DELETE RESTRICT and three ON DELETE CASCADE — in BOTH directions:
+// a write may not name a parent that does not exist, and a delete either is
 // refused (RESTRICT) or takes its children with it (CASCADE).
 //
-// It is a targeted suite rather than conformance cases on purpose. storagetest
-// is the shared contract and gains its refusal cases in E2-S4; until then a
-// green conformance run proves only that nothing BROKE, not that anything is
-// enforced. These tests are what say it is.
+// The schema declares ELEVEN edges. The two this file does not cover are the
+// shared-WIRING pair (apt_wiring_providers.object_type RESTRICT and
+// apt_wiring_provider_references.object_type CASCADE), and they are covered in
+// storage/storagetest instead, which by then had gained its own refusal cases and
+// holds all three backends to them at once. Adding them here as well would be a
+// second, narrower assertion of the same thing.
+//
+// It is a targeted suite rather than conformance cases on purpose: when it was
+// written, storagetest asserted no refusal at all, so a green conformance run
+// proved only that nothing BROKE, not that anything was enforced. These tests are
+// what said it was.
 //
 // The mirror image of this file is storage/sqlite/foreign_keys_test.go. The two
 // worlds are seeded the same way and assert the same outcomes, because the whole
@@ -159,11 +166,13 @@ func TestAWriteCannotNameAParentThatDoesNotExist(t *testing.T) {
 			aerr.APERTURE_NOT_FOUND)
 	})
 
-	// The three CASCADE edges have no separate write direction to refuse: their
-	// join rows are only ever written as part of the owner record itself (a
-	// principal's RoleIDs, a role's PermissionIDs, a group's MemberPrincipalIDs),
-	// so a row naming a nonexistent OWNER cannot be expressed. Their delete
-	// direction is the whole of their behaviour, and it is below.
+	// The three model-state CASCADE edges have no separate write direction to
+	// refuse: their join rows are only ever written as part of the owner record
+	// itself (a principal's RoleIDs, a role's PermissionIDs, a group's
+	// MemberPrincipalIDs), so a row naming a nonexistent OWNER cannot be expressed.
+	// Their delete direction is the whole of their behaviour, and it is below. The
+	// fourth CASCADE edge, the wiring one, is the same shape for the same reason —
+	// see this file's header for where it is covered.
 }
 
 // ---------------------------------------------------------------------------

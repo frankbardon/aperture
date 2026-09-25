@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strconv"
 	"strings"
@@ -63,6 +64,12 @@ func Run(t *testing.T, newStore Factory) {
 	t.Run("TemplateValidation", func(t *testing.T) { testTemplateValidation(t, newStore(t)) })
 	t.Run("RuleCRUD", func(t *testing.T) { testRuleCRUD(t, newStore(t)) })
 	t.Run("RuleValidation", func(t *testing.T) { testRuleValidation(t, newStore(t)) })
+	t.Run("WiringRoundTrip", func(t *testing.T) { testWiringRoundTrip(t, newStore(t)) })
+	t.Run("WiringReplaceIsWholesale", func(t *testing.T) { testWiringReplaceIsWholesale(t, newStore(t)) })
+	t.Run("WiringDeclaredKeySetIsOptional", func(t *testing.T) { testWiringDeclaredKeySetIsOptional(t, newStore(t)) })
+	t.Run("WiringValidation", func(t *testing.T) { testWiringValidation(t, newStore(t)) })
+	t.Run("WiringReplaceIsAllOrNothing", func(t *testing.T) { testWiringReplaceIsAllOrNothing(t, newStore(t)) })
+	t.Run("WiringNotFoundSemantics", func(t *testing.T) { testWiringNotFoundSemantics(t, newStore(t)) })
 	t.Run("AtomicCommit", func(t *testing.T) { testAtomicCommit(t, newStore(t)) })
 	t.Run("AtomicRollback", func(t *testing.T) { testAtomicRollback(t, newStore(t)) })
 
@@ -108,6 +115,39 @@ func mustCode(t *testing.T, err error, want aerr.Code) {
 	if got := aerr.CodeOf(err); got != want {
 		t.Fatalf("error code = %s, want %s (err: %v)", got, want, err)
 	}
+}
+
+// mustSingleCodedError asserts a refusal carries EXACTLY ONE Aperture-coded error
+// in its chain, on top of whatever code CodeOf reports.
+//
+// The code alone is not enough. aerr.Wrap re-stamps rather than passing through,
+// so a call site that wrapped an already-coded error in the SAME code produces a
+// chain two deep that CodeOf cannot tell from a chain one deep — and the next
+// edit, which wraps in a DIFFERENT code, silently buries the specific refusal and
+// its fixups under a generic one. Depth is what proves the pass-through guard
+// (`if aerr.CodeOf(err) != "" { return err }`) is actually there.
+func mustSingleCodedError(t *testing.T, what string, err error) {
+	t.Helper()
+	if depth := codedDepth(err); depth != 1 {
+		t.Fatalf("%s: %d Aperture-coded errors in the chain, want exactly 1 — "+
+			"aerr.Wrap RE-STAMPS, so a call site that wraps an already-coded error "+
+			"replaces the code a caller reads. Write the guard: "+
+			"if aerr.CodeOf(err) != \"\" { return err }. (err: %v)", what, depth, err)
+	}
+}
+
+// codedDepth counts the Aperture-coded errors in a chain.
+func codedDepth(err error) int {
+	depth := 0
+	for err != nil {
+		var ce *aerr.CodedError
+		if !errors.As(err, &ce) {
+			break
+		}
+		depth++
+		err = errors.Unwrap(ce)
+	}
+	return depth
 }
 
 // seedDocumentType creates the canonical "document" object type used across the
@@ -1174,6 +1214,81 @@ func stampedEntities() []stampedEntity {
 				return r.CreatedAt, r.UpdatedAt, err
 			},
 		},
+
+		// THE FOUR STAMPED WIRING ENTITIES. There are four and not five:
+		// apt_wiring_provider_references carries no timestamps, for the reason the
+		// other owned child tables carry none — its history is its provider entry's
+		// and the CASCADE edge means it cannot outlive it. Do not add a fifth entry
+		// for it.
+		//
+		// Each put is a whole-set ReplaceWiring carrying exactly this one entity,
+		// because that is the ONLY write the wiring tables have: the set is
+		// meaningful whole, so there is no per-row upsert to call. That makes each
+		// entry's put clear the other three sections, which is harmless here — every
+		// case puts and then immediately gets the same entity — and it is the one
+		// shape that exercises the real write path rather than a test-only one.
+		{
+			name: "WiringConnection",
+			put: func(s model.Storage, c, u time.Time) error {
+				return s.ReplaceWiring(ctx(), model.WiringSet{
+					Connections: []model.WiringConnection{
+						{Name: "main", CreatedAt: c, UpdatedAt: u},
+					},
+				})
+			},
+			get: func(s model.Storage) (time.Time, time.Time, error) {
+				wc, err := s.GetWiringConnection(ctx(), "main")
+				return wc.CreatedAt, wc.UpdatedAt, err
+			},
+		},
+		{
+			name: "WiringProvider",
+			put: func(s model.Storage, c, u time.Time) error {
+				// object_type is "document" because apt_wiring_providers.object_type is
+				// a real foreign key to apt_object_types(name), and "document" is the
+				// type every caller of this table seeds.
+				return s.ReplaceWiring(ctx(), model.WiringSet{
+					Providers: []model.WiringProvider{{
+						ObjectType: "document", Kind: "sql",
+						CreatedAt: c, UpdatedAt: u,
+					}},
+				})
+			},
+			get: func(s model.Storage) (time.Time, time.Time, error) {
+				wp, err := s.GetWiringProvider(ctx(), "document")
+				return wp.CreatedAt, wp.UpdatedAt, err
+			},
+		},
+		{
+			name: "WiringFieldType",
+			put: func(s model.Storage, c, u time.Time) error {
+				return s.ReplaceWiring(ctx(), model.WiringSet{
+					FieldTypes: []model.WiringFieldType{{
+						ObjectType: "document", Field: "published_at", DeclaredType: "datetime",
+						CreatedAt: c, UpdatedAt: u,
+					}},
+				})
+			},
+			get: func(s model.Storage) (time.Time, time.Time, error) {
+				ft, err := s.GetWiringFieldType(ctx(), "document", "published_at")
+				return ft.CreatedAt, ft.UpdatedAt, err
+			},
+		},
+		{
+			name: "WiringAttributeProvider",
+			put: func(s model.Storage, c, u time.Time) error {
+				return s.ReplaceWiring(ctx(), model.WiringSet{
+					AttributeProviders: []model.WiringAttributeProvider{{
+						Subject: "user", Kind: "sql",
+						CreatedAt: c, UpdatedAt: u,
+					}},
+				})
+			},
+			get: func(s model.Storage) (time.Time, time.Time, error) {
+				ap, err := s.GetWiringAttributeProvider(ctx(), "user")
+				return ap.CreatedAt, ap.UpdatedAt, err
+			},
+		},
 	}
 }
 
@@ -1923,15 +2038,15 @@ func testAtomicRollback(t *testing.T, s model.Storage) {
 
 // ---- Referential integrity ----
 //
-// Aperture's storage layer refuses to orphan a row. Twelve relationship columns
-// carry that guarantee; NINE of them are declared foreign keys in
-// storage/sqlite/schema.sql (six ON DELETE RESTRICT, three ON DELETE CASCADE)
+// Aperture's storage layer refuses to orphan a row. Fourteen relationship columns
+// carry that guarantee; ELEVEN of them are declared foreign keys in
+// storage/sqlite/schema.sql (seven ON DELETE RESTRICT, four ON DELETE CASCADE)
 // and THREE cannot be, because the value they hold is not always a row
 // reference — apt_grants.(subject_kind, subject_id) is polymorphic, and the two
 // account_id columns carry the reserved model.AccountWildcard sentinel. Those
 // three are enforced in Go instead, on identical terms.
 //
-// The cases below are the proof that EVERY backend does all twelve, in BOTH
+// The cases below are the proof that EVERY backend does all fourteen, in BOTH
 // directions: a write may not name a parent that does not exist, and a delete is
 // either refused (RESTRICT) or takes its children with it (CASCADE). Until they
 // existed the conformance suite was green only because its fixtures had been
@@ -1962,7 +2077,7 @@ func testAtomicRollback(t *testing.T, s model.Storage) {
 // knowingly: these cases are coupled to that wording, and a backend that renders
 // it differently is a divergence this suite will report.
 //
-// The nine SQL edges are deliberately NOT text-asserted. Their refusal is
+// The eleven SQL edges are deliberately NOT text-asserted. Their refusal is
 // rendered by a driver in one backend and by hand in another, so the wording is
 // not, and must not become, part of the contract.
 
@@ -2065,7 +2180,7 @@ func mustExist(t *testing.T, what string, err error) {
 // testReferentialWriteRefusesAnUnknownParent covers direction one: a child row
 // may not name a parent that was never written.
 //
-// FIVE of the nine SQL edges are reachable this way. The other four are pinned
+// SIX of the eleven SQL edges are reachable this way. The other five are pinned
 // here too, as the different answers they are:
 //
 //   - apt_permissions.object_type answers APERTURE_NOT_FOUND, not
@@ -2074,12 +2189,13 @@ func mustExist(t *testing.T, what string, err error) {
 //     the lookup misses before the reference is ever offered to the constraint.
 //     That is parity of observable behaviour, which is the thing this suite
 //     exists to hold; "always a constraint" would be a different, weaker claim.
-//   - apt_principal_roles.principal_id, apt_role_permissions.role_id and
-//     apt_group_members.group_id — the three CASCADE edges — have no write
-//     direction to violate AT ALL. Their join rows are only ever written as part
-//     of the owner record itself (a principal's RoleIDs, a role's PermissionIDs,
-//     a group's MemberPrincipalIDs), so a row naming an owner that does not exist
-//     is not a value model.Storage can express. Their whole behaviour is the
+//   - apt_principal_roles.principal_id, apt_role_permissions.role_id,
+//     apt_group_members.group_id and apt_wiring_provider_references.object_type —
+//     the four CASCADE edges — have no write direction to violate AT ALL. Their
+//     child rows are only ever written as part of the owner record itself (a
+//     principal's RoleIDs, a role's PermissionIDs, a group's MemberPrincipalIDs, a
+//     wiring provider entry's References), so a row naming an owner that does not
+//     exist is not a value model.Storage can express. Their whole behaviour is the
 //     delete direction, and it is in
 //     testReferentialCascadeRemovesTheJoinRowsWithTheirOwner.
 func testReferentialWriteRefusesAnUnknownParent(t *testing.T, newStore Factory) {
@@ -2120,6 +2236,16 @@ func testReferentialWriteRefusesAnUnknownParent(t *testing.T, newStore Factory) 
 			}))
 		_, err := s.GetRole(ctx(), "r-ghost")
 		mustNotExist(t, "get the refused role", err)
+	})
+
+	t.Run("apt_wiring_providers.object_type", func(t *testing.T) {
+		s := referentialWorld(t, newStore)
+		mustConstraint(t, "wiring serving an unknown object type",
+			s.ReplaceWiring(ctx(), model.WiringSet{
+				Providers: []model.WiringProvider{{ObjectType: "ghosttype", Kind: "sql"}},
+			}))
+		_, err := s.GetWiringProvider(ctx(), "ghosttype")
+		mustNotExist(t, "get the refused wiring provider", err)
 	})
 
 	t.Run("apt_grants.permission_id", func(t *testing.T) {
@@ -2218,7 +2344,7 @@ func testReferentialRefusedWriteIsAllOrNothing(t *testing.T, newStore Factory) {
 	})
 }
 
-// testReferentialRestrictRefusesADeleteThatWouldOrphan covers the six
+// testReferentialRestrictRefusesADeleteThatWouldOrphan covers the seven
 // ON DELETE RESTRICT edges. Every one of these deletes SUCCEEDED before the keys
 // landed, leaving the child rows pointing at nothing.
 //
@@ -2289,6 +2415,41 @@ func testReferentialRestrictRefusesADeleteThatWouldOrphan(t *testing.T, newStore
 		mustExist(t, "get the object type after the refusal", err)
 	})
 
+	t.Run("apt_wiring_providers.object_type: an object type wiring still serves", func(t *testing.T) {
+		s := referentialWorld(t, newStore)
+		// Push wiring that serves "document", then clear every OTHER thing pinning
+		// the type — the grant, the role's bundle, and the permission itself — so the
+		// wiring entry is the only edge left to refuse the delete.
+		if err := s.ReplaceWiring(ctx(), model.WiringSet{
+			Providers: []model.WiringProvider{{ObjectType: "document", Kind: "sql"}},
+		}); err != nil {
+			t.Fatalf("push the wiring: %v", err)
+		}
+		if err := s.DeleteGrant(ctx(), "g1"); err != nil {
+			t.Fatalf("free the grant: %v", err)
+		}
+		if err := s.PutRole(ctx(), model.Role{ID: "r-admin", Name: "Admin"}); err != nil {
+			t.Fatalf("re-save the role without its bundle: %v", err)
+		}
+		if err := s.DeletePermission(ctx(), "p-read"); err != nil {
+			t.Fatalf("free the permission: %v", err)
+		}
+		mustConstraint(t, "delete an object type wiring still serves",
+			s.DeleteObjectType(ctx(), "document"))
+		_, err := s.GetObjectType(ctx(), "document")
+		mustExist(t, "get the object type after the refusal", err)
+
+		// Removing the wiring frees it. That is what the refusal is FOR: the operator
+		// takes the wiring out on purpose, rather than discovering afterwards that a
+		// push-and-read-back round trip quietly lost an entry.
+		if err := s.ReplaceWiring(ctx(), model.WiringSet{}); err != nil {
+			t.Fatalf("clear the wiring: %v", err)
+		}
+		if err := s.DeleteObjectType(ctx(), "document"); err != nil {
+			t.Fatalf("the cleared wiring still pins the object type: %v", err)
+		}
+	})
+
 	// Anti-conflation: the checks may not turn a row that was never there into a
 	// constraint refusal. A missing parent is still NOT_FOUND.
 	t.Run("a delete of something absent is still NOT_FOUND", func(t *testing.T) {
@@ -2303,8 +2464,8 @@ func testReferentialRestrictRefusesADeleteThatWouldOrphan(t *testing.T, newStore
 	})
 }
 
-// testReferentialCascadeRemovesTheJoinRowsWithTheirOwner covers the three
-// ON DELETE CASCADE edges — the ones where an entity owns its own join rows and
+// testReferentialCascadeRemovesTheJoinRowsWithTheirOwner covers the four
+// ON DELETE CASCADE edges — the ones where an entity owns its own child rows and
 // deleting it deletes them.
 //
 // A cascade is invisible from model.Storage as such: there is no row count to
@@ -2422,6 +2583,60 @@ func testReferentialCascadeRemovesTheJoinRowsWithTheirOwner(t *testing.T, newSto
 		}
 		if err := s.DeletePrincipal(ctx(), "alice"); err != nil {
 			t.Fatalf("the group's member row outlived the group, so alice is still pinned: %v", err)
+		}
+	})
+
+	t.Run("apt_wiring_provider_references.object_type: a provider entry owns its reference rows", func(t *testing.T) {
+		s := referentialWorld(t, newStore)
+		if err := s.PutObjectType(ctx(), model.ObjectType{
+			Name: "project", Actions: []string{"read"},
+		}); err != nil {
+			t.Fatalf("seed the reference target type: %v", err)
+		}
+		if err := s.ReplaceWiring(ctx(), model.WiringSet{
+			Providers: []model.WiringProvider{{
+				ObjectType: "document", Kind: "sql",
+				References: []model.WiringReference{{Field: "project_id", TargetType: "project"}},
+			}},
+		}); err != nil {
+			t.Fatalf("push the wiring: %v", err)
+		}
+		// The reference row exists: the read path shows it.
+		wp, err := s.GetWiringProvider(ctx(), "document")
+		if err != nil {
+			t.Fatalf("get the wiring provider: %v", err)
+		}
+		if len(wp.References) != 1 {
+			t.Fatalf("the reference row was never written: %+v", wp.References)
+		}
+
+		// Replace the set with one that has no provider for "document" at all. The
+		// owner row goes, and with it — through ON DELETE CASCADE in the SQL backends
+		// and through holding the references inside the entry in the in-memory one —
+		// its reference rows.
+		if err := s.ReplaceWiring(ctx(), model.WiringSet{
+			Providers: []model.WiringProvider{{ObjectType: "project", Kind: "sql"}},
+		}); err != nil {
+			t.Fatalf("replace the wiring without the document entry: %v", err)
+		}
+		mustCode(t, func() error { _, e := s.GetWiringProvider(ctx(), "document"); return e }(),
+			aerr.APERTURE_NOT_FOUND)
+
+		// The cascade, seen the only way model.Storage can see it: an entry
+		// re-created under the same object type starts with NO references rather than
+		// inheriting the dead ones.
+		if err := s.ReplaceWiring(ctx(), model.WiringSet{
+			Providers: []model.WiringProvider{{ObjectType: "document", Kind: "sql"}},
+		}); err != nil {
+			t.Fatalf("re-create the document entry: %v", err)
+		}
+		again, err := s.GetWiringProvider(ctx(), "document")
+		if err != nil {
+			t.Fatalf("get the re-created entry: %v", err)
+		}
+		if len(again.References) != 0 {
+			t.Fatalf("the re-created provider entry inherited reference rows %+v from the deleted entry",
+				again.References)
 		}
 	})
 }
@@ -2828,4 +3043,744 @@ func normTemplate(t model.Template) model.Template {
 		t.Grants = nil
 	}
 	return t
+}
+
+// ---- Shared wiring (the five wiring tables) ----
+//
+// Wiring is not model state: the five tables hold where a decision's object
+// metadata and attribute bags are read FROM, so a second instance can boot
+// against the shared database with no seed file and decide identically. What the
+// cases below hold every backend to is that the wiring READS BACK AS PUSHED —
+// same values, same order, same declared-versus-not distinction — because the
+// read back is what a second instance builds its registries from, and an instance
+// that built them from something slightly different would decide differently
+// while reporting nothing.
+//
+// The write surface is one method. ReplaceWiring takes the whole set and is
+// all-or-nothing, so there is no per-row upsert for these cases to exercise and
+// no partially-pushed state for them to find.
+
+// seedWiringObjectTypes writes the object types a pushed provider entry names.
+// apt_wiring_providers.object_type is a real foreign key, so a set naming a type
+// the model does not have is refused — these are the parents that make the sample
+// set legal.
+func seedWiringObjectTypes(t *testing.T, s model.Storage) {
+	t.Helper()
+	for _, name := range []string{"document", "project"} {
+		if err := s.PutObjectType(ctx(), model.ObjectType{
+			Name: name, Actions: []string{"read", "write"},
+		}); err != nil {
+			t.Fatalf("seed object type %s: %v", name, err)
+		}
+	}
+}
+
+// sampleWiringSet is one complete, valid wiring set: two connections, two
+// provider entries (one carrying two reference rows), two field-type
+// declarations, and two attribute slots — one with a declared key set and one
+// without.
+//
+// Every section is supplied OUT of canonical order on purpose. A read comes back
+// sorted (connections by name, providers by object type, a provider's references
+// by field, field types by object type then field, attribute slots by subject),
+// and that order is what makes a push-and-read-back round trip byte-stable; a
+// backend that returned map or insertion order would pass a value comparison and
+// fail an operator diffing two instances.
+func sampleWiringSet() model.WiringSet {
+	return model.WiringSet{
+		Connections: []model.WiringConnection{
+			{Name: "main", CreatedAt: subMicroCreated, UpdatedAt: subMicroUpdated},
+			{Name: "analytics"},
+		},
+		Providers: []model.WiringProvider{
+			{
+				ObjectType: "project", Kind: "sql", Connection: "analytics",
+				GetOne: "SELECT name FROM projects WHERE id = $1",
+				GetAll: "SELECT 'project:' || p.id AS id, p.name FROM projects p",
+				TTL:    "0",
+			},
+			{
+				ObjectType: "document", Kind: "sql", Connection: "main",
+				GetOne:   "SELECT title, owner FROM documents WHERE id = $1",
+				GetAll:   "SELECT 'document:' || d.id AS id, d.title, d.owner FROM documents d",
+				IDColumn: "id",
+				// A ttl is the duration TEXT the operator wrote, carried verbatim: a
+				// read back has to be re-pushable byte for byte, and an integer would
+				// round-trip "30s" as 30000000000.
+				TTL:     "30s",
+				MaxSize: 512,
+				References: []model.WiringReference{
+					{Field: "project_id", TargetType: "project"},
+					{Field: "archived_projects", TargetType: "project"},
+				},
+				CreatedAt: subMicroCreated, UpdatedAt: subMicroUpdated,
+			},
+		},
+		FieldTypes: []model.WiringFieldType{
+			{ObjectType: "document", Field: "review_on", DeclaredType: "date"},
+			{
+				ObjectType: "document", Field: "published_at", DeclaredType: "datetime",
+				CreatedAt: subMicroCreated, UpdatedAt: subMicroUpdated,
+			},
+		},
+		AttributeProviders: []model.WiringAttributeProvider{
+			{
+				Subject: "user", Kind: "sql", Connection: "main",
+				GetOne:   "SELECT department, clearance FROM users WHERE id = $1",
+				GetAll:   "SELECT u.id AS id, u.department FROM users u",
+				IDColumn: "id", TTL: "5m", MaxSize: 1000,
+				DeclaredKeys: model.DeclaredKeys{
+					Declared: true, Keys: []string{"department", "clearance"},
+				},
+				CreatedAt: subMicroCreated, UpdatedAt: subMicroUpdated,
+			},
+			{
+				// No get_all: a FETCH-ONLY slot, which is legal here where an object
+				// provider must declare one. And no declared key set at all, which is
+				// the state the next case proves is distinct from a declared empty one.
+				Subject: "account", Kind: "sql", Connection: "main",
+				GetOne: "SELECT plan FROM accounts WHERE id = $1",
+			},
+		},
+	}
+}
+
+// sortedSampleWiringSet is sampleWiringSet in the order a read returns it.
+func sortedSampleWiringSet() model.WiringSet {
+	set := sampleWiringSet()
+	set.Sort()
+	return set
+}
+
+// testWiringRoundTrip is the whole-set contract: what was pushed is what comes
+// back, through the boot read AND through each per-section read, in canonical
+// order.
+func testWiringRoundTrip(t *testing.T, s model.Storage) {
+	seedWiringObjectTypes(t, s)
+
+	// A database nothing has been pushed to reports empty rather than failing. It
+	// is the state that tells a booting instance to fall back to its seed file, so
+	// "empty" and "broken" must not look alike.
+	empty, err := s.GetWiring(ctx())
+	if err != nil {
+		t.Fatalf("get wiring from an unpushed store: %v", err)
+	}
+	if !empty.IsEmpty() {
+		t.Fatalf("an unpushed store reported wiring: %+v", empty)
+	}
+
+	if err := s.ReplaceWiring(ctx(), sampleWiringSet()); err != nil {
+		t.Fatalf("replace wiring: %v", err)
+	}
+
+	want := sortedSampleWiringSet()
+	got, err := s.GetWiring(ctx())
+	if err != nil {
+		t.Fatalf("get wiring: %v", err)
+	}
+	if !reflect.DeepEqual(normWiringSet(got), normWiringSet(want)) {
+		t.Fatalf("the wiring set did not read back as pushed:\n got %s\nwant %s",
+			showWiringSet(got), showWiringSet(want))
+	}
+	if got.IsEmpty() {
+		t.Fatalf("a pushed wiring set reports IsEmpty")
+	}
+
+	// The per-section reads answer with the same rows in the same order. wiring
+	// show reads them one section at a time; a boot reads them all at once. The two
+	// must not be able to disagree.
+	conns, err := s.ListWiringConnections(ctx())
+	if err != nil {
+		t.Fatalf("list wiring connections: %v", err)
+	}
+	if !reflect.DeepEqual(normWiringConnections(conns), normWiringConnections(want.Connections)) {
+		t.Fatalf("connections:\n got %+v\nwant %+v", conns, want.Connections)
+	}
+	provs, err := s.ListWiringProviders(ctx())
+	if err != nil {
+		t.Fatalf("list wiring providers: %v", err)
+	}
+	if !reflect.DeepEqual(normWiringProviders(provs), normWiringProviders(want.Providers)) {
+		t.Fatalf("providers:\n got %+v\nwant %+v", provs, want.Providers)
+	}
+	fts, err := s.ListWiringFieldTypes(ctx())
+	if err != nil {
+		t.Fatalf("list wiring field types: %v", err)
+	}
+	if !reflect.DeepEqual(normWiringFieldTypes(fts), normWiringFieldTypes(want.FieldTypes)) {
+		t.Fatalf("field types:\n got %+v\nwant %+v", fts, want.FieldTypes)
+	}
+	aps, err := s.ListWiringAttributeProviders(ctx())
+	if err != nil {
+		t.Fatalf("list wiring attribute providers: %v", err)
+	}
+	if !reflect.DeepEqual(normWiringAttributeProviders(aps), normWiringAttributeProviders(want.AttributeProviders)) {
+		t.Fatalf("attribute providers:\n got %+v\nwant %+v", aps, want.AttributeProviders)
+	}
+
+	// The per-entity reads answer with the same rows.
+	wc, err := s.GetWiringConnection(ctx(), "main")
+	if err != nil {
+		t.Fatalf("get wiring connection: %v", err)
+	}
+	if wc.Name != "main" {
+		t.Fatalf("get wiring connection returned %+v", wc)
+	}
+	wp, err := s.GetWiringProvider(ctx(), "document")
+	if err != nil {
+		t.Fatalf("get wiring provider: %v", err)
+	}
+	// A references: map has no order of its own, so field order IS the canonical
+	// one — and a single-entry read must apply it exactly as the list read does.
+	if len(wp.References) != 2 ||
+		wp.References[0].Field != "archived_projects" || wp.References[1].Field != "project_id" {
+		t.Fatalf("the provider's reference rows are not in field order: %+v", wp.References)
+	}
+	if wp.TTL != "30s" {
+		t.Fatalf("ttl read back as %q, want the duration text %q — a ttl stored as an "+
+			"integer round-trips \"30s\" as 30000000000 and stops being re-pushable",
+			wp.TTL, "30s")
+	}
+	ft, err := s.GetWiringFieldType(ctx(), "document", "published_at")
+	if err != nil {
+		t.Fatalf("get wiring field type: %v", err)
+	}
+	if ft.DeclaredType != "datetime" {
+		t.Fatalf("get wiring field type returned %+v", ft)
+	}
+	ap, err := s.GetWiringAttributeProvider(ctx(), "user")
+	if err != nil {
+		t.Fatalf("get wiring attribute provider: %v", err)
+	}
+	if !ap.DeclaredKeys.Declared || len(ap.DeclaredKeys.Keys) != 2 {
+		t.Fatalf("get wiring attribute provider returned declared keys %+v", ap.DeclaredKeys)
+	}
+
+	// Re-pushing exactly what was read back changes nothing. That is the property
+	// the whole surface exists for: an operator pulls the shared wiring, edits one
+	// line, and pushes it again.
+	if err := s.ReplaceWiring(ctx(), got); err != nil {
+		t.Fatalf("re-push what was read back: %v", err)
+	}
+	again, err := s.GetWiring(ctx())
+	if err != nil {
+		t.Fatalf("get wiring after the re-push: %v", err)
+	}
+	if !reflect.DeepEqual(normWiringSet(again), normWiringSet(got)) {
+		t.Fatalf("a push of what was just read back changed it:\n got %s\nwant %s",
+			showWiringSet(again), showWiringSet(got))
+	}
+}
+
+// testWiringReplaceIsWholesale pins that ReplaceWiring REPLACES rather than
+// merges. A push is the operator's whole intent, so an entry they removed from
+// the set has to disappear — the failure this catches is a backend that upserts
+// each section and leaves last week's provider entry serving a type nobody
+// declares any more.
+func testWiringReplaceIsWholesale(t *testing.T, s model.Storage) {
+	seedWiringObjectTypes(t, s)
+	if err := s.ReplaceWiring(ctx(), sampleWiringSet()); err != nil {
+		t.Fatalf("push the full set: %v", err)
+	}
+
+	// A narrower set: one connection, one provider with NO references, no field
+	// types, no attribute slots.
+	narrow := model.WiringSet{
+		Connections: []model.WiringConnection{{Name: "main"}},
+		Providers: []model.WiringProvider{{
+			ObjectType: "document", Kind: "sql", Connection: "main",
+			GetOne: "SELECT title FROM documents WHERE id = $1",
+		}},
+	}
+	if err := s.ReplaceWiring(ctx(), narrow); err != nil {
+		t.Fatalf("push the narrower set: %v", err)
+	}
+
+	got, err := s.GetWiring(ctx())
+	if err != nil {
+		t.Fatalf("get wiring: %v", err)
+	}
+	if !reflect.DeepEqual(normWiringSet(got), normWiringSet(narrow)) {
+		t.Fatalf("the narrower push did not replace the set:\n got %s\nwant %s",
+			showWiringSet(got), showWiringSet(narrow))
+	}
+	// Everything the narrower set dropped is gone, and gone means NOT_FOUND rather
+	// than an empty row.
+	mustCode(t, func() error { _, e := s.GetWiringConnection(ctx(), "analytics"); return e }(), aerr.APERTURE_NOT_FOUND)
+	mustCode(t, func() error { _, e := s.GetWiringProvider(ctx(), "project"); return e }(), aerr.APERTURE_NOT_FOUND)
+	mustCode(t, func() error { _, e := s.GetWiringFieldType(ctx(), "document", "published_at"); return e }(), aerr.APERTURE_NOT_FOUND)
+	mustCode(t, func() error { _, e := s.GetWiringAttributeProvider(ctx(), "user"); return e }(), aerr.APERTURE_NOT_FOUND)
+	// The surviving provider entry kept no reference rows from the entry it
+	// replaced. That is the CASCADE, observed the only way model.Storage can see
+	// it: a re-written owner starts empty rather than inheriting the dead rows.
+	wp, err := s.GetWiringProvider(ctx(), "document")
+	if err != nil {
+		t.Fatalf("get the surviving provider: %v", err)
+	}
+	if len(wp.References) != 0 {
+		t.Fatalf("the re-written provider entry inherited reference rows %+v from the entry it replaced", wp.References)
+	}
+
+	// Pushing the zero set clears the wiring entirely — the operator's way of
+	// saying "this instance keeps no shared wiring", and the state a fresh
+	// database is already in.
+	if err := s.ReplaceWiring(ctx(), model.WiringSet{}); err != nil {
+		t.Fatalf("push the empty set: %v", err)
+	}
+	cleared, err := s.GetWiring(ctx())
+	if err != nil {
+		t.Fatalf("get wiring after clearing: %v", err)
+	}
+	if !cleared.IsEmpty() {
+		t.Fatalf("pushing the empty set left wiring behind: %s", showWiringSet(cleared))
+	}
+	// With the wiring gone, the object type it pinned is deletable again.
+	if err := s.DeleteObjectType(ctx(), "project"); err != nil {
+		t.Fatalf("the cleared wiring still pins its object type: %v", err)
+	}
+}
+
+// testWiringDeclaredKeySetIsOptional is the load-bearing case of the
+// declared-key-set column: NOT DECLARED and DECLARED EMPTY are different answers
+// and both survive a round trip.
+//
+// The distinction is what a later story enforces against: a slot that never
+// declared a key set is opted OUT (it behaves exactly as a slot did before the
+// column existed), and one that declared an empty set is opted IN and permits no
+// keys at all. Collapsing them turns an opt-in into an opt-out — silently, in the
+// direction of less enforcement, with nothing in a verdict to say so.
+func testWiringDeclaredKeySetIsOptional(t *testing.T, s model.Storage) {
+	set := model.WiringSet{
+		AttributeProviders: []model.WiringAttributeProvider{
+			{
+				Subject: "user", Kind: "sql",
+				GetOne:       "SELECT department FROM users WHERE id = $1",
+				DeclaredKeys: model.DeclaredKeys{Declared: true, Keys: []string{"department"}},
+			},
+			{
+				// DECLARED EMPTY: opted in, permitting no keys.
+				Subject: "machine", Kind: "sql",
+				GetOne:       "SELECT fleet FROM machines WHERE id = $1",
+				DeclaredKeys: model.DeclaredKeys{Declared: true},
+			},
+			{
+				// NOT DECLARED: opted out.
+				Subject: "account", Kind: "sql",
+				GetOne: "SELECT plan FROM accounts WHERE id = $1",
+			},
+		},
+	}
+	if err := s.ReplaceWiring(ctx(), set); err != nil {
+		t.Fatalf("push the attribute slots: %v", err)
+	}
+
+	for _, c := range []struct {
+		subject  string
+		declared bool
+		keys     []string
+	}{
+		{"user", true, []string{"department"}},
+		{"machine", true, nil},
+		{"account", false, nil},
+	} {
+		t.Run(c.subject, func(t *testing.T) {
+			ap, err := s.GetWiringAttributeProvider(ctx(), c.subject)
+			if err != nil {
+				t.Fatalf("get slot %s: %v", c.subject, err)
+			}
+			if ap.DeclaredKeys.Declared != c.declared {
+				t.Fatalf("slot %s read back Declared = %v, want %v. "+
+					"\"not declared\" and \"declared empty\" are different answers: the first "+
+					"opts the slot OUT of key enforcement, the second opts it IN and permits "+
+					"no keys. A backend that stores one as the other silently disables the "+
+					"enforcement the operator asked for.",
+					c.subject, ap.DeclaredKeys.Declared, c.declared)
+			}
+			if len(ap.DeclaredKeys.Keys) != len(c.keys) {
+				t.Fatalf("slot %s read back keys %v, want %v", c.subject, ap.DeclaredKeys.Keys, c.keys)
+			}
+			for i, k := range c.keys {
+				if ap.DeclaredKeys.Keys[i] != k {
+					t.Fatalf("slot %s key %d = %q, want %q", c.subject, i, ap.DeclaredKeys.Keys[i], k)
+				}
+			}
+		})
+	}
+
+	// And the distinction survives a push of what was read back, which is the
+	// round trip an operator actually performs.
+	got, err := s.GetWiring(ctx())
+	if err != nil {
+		t.Fatalf("get wiring: %v", err)
+	}
+	if err := s.ReplaceWiring(ctx(), got); err != nil {
+		t.Fatalf("re-push: %v", err)
+	}
+	again, err := s.GetWiring(ctx())
+	if err != nil {
+		t.Fatalf("get wiring after the re-push: %v", err)
+	}
+	if !reflect.DeepEqual(normWiringAttributeProviders(again.AttributeProviders),
+		normWiringAttributeProviders(got.AttributeProviders)) {
+		t.Fatalf("a round trip changed a declared key set:\n got %+v\nwant %+v",
+			again.AttributeProviders, got.AttributeProviders)
+	}
+}
+
+// testWiringValidation covers the structural refusals, and covers them the way
+// that matters: after every one of them the wiring already in the database is
+// UNCHANGED. A push is all-or-nothing, so a malformed set must not have removed
+// the working wiring on its way to being rejected.
+//
+// Every case here is APERTURE_INVALID_INPUT and not APERTURE_STORAGE_CONSTRAINT,
+// including the duplicate keys. A collision inside one pushed set is a malformed
+// push rather than a database failure, and saying so uniformly is what lets a
+// backend with no primary keys refuse the same set with the same code.
+func testWiringValidation(t *testing.T, s model.Storage) {
+	seedWiringObjectTypes(t, s)
+	if err := s.ReplaceWiring(ctx(), sampleWiringSet()); err != nil {
+		t.Fatalf("push the baseline set: %v", err)
+	}
+	baseline, err := s.GetWiring(ctx())
+	if err != nil {
+		t.Fatalf("read the baseline back: %v", err)
+	}
+
+	for _, c := range []struct {
+		name string
+		set  model.WiringSet
+	}{
+		{"a connection with no name", model.WiringSet{
+			Connections: []model.WiringConnection{{Name: ""}},
+		}},
+		{"the same connection twice", model.WiringSet{
+			Connections: []model.WiringConnection{{Name: "main"}, {Name: "main"}},
+		}},
+		{"a provider with no object type", model.WiringSet{
+			Providers: []model.WiringProvider{{Kind: "sql"}},
+		}},
+		{"a provider with no kind", model.WiringSet{
+			Providers: []model.WiringProvider{{ObjectType: "document"}},
+		}},
+		{"a provider with a negative max_size", model.WiringSet{
+			Providers: []model.WiringProvider{{ObjectType: "document", Kind: "sql", MaxSize: -1}},
+		}},
+		{"a provider for the same object type twice", model.WiringSet{
+			Providers: []model.WiringProvider{
+				{ObjectType: "document", Kind: "sql"},
+				{ObjectType: "document", Kind: "sql"},
+			},
+		}},
+		{"a reference with no field name", model.WiringSet{
+			Providers: []model.WiringProvider{{
+				ObjectType: "document", Kind: "sql",
+				References: []model.WiringReference{{TargetType: "project"}},
+			}},
+		}},
+		{"a reference with no target type", model.WiringSet{
+			Providers: []model.WiringProvider{{
+				ObjectType: "document", Kind: "sql",
+				References: []model.WiringReference{{Field: "project_id"}},
+			}},
+		}},
+		{"the same reference field twice", model.WiringSet{
+			Providers: []model.WiringProvider{{
+				ObjectType: "document", Kind: "sql",
+				References: []model.WiringReference{
+					{Field: "project_id", TargetType: "project"},
+					{Field: "project_id", TargetType: "project"},
+				},
+			}},
+		}},
+		{"a field type with no field name", model.WiringSet{
+			FieldTypes: []model.WiringFieldType{{ObjectType: "document", DeclaredType: "date"}},
+		}},
+		{"a field type with no declared type", model.WiringSet{
+			FieldTypes: []model.WiringFieldType{{ObjectType: "document", Field: "review_on"}},
+		}},
+		{"the same field type twice", model.WiringSet{
+			FieldTypes: []model.WiringFieldType{
+				{ObjectType: "document", Field: "review_on", DeclaredType: "date"},
+				{ObjectType: "document", Field: "review_on", DeclaredType: "datetime"},
+			},
+		}},
+		{"an attribute provider with no subject", model.WiringSet{
+			AttributeProviders: []model.WiringAttributeProvider{{Kind: "sql"}},
+		}},
+		{"an attribute provider with no kind", model.WiringSet{
+			AttributeProviders: []model.WiringAttributeProvider{{Subject: "user"}},
+		}},
+		{"the same attribute slot twice", model.WiringSet{
+			AttributeProviders: []model.WiringAttributeProvider{
+				{Subject: "user", Kind: "sql"},
+				{Subject: "user", Kind: "sql"},
+			},
+		}},
+		{"declared keys with no declaration", model.WiringSet{
+			// Keys present with Declared false is a contradiction, and it is REFUSED
+			// rather than resolved: guessing would silently pick one of two opposite
+			// meanings.
+			AttributeProviders: []model.WiringAttributeProvider{{
+				Subject: "user", Kind: "sql",
+				DeclaredKeys: model.DeclaredKeys{Keys: []string{"department"}},
+			}},
+		}},
+		{"an empty declared key", model.WiringSet{
+			AttributeProviders: []model.WiringAttributeProvider{{
+				Subject: "user", Kind: "sql",
+				DeclaredKeys: model.DeclaredKeys{Declared: true, Keys: []string{""}},
+			}},
+		}},
+		{"the same declared key twice", model.WiringSet{
+			AttributeProviders: []model.WiringAttributeProvider{{
+				Subject: "user", Kind: "sql",
+				DeclaredKeys: model.DeclaredKeys{Declared: true, Keys: []string{"dept", "dept"}},
+			}},
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			refusal := s.ReplaceWiring(ctx(), c.set)
+			mustCode(t, refusal, aerr.APERTURE_INVALID_INPUT)
+			mustSingleCodedError(t, "the validation refusal", refusal)
+			got, err := s.GetWiring(ctx())
+			if err != nil {
+				t.Fatalf("get wiring after the refusal: %v", err)
+			}
+			if !reflect.DeepEqual(normWiringSet(got), normWiringSet(baseline)) {
+				t.Fatalf("the refused push changed the stored wiring:\n got %s\nwant %s",
+					showWiringSet(got), showWiringSet(baseline))
+			}
+		})
+	}
+}
+
+// testWiringReplaceIsAllOrNothing is the refusal that arrives HALF-WAY through
+// the write rather than before it: a set whose second provider entry names an
+// object type the model does not have. The first entry is perfectly valid, so a
+// backend that wrote as it went would leave the wiring replaced by half of the
+// new set.
+//
+// It is a case of its own rather than a row in testWiringValidation because the
+// code is different — APERTURE_STORAGE_CONSTRAINT, from
+// apt_wiring_providers.object_type, not APERTURE_INVALID_INPUT — and because the
+// refusal necessarily happens after the DELETEs a replace begins with.
+func testWiringReplaceIsAllOrNothing(t *testing.T, s model.Storage) {
+	seedWiringObjectTypes(t, s)
+	if err := s.ReplaceWiring(ctx(), sampleWiringSet()); err != nil {
+		t.Fatalf("push the baseline set: %v", err)
+	}
+	baseline, err := s.GetWiring(ctx())
+	if err != nil {
+		t.Fatalf("read the baseline back: %v", err)
+	}
+
+	bad := model.WiringSet{
+		Connections: []model.WiringConnection{{Name: "main"}},
+		Providers: []model.WiringProvider{
+			{ObjectType: "document", Kind: "sql", Connection: "main"},
+			{ObjectType: "ghost", Kind: "sql", Connection: "main"},
+		},
+		FieldTypes: []model.WiringFieldType{
+			{ObjectType: "document", Field: "review_on", DeclaredType: "date"},
+		},
+	}
+	refusal := mustConstraint(t, "push a set whose second provider serves an unknown object type",
+		s.ReplaceWiring(ctx(), bad))
+	// APERTURE_STORAGE_CONSTRAINT names an actionable failure — remove the entry or
+	// declare the type — and carries its own fixups. Re-wrapping it as
+	// APERTURE_STORAGE would bury both, and the SQL backends' transaction helper
+	// passes it through only because the guard is written there by hand.
+	mustSingleCodedError(t, "the constraint refusal", refusal)
+
+	got, err := s.GetWiring(ctx())
+	if err != nil {
+		t.Fatalf("get wiring after the refusal: %v", err)
+	}
+	if !reflect.DeepEqual(normWiringSet(got), normWiringSet(baseline)) {
+		t.Fatalf("a refused replace left the wiring part-way between the two sets:\n got %s\nwant %s",
+			showWiringSet(got), showWiringSet(baseline))
+	}
+
+	// The same refusal against an EMPTY store leaves it empty, so the check cannot
+	// be passing because the delete happened to be a no-op.
+	mustConstraint(t, "push the same set with no baseline", s.ReplaceWiring(ctx(), bad))
+	still, err := s.GetWiring(ctx())
+	if err != nil {
+		t.Fatalf("get wiring after the second refusal: %v", err)
+	}
+	if !reflect.DeepEqual(normWiringSet(still), normWiringSet(baseline)) {
+		t.Fatalf("the second refused replace changed the wiring: %s", showWiringSet(still))
+	}
+}
+
+// testWiringNotFoundSemantics pins the per-entity reads on both sides of "the row
+// is not there": against a store with no wiring at all, and against one whose
+// wiring simply does not contain the key asked for. Both are NOT_FOUND — a read
+// for an absent slot must not come back as a zero-valued row, which a caller
+// building a registry would read as "declared, with nothing in it".
+func testWiringNotFoundSemantics(t *testing.T, s model.Storage) {
+	check := func(label string) {
+		t.Helper()
+		mustCode(t, func() error { _, e := s.GetWiringConnection(ctx(), "nope"); return e }(), aerr.APERTURE_NOT_FOUND)
+		mustCode(t, func() error { _, e := s.GetWiringProvider(ctx(), "nope"); return e }(), aerr.APERTURE_NOT_FOUND)
+		mustCode(t, func() error { _, e := s.GetWiringFieldType(ctx(), "nope", "nope"); return e }(), aerr.APERTURE_NOT_FOUND)
+		mustCode(t, func() error { _, e := s.GetWiringAttributeProvider(ctx(), "nope"); return e }(), aerr.APERTURE_NOT_FOUND)
+	}
+	check("an unpushed store")
+
+	seedWiringObjectTypes(t, s)
+	if err := s.ReplaceWiring(ctx(), sampleWiringSet()); err != nil {
+		t.Fatalf("push the sample set: %v", err)
+	}
+	check("a populated store")
+
+	// A key that exists in one section is still absent from another: the field-type
+	// read is keyed by the PAIR, so a known object type with an unknown field is
+	// NOT_FOUND too.
+	mustCode(t, func() error { _, e := s.GetWiringFieldType(ctx(), "document", "nope"); return e }(), aerr.APERTURE_NOT_FOUND)
+}
+
+// ---- wiring normalization + rendering helpers ----
+//
+// These exist for the same reason the norm* helpers above do: reflect.DeepEqual
+// compares location pointers and monotonic readings, and distinguishes a nil
+// slice from an empty one where the storage contract does not. They normalize
+// exactly those two things and NOTHING about the values — in particular nothing
+// about DeclaredKeys.Declared, which is a value and not a representation.
+
+func normWiringSet(w model.WiringSet) model.WiringSet {
+	return model.WiringSet{
+		Connections:        normWiringConnections(w.Connections),
+		Providers:          normWiringProviders(w.Providers),
+		FieldTypes:         normWiringFieldTypes(w.FieldTypes),
+		AttributeProviders: normWiringAttributeProviders(w.AttributeProviders),
+	}
+}
+
+func normWiringConnections(cs []model.WiringConnection) []model.WiringConnection {
+	if len(cs) == 0 {
+		return nil
+	}
+	out := make([]model.WiringConnection, len(cs))
+	for i, c := range cs {
+		c.CreatedAt, c.UpdatedAt = normTime(c.CreatedAt), normTime(c.UpdatedAt)
+		out[i] = c
+	}
+	return out
+}
+
+func normWiringProviders(ps []model.WiringProvider) []model.WiringProvider {
+	if len(ps) == 0 {
+		return nil
+	}
+	out := make([]model.WiringProvider, len(ps))
+	for i, p := range ps {
+		p.CreatedAt, p.UpdatedAt = normTime(p.CreatedAt), normTime(p.UpdatedAt)
+		if len(p.References) == 0 {
+			p.References = nil
+		} else {
+			rs := make([]model.WiringReference, len(p.References))
+			copy(rs, p.References)
+			p.References = rs
+		}
+		out[i] = p
+	}
+	return out
+}
+
+func normWiringFieldTypes(fs []model.WiringFieldType) []model.WiringFieldType {
+	if len(fs) == 0 {
+		return nil
+	}
+	out := make([]model.WiringFieldType, len(fs))
+	for i, f := range fs {
+		f.CreatedAt, f.UpdatedAt = normTime(f.CreatedAt), normTime(f.UpdatedAt)
+		out[i] = f
+	}
+	return out
+}
+
+func normWiringAttributeProviders(as []model.WiringAttributeProvider) []model.WiringAttributeProvider {
+	if len(as) == 0 {
+		return nil
+	}
+	out := make([]model.WiringAttributeProvider, len(as))
+	for i, a := range as {
+		a.CreatedAt, a.UpdatedAt = normTime(a.CreatedAt), normTime(a.UpdatedAt)
+		// Declared is preserved verbatim; only the slice's nil-versus-empty
+		// representation is normalized, which is the one difference the storage
+		// contract does not draw.
+		if len(a.DeclaredKeys.Keys) == 0 {
+			a.DeclaredKeys.Keys = nil
+		} else {
+			ks := make([]string, len(a.DeclaredKeys.Keys))
+			copy(ks, a.DeclaredKeys.Keys)
+			a.DeclaredKeys.Keys = ks
+		}
+		out[i] = a
+	}
+	return out
+}
+
+// showWiringSet renders a set compactly for a failure message. A %+v of the whole
+// struct runs to several screens of SQL, which buries the one field that differs.
+func showWiringSet(w model.WiringSet) string {
+	var b strings.Builder
+	b.WriteString("{connections:[")
+	for i, c := range w.Connections {
+		if i > 0 {
+			b.WriteString(" ")
+		}
+		b.WriteString(c.Name)
+	}
+	b.WriteString("] providers:[")
+	for i, p := range w.Providers {
+		if i > 0 {
+			b.WriteString(" ")
+		}
+		b.WriteString(p.ObjectType)
+		b.WriteString("(ttl=")
+		b.WriteString(p.TTL)
+		b.WriteString(",max=")
+		b.WriteString(strconv.Itoa(p.MaxSize))
+		b.WriteString(",refs=")
+		for j, r := range p.References {
+			if j > 0 {
+				b.WriteString("+")
+			}
+			b.WriteString(r.Field)
+			b.WriteString("->")
+			b.WriteString(r.TargetType)
+		}
+		b.WriteString(")")
+	}
+	b.WriteString("] fieldTypes:[")
+	for i, f := range w.FieldTypes {
+		if i > 0 {
+			b.WriteString(" ")
+		}
+		b.WriteString(f.ObjectType)
+		b.WriteString(".")
+		b.WriteString(f.Field)
+		b.WriteString(":")
+		b.WriteString(f.DeclaredType)
+	}
+	b.WriteString("] attributeProviders:[")
+	for i, a := range w.AttributeProviders {
+		if i > 0 {
+			b.WriteString(" ")
+		}
+		b.WriteString(a.Subject)
+		b.WriteString("(keys=")
+		if !a.DeclaredKeys.Declared {
+			b.WriteString("<not declared>")
+		} else {
+			b.WriteString("[")
+			b.WriteString(strings.Join(a.DeclaredKeys.Keys, ","))
+			b.WriteString("]")
+		}
+		b.WriteString(")")
+	}
+	b.WriteString("]}")
+	return b.String()
 }

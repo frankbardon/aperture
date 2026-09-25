@@ -302,6 +302,41 @@ func (o *overlayStore) ListRules(ctx context.Context) ([]model.Rule, error) {
 	return o.base.ListRules(ctx)
 }
 
+// The shared-wiring reads delegate untouched. An Overlay describes hypothetical
+// PRINCIPALS, permissions, groups, grants and memberships — model state — and
+// wiring is not model state: it is where a decision's object metadata and
+// attribute bags are read from, and a simulation reads them from exactly the same
+// place the live decision does. Shadowing them here would make a simulation
+// answer against providers the deployment does not have.
+
+func (o *overlayStore) GetWiring(ctx context.Context) (model.WiringSet, error) {
+	return o.base.GetWiring(ctx)
+}
+func (o *overlayStore) ListWiringConnections(ctx context.Context) ([]model.WiringConnection, error) {
+	return o.base.ListWiringConnections(ctx)
+}
+func (o *overlayStore) GetWiringConnection(ctx context.Context, name string) (model.WiringConnection, error) {
+	return o.base.GetWiringConnection(ctx, name)
+}
+func (o *overlayStore) ListWiringProviders(ctx context.Context) ([]model.WiringProvider, error) {
+	return o.base.ListWiringProviders(ctx)
+}
+func (o *overlayStore) GetWiringProvider(ctx context.Context, objectType string) (model.WiringProvider, error) {
+	return o.base.GetWiringProvider(ctx, objectType)
+}
+func (o *overlayStore) ListWiringFieldTypes(ctx context.Context) ([]model.WiringFieldType, error) {
+	return o.base.ListWiringFieldTypes(ctx)
+}
+func (o *overlayStore) GetWiringFieldType(ctx context.Context, objectType, field string) (model.WiringFieldType, error) {
+	return o.base.GetWiringFieldType(ctx, objectType, field)
+}
+func (o *overlayStore) ListWiringAttributeProviders(ctx context.Context) ([]model.WiringAttributeProvider, error) {
+	return o.base.ListWiringAttributeProviders(ctx)
+}
+func (o *overlayStore) GetWiringAttributeProvider(ctx context.Context, subject string) (model.WiringAttributeProvider, error) {
+	return o.base.GetWiringAttributeProvider(ctx, subject)
+}
+
 // --- Inert writes -----------------------------------------------------------
 //
 // Every mutator is overridden to fail with APERTURE_UNIMPLEMENTED. The decision
@@ -341,6 +376,13 @@ func (o *overlayStore) PutTemplate(context.Context, model.Template) error { retu
 func (o *overlayStore) DeleteTemplate(context.Context, string, int) error { return errReadOnly() }
 func (o *overlayStore) PutRule(context.Context, model.Rule) error         { return errReadOnly() }
 func (o *overlayStore) DeleteRule(context.Context, string) error          { return errReadOnly() }
+
+// ReplaceWiring is the whole write surface of the five wiring tables, so this one
+// override is what makes a simulation structurally unable to re-wire the
+// deployment it is simulating against.
+func (o *overlayStore) ReplaceWiring(context.Context, model.WiringSet) error {
+	return errReadOnly()
+}
 func (o *overlayStore) Atomic(context.Context, func(tx model.Storage) error) error {
 	return errReadOnly()
 }

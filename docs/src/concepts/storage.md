@@ -207,6 +207,46 @@ What is **absent** from them is the load-bearing part:
   the attribute keys a shared slot guarantees, as a JSON array of names. `''` means
   *not declared*; `'[]'` means *declared empty*. They are different answers.
 
+### The wiring is read and written whole
+
+The five tables have **one** write method, and it replaces all of them:
+
+```go
+ReplaceWiring(ctx, model.WiringSet) error   // all of it, or none of it
+GetWiring(ctx) (model.WiringSet, error)     // one consistent snapshot
+```
+
+There is deliberately no per-row `Put`/`Delete` pair. Wiring is only meaningful
+whole — a provider entry naming a connection the manifest does not list is not
+half-valid wiring, and an instance that booted against a set written half-way
+would build its registries missing exactly the entries whose write failed, while
+reporting nothing. So `ReplaceWiring` validates the entire set first, removes
+every row of all five tables, and writes the new set in one transaction: a
+refusal at any point leaves the tables **exactly** as they were. Pushing a zero
+`WiringSet` clears the wiring.
+
+`GetWiring` reads the four sections inside one transaction, for the mirror-image
+reason: a boot that read the provider list from before a push and the field-type
+list from after it would build a registry that never existed in the database at
+any instant. A database nothing has been pushed to answers with an empty
+`WiringSet` — `IsEmpty()` reports it, and it is not an error. That is the state
+that tells a booting instance to fall back to its local seed file.
+
+Alongside those two there are per-section reads (`ListWiringConnections`,
+`ListWiringProviders`, `ListWiringFieldTypes`,
+`ListWiringAttributeProviders`) and per-entity reads returning
+`APERTURE_NOT_FOUND` for an absent key. Every read returns **canonical order** —
+connections by name, providers by object type, a provider's references by field,
+field types by object type then field, attribute slots by subject — because a
+read back that has to be re-pushable byte for byte cannot come back in map order.
+
+Two refusals are worth knowing apart. A malformed set (an empty key, a negative
+`max_size`, the same object type declared twice) is `APERTURE_INVALID_INPUT`: a
+collision inside one pushed set is a bad push, not a database failure. A provider
+entry serving an object type the model does not have is
+`APERTURE_STORAGE_CONSTRAINT`, from the real foreign key on
+`apt_wiring_providers.object_type`.
+
 ## Account stamping is enforced in the queries
 
 Cross-account isolation is a **data-layer** guarantee, not just a service-layer
