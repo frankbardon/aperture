@@ -548,10 +548,16 @@ Four properties are contract, not implementation:
 - **An unwired recorder is an answer, not a refusal.** Every deployment that has
   not opted into polling reports not-polling / not-stale, which is true. Refusing
   would make the read unusable as a fleet-wide probe.
-- **Recovery clears it completely.** Any successful refresh — including one that
-  observed no change, which is almost every tick — resets the window, the count and
-  the code. An alarm that latches past its own remedy trains an operator to ignore
-  the channel.
+- **Recovery clears it completely.** Any *completed* refresh — one that observed no
+  change, which is almost every tick, or one that adopted a change — resets the
+  window, the count and the code. An alarm that latches past its own remedy trains
+  an operator to ignore the channel.
+- **A refresh that read the tables and then refused to ADOPT them has completed
+  nothing.** It keeps the alarm, and the window keeps its original start, so a push
+  refused for four hours reports four hours and four failures rather than one
+  failure a tick old. Clearing on the strength of the read alone is the subtle
+  version of reporting a knowingly-superseded instance as healthy: the alarm still
+  fires, but the number the operator escalates on is reset on every tick.
 
 Over Twirp this is `WiringPosture`, which takes an `Actor` (system-admin authority
 resolves in an active account) and renders durations as Go duration text and

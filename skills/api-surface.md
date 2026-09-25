@@ -521,11 +521,20 @@ seriously rather than as tuning.
   is the classification of last resort for a failure nothing else coded. Burying a
   specific code under the alarm's costs the operator that code's registry fixups,
   which are the remedy.
-- **Recovery CLEARS it, completely.** Any successful refresh — including one that
-  observed no change, which is almost every tick of almost every deployment —
-  resets the window, the count, the code and the reason. An alarm that latches past
-  its own remedy trains an operator to ignore the channel, which is silent
-  staleness by a longer route.
+- **Recovery CLEARS it, completely.** Any COMPLETED refresh — one that observed no
+  change, which is almost every tick of almost every deployment, or one that adopted
+  a change — resets the window, the count, the code and the reason. An alarm that
+  latches past its own remedy trains an operator to ignore the channel, which is
+  silent staleness by a longer route.
+- **A refresh that READ the tables and then refused to ADOPT them has completed
+  nothing**, so it neither clears nor restarts the window. This is the failure mode
+  where the distinction bites: the read succeeded, so a tick that cleared on the
+  strength of the read alone and re-armed on the refusal would leave the alarm
+  firing with worthless NUMBERS — `Refreshed` zeroes the window and the count, so a
+  push refused for four hours would report one failure and an age of one tick,
+  forever. Staleness is CONTINUOUS from the first refusal until an adoption
+  succeeds. `Posture().Digest` moves with the ADOPTION and never with the read, so
+  it never names wiring this instance refused.
 - **On the wire it is `WiringPosture(WiringPostureRequest)`.** It takes an `Actor`
   rather than `Empty` because system-admin authority is resolved in an ACTIVE
   ACCOUNT and only the caller knows which of its accounts that is; the principal on
