@@ -28,6 +28,14 @@ import (
 // On any failure the partially constructed store is closed and the caller gets a
 // coded error: the failure's OWN code when it has one, and APERTURE_BOOT only
 // when it does not. See bootError for why that distinction is not cosmetic.
+//
+// The SHARED WIRING is not read here, although it is read from a store this
+// function has already run Setup on. It is read by readSharedWiring, from
+// buildDecisionStack, which is the one place the registries are built — the set
+// has no use before that and no caller of buildStore that does not go on to build
+// a stack has anything to do with it (`aperture import` seeds a model; `aperture
+// wiring push` writes the set it is about to replace). Reading it here would mean
+// handing every one of those callers a value to carry and ignore.
 func buildStore(ctx context.Context, storeDSN, seedPath string) (model.Storage, error) {
 	kind := classifyStore(storeDSN)
 	store, err := openStore(storeDSN)
@@ -208,13 +216,41 @@ func loadSeed(ctx context.Context, store model.Storage, seedPath string, kind st
 	return seed.Load(ctx, store, seed.Example, seed.FormatYAML)
 }
 
-// seedDocument parses the seed model (the --seed file, or the embedded example
-// when empty) into a Document so a command can read the sections Apply does not
-// write to storage — the two object-source wiring sections, `providers:` and
-// `objects:`, which BuildRegistry turns into one live registry. It mirrors
-// loadSeed's file-vs-embedded choice.
-func seedDocument(seedPath string) (*seed.Document, error) {
+// seedDocument parses this instance's LOCAL wiring document — the --seed file, or
+// the embedded example for the in-memory demo — so a command can read the
+// sections Apply does not write to storage: the object-source wiring sections
+// `providers:` and `objects:`, the attribute sections, `field_types:`, and
+// `connections:`.
+//
+// It mirrors loadSeed exactly, including the asymmetry, and for the same reason.
+// With no --seed:
+//
+//   - an IN-MEMORY store gets the embedded example, which is the zero-flag demo:
+//     there is no database to overwrite, the fixture is the only model there could
+//     be, and the getting-started pages rest on it; and
+//   - a DURABLE store gets an EMPTY document.
+//
+// That second half is the seam loadSeed's fix left open. loadSeed stopped writing
+// the acme fixture's MODEL to a durable store with no --seed, which is what an
+// operator notices; this function went on returning the same fixture's WIRING, so
+// `aperture serve --store postgres://prod` with no --seed built its object
+// providers, its field types and its attribute bags out of the demo document.
+// Nothing wrote a row, so nothing was visibly wrong — the instance simply decided
+// against a wiring nobody had configured, reading `object.*` for types the
+// operator's model does not have and serving inline bags for acme's principals.
+// A durable store with no --seed now has NO local wiring, which is the honest
+// answer and the state a second instance boots in: its wiring comes from the
+// database it shares (readSharedWiring), or it has none.
+//
+// kind is the backend --store selected, taken from classifyStore so the rule
+// lives in ONE place. A second notion of durability written out again here could
+// drift from the backend actually opened, and drifting in the permissive
+// direction means wiring somebody's production decisions to the demo fixture.
+func seedDocument(seedPath string, kind storeKind) (*seed.Document, error) {
 	if seedPath == "" {
+		if kind.durable() {
+			return &seed.Document{}, nil
+		}
 		doc, err := seed.Parse(seed.Example, seed.FormatYAML)
 		if err != nil {
 			return nil, aerr.Wrap(aerr.APERTURE_BOOT, "cli: parsing the embedded seed failed", err)
@@ -226,6 +262,36 @@ func seedDocument(seedPath string) (*seed.Document, error) {
 		return nil, aerr.Wrap(aerr.APERTURE_BOOT, "cli: parsing the seed file failed", err)
 	}
 	return doc, nil
+}
+
+// readSharedWiring reads the whole shared wiring set out of an already-Setup
+// store, for the boot that is about to build its registries from it.
+//
+// It is ONE read of all five tables from one consistent snapshot
+// (model.Storage.GetWiring), never five List* calls: a provider entry naming a
+// connection the manifest does not list is not half-valid wiring, and an instance
+// that assembled its wiring out of five separate reads could build a registry
+// from two different versions of it while reporting nothing. The List* reads are
+// for `aperture wiring show`, which is diagnosing a set rather than booting on
+// one.
+//
+// An EMPTY set is an answer, not a failure — model.WiringSet.IsEmpty reports it —
+// and it is the answer every single-instance deployment gives: nothing has been
+// pushed, so the local seed file's wiring is used exactly as it always was. There
+// is no flag for that and no configuration to add.
+//
+// The pass-through guard is the point of the wrap. GetWiring's own refusals are
+// the ones an operator can act on — APERTURE_STORAGE_SCHEMA_INCOMPATIBLE for a
+// database written by an older build is the likely one here, since the wiring
+// tables are exactly what an older build does not have — and re-stamping either
+// APERTURE_BOOT would replace the remedy with "aperture failed to start". See
+// bootError.
+func readSharedWiring(ctx context.Context, store model.Storage) (model.WiringSet, error) {
+	set, err := store.GetWiring(ctx)
+	if err != nil {
+		return model.WiringSet{}, bootError("cli: reading the shared wiring failed", err)
+	}
+	return set, nil
 }
 
 // seedBaseDir is the directory declared provider paths resolve against: the

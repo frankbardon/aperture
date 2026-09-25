@@ -60,6 +60,37 @@ multi-step session against a persistent store should pass the document once and
 then drop the flag — otherwise each step's deletions are undone by the next
 step's seed.
 
+### It means the same thing for *wiring*
+
+A seed document carries two kinds of section, and the table above is about the
+first: the ten **model-state** sections, which `--seed` applies to storage. The
+other six are runtime **wiring** — `providers:`, `objects:`, `field_types:`,
+`connections:`, `attributes:` and `attribute_providers:` — which say where a
+decision reads object metadata and subject attribute bags *from*. Those are never
+written to storage by `--seed`, so the file is read a second time for them.
+
+An omitted `--seed` means the same thing for both halves:
+
+| `--store` | `--seed` omitted |
+|---|---|
+| omitted (in-memory) | the example fixture supplies the wiring too |
+| a SQLite path or a `postgres://` URL | **no local wiring**; the instance is wired by the [shared wiring tables](../concepts/storage.md) if they hold rows, and by nothing if they do not |
+
+So `aperture serve --store 'postgres://aperture@db/aperture'` with no `--seed`
+reads its object providers, field types and attribute slots out of the database
+it opened. When those tables are empty — which is every deployment that has never
+run `aperture wiring push` — the local seed file's wiring is used exactly as it
+always was. There is no flag for this and nothing to configure.
+
+A shared connection carries its **name** and nothing else: no DSN, no credential,
+not even the `dsn_env:` variable name. Each instance supplies its own route for a
+name, in one of three ways — a Go host's `seed.WithConnectionOpener`, a
+`connections:` entry under the same name in this instance's own seed file, or the
+conventional environment variable `APERTURE_CONNECTION_<NAME>_DSN` (every
+character that is not a letter or digit becomes an underscore, so `main` reads
+`APERTURE_CONNECTION_MAIN_DSN`). A name with no route at all refuses the boot,
+naming the variable it wanted.
+
 ## Scoping a decision: `--account`
 
 `--account` names the active account a decision or mutation is scoped to. Its

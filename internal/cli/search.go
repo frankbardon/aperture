@@ -93,7 +93,7 @@ func runSearch(ctx context.Context, cmd *ucli.Command) error {
 	}
 	defer func() { _ = store.Close() }()
 
-	stack, err := buildDecisionStack(cmd, store, cmd.String("seed"))
+	stack, err := buildDecisionStack(ctx, cmd, store, cmd.String("seed"))
 	if err != nil {
 		return err
 	}

@@ -57,7 +57,7 @@ func attributeStack(ctx context.Context, cmd *ucli.Command) (decisionStack, func
 	if err != nil {
 		return decisionStack{}, nil, err
 	}
-	stack, err := buildDecisionStack(cmd, store, cmd.String("seed"))
+	stack, err := buildDecisionStack(ctx, cmd, store, cmd.String("seed"))
 	if err != nil {
 		_ = store.Close()
 		return decisionStack{}, nil, err
@@ -144,12 +144,20 @@ func attributesSlotsCommand() *ucli.Command {
 }
 
 func runAttributeSlots(ctx context.Context, cmd *ucli.Command) error {
-	// The document is the only source for a slot's SOURCE: providers:, objects:,
-	// attributes: and attribute_providers: are runtime wiring that Apply never
-	// writes to storage, so the file is their source of truth. The precedence
-	// between the two attribute sections is seed's own rule, asked of the
-	// document rather than re-derived here (seed.Document.AttributeSlotSources).
-	doc, err := seedDocument(cmd.String("seed"))
+	// The LOCAL document is the source for a slot's SOURCE: attributes: and
+	// attribute_providers: are runtime wiring that Apply never writes to storage,
+	// so the file is the source of truth for the half of the wiring that is
+	// file-local. The precedence between the two sections is seed's own rule, asked
+	// of the document rather than re-derived here
+	// (seed.Document.AttributeSlotSources).
+	//
+	// A slot filled from the SHARED wiring reports no source here, because this
+	// document does not declare it — the ttl, max-size and cached columns below
+	// still describe it, since they are read off the registry the stack actually
+	// built. Naming the database as a source is a listing change with its own
+	// story; reporting the embedded acme fixture's sources for a store that never
+	// saw it, which is what passing no kind did, was simply wrong.
+	doc, err := seedDocument(cmd.String("seed"), classifyStore(cmd.String("store")))
 	if err != nil {
 		return err
 	}

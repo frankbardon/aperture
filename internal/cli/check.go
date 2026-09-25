@@ -65,7 +65,7 @@ func runCheck(ctx context.Context, cmd *ucli.Command) error {
 	}
 	defer func() { _ = store.Close() }()
 
-	stack, err := buildDecisionStack(cmd, store, cmd.String("seed"))
+	stack, err := buildDecisionStack(ctx, cmd, store, cmd.String("seed"))
 	if err != nil {
 		return err
 	}
@@ -162,7 +162,7 @@ func runEnumerate(ctx context.Context, cmd *ucli.Command) error {
 	}
 	defer func() { _ = store.Close() }()
 
-	stack, err := buildDecisionStack(cmd, store, cmd.String("seed"))
+	stack, err := buildDecisionStack(ctx, cmd, store, cmd.String("seed"))
 	if err != nil {
 		return err
 	}
@@ -219,7 +219,7 @@ func runIdentifiers(ctx context.Context, cmd *ucli.Command) error {
 	}
 	defer func() { _ = store.Close() }()
 
-	stack, err := buildDecisionStack(cmd, store, cmd.String("seed"))
+	stack, err := buildDecisionStack(ctx, cmd, store, cmd.String("seed"))
 	if err != nil {
 		return err
 	}
@@ -266,7 +266,7 @@ func runExplain(ctx context.Context, cmd *ucli.Command) error {
 	}
 	defer func() { _ = store.Close() }()
 
-	stack, err := buildDecisionStack(cmd, store, cmd.String("seed"))
+	stack, err := buildDecisionStack(ctx, cmd, store, cmd.String("seed"))
 	if err != nil {
 		return err
 	}

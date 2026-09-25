@@ -1,12 +1,12 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"strings"
 
 	"github.com/frankbardon/aperture/engine"
-	aerr "github.com/frankbardon/aperture/errors"
 	"github.com/frankbardon/aperture/model"
 	"github.com/frankbardon/aperture/provider"
 	"github.com/frankbardon/aperture/rules"
@@ -119,6 +119,27 @@ func (s decisionStack) reportCollisions(w io.Writer) {
 // `objects:` and `attributes:` — are runtime WIRING that Apply never writes to
 // storage, so the file is their only source of truth.
 //
+// # Where the wiring comes from
+//
+// The file is no longer the only place it can come from. buildStore has already
+// run Setup, so the store's five shared-wiring tables are readable, and this
+// builder reads them (readSharedWiring) before it builds anything:
+//
+//   - wiring rows PRESENT -> the registries are built from the DATABASE. The rows
+//     are projected back into the four wiring sections of a Document
+//     (wiringDocument) and handed to the same two builders the file path uses, so
+//     two instances cannot end up with equivalent-but-different registries. The
+//     local document still supplies its two DATA sections (`objects:` and
+//     `attributes:`) and the ROUTE for each connection name the manifest declares.
+//   - wiring rows EMPTY -> the local seed file's wiring is used exactly as it
+//     always was. An empty set is an answer, not a failure, and it is the answer
+//     every existing single-instance deployment gives: no flag, no configuration,
+//     no behaviour change.
+//
+// ctx is the boot's context, and it is here rather than on a package-level
+// convenience because reading the wiring is a database read on the same store the
+// rest of this function decides through: a cancelled boot must stop at it.
+//
 // Both sections feed ONE *provider.Registry, which in turn feeds BOTH the rules
 // engine's metadata fetcher (so a rule can read object.category_id) AND the scope
 // resolver's object lister (so implicit / exclusive scopes can enumerate a
@@ -147,7 +168,7 @@ func (s decisionStack) reportCollisions(w io.Writer) {
 // the shared flags (or a bare &ucli.Command{} in a test) resolves every one of
 // them to "unset", which is the library's own default and the behaviour this
 // builder had before they existed.
-func buildDecisionStack(cmd *ucli.Command, store model.Storage, seedPath string, engOpts ...engine.Option) (decisionStack, error) {
+func buildDecisionStack(ctx context.Context, cmd *ucli.Command, store model.Storage, seedPath string, engOpts ...engine.Option) (decisionStack, error) {
 	// Resolved FIRST, before a seed is read or a connection pool is opened: a
 	// malformed configured value is an operator typo, and it must fail the command
 	// rather than fail it later holding resources this function would then have to
@@ -157,9 +178,22 @@ func buildDecisionStack(cmd *ucli.Command, store model.Storage, seedPath string,
 		return decisionStack{}, err
 	}
 
-	doc, err := seedDocument(seedPath)
+	local, err := seedDocument(seedPath, classifyStore(cmd.String("store")))
 	if err != nil {
 		return decisionStack{}, err
+	}
+	// After Setup, before anything is built: the shared wiring decides which
+	// document the two registry builders are handed. See the header comment.
+	wiring, err := readSharedWiring(ctx, store)
+	if err != nil {
+		return decisionStack{}, err
+	}
+	doc := local
+	if !wiring.IsEmpty() {
+		doc, err = wiringDocument(wiring, local)
+		if err != nil {
+			return decisionStack{}, err
+		}
 	}
 	// The two-return form, always: the seed may declare `connections:`, whose
 	// pools outlive the build and have to be closed by whoever owns the stack.
@@ -167,7 +201,20 @@ func buildDecisionStack(cmd *ucli.Command, store model.Storage, seedPath string,
 	// cannot hand the pools back.
 	reg, conns, err := doc.BuildRegistryWithConnections(seedBaseDir(seedPath))
 	if err != nil {
-		return decisionStack{}, aerr.Wrap(aerr.APERTURE_BOOT, "cli: building object providers failed", err)
+		// bootError, not a bare wrap, and for the reason spelled out on the
+		// attribute build below: a provider declaration fails with
+		// APERTURE_CONFIG_INVALID (naming the object type and what was wrong with
+		// its statement set, its kind or its ttl) or with
+		// APERTURE_SQL_PROVIDER_CONNECTION (naming the connection and the
+		// environment variable it reads its DSN from), and re-stamping either
+		// APERTURE_BOOT hands the operator "aperture failed to start" instead of
+		// the remedy.
+		//
+		// It matters more now than it did when the wiring could only come from a
+		// file: a DB-wired instance is refused here for wiring that lives in a
+		// database somebody else pushed, so the code and its context are the only
+		// thing pointing at which entry to go and fix.
+		return decisionStack{}, bootError("cli: building object providers failed", err)
 	}
 
 	var fetcher rules.MetadataFetcher // nil => empty object metadata (unchanged default)
