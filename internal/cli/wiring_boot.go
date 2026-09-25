@@ -502,11 +502,17 @@ func wiringSeedFieldTypes(rows []model.WiringFieldType) []seed.FieldType {
 // wiringSeedAttributeProvider converts one stored attribute-provider entry into
 // its seed form.
 //
-// DeclaredKeys has no seed key yet, so nothing is projected for it and the
-// distinction it exists to carry — "not declared" versus "declared empty" — is
-// not collapsed on the way through: it is simply not on this path. Enforcing a
-// declared set is a separate story, and it reads the model rows, not this
-// Document.
+// DeclaredKeys is deliberately NOT projected, and since the seed schema gained a
+// `declared_keys:` key that is now a choice rather than an absence. The reason it
+// stays a choice: this Document exists only to build a registry, and a declared
+// set governs what a RULE may name, which is decided against the stored
+// `model.WiringAttributeProvider` rows and not against anything reconstructed
+// here. Projecting it would put the set on two paths and make the
+// "not declared" versus "declared empty" distinction something two pieces of code
+// have to agree about, for no reader.
+//
+// If enforcement ever needs the set on this path, carry `*[]string` through —
+// never `[]string`, which collapses declared-empty into not-declared.
 func wiringSeedAttributeProvider(ap model.WiringAttributeProvider) seed.AttributeProvider {
 	return seed.AttributeProvider{
 		Subject:    ap.Subject,
