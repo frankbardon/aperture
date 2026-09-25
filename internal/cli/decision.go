@@ -73,6 +73,16 @@ type decisionStack struct {
 	// contested key — which is exactly what an operator debugging an unexpected
 	// attribute value needs told, and which no verdict, trace or note says.
 	attributeCollisions []string
+	// declaredKeys is the DECLARED ATTRIBUTE KEY SET of every shared slot this
+	// instance is wired with — the keys a rule may read off `principal` and
+	// `account`. It is handed to the facade, which refuses a rule naming anything
+	// else at validation (service.WithDeclaredAttributeKeys), and it reaches no
+	// decision: an already-stored rule decides exactly as it did.
+	//
+	// A slot absent from the map declares nothing and is not enforced, so a
+	// deployment that has declared nothing — every one that has not opted in — is
+	// unaffected. See declaredAttributeKeySets for where the two sources are.
+	declaredKeys map[provider.AttributeSlot]model.DeclaredKeys
 	// conns are the database pools BuildRegistryWithConnections opened for the
 	// seed's `connections:` block — one per named connection, shared by every
 	// `kind: sql` provider entry referencing it. It is the only part of the stack
@@ -342,7 +352,10 @@ func buildDecisionStack(ctx context.Context, cmd *ucli.Command, store model.Stor
 		collisions: doc.ProviderCollisions(),
 
 		attributeCollisions: doc.AttributeCollisions(),
-		conns:               conns,
+		// From the WIRING and the LOCAL document, not from doc: the DB-wired
+		// projection does not carry a declared set. See declaredAttributeKeySets.
+		declaredKeys: declaredAttributeKeySets(wiring, local),
+		conns:        conns,
 	}, nil
 }
 
@@ -359,9 +372,16 @@ func buildDecisionStack(ctx context.Context, cmd *ucli.Command, store model.Stor
 // any actor without system-admin authority and refuses outright when no gate is
 // wired — which is exactly the one-shot decision commands, so passing the
 // registry to them changes nothing they can do.
+//
+// The DECLARED KEY SETS are wired here for the same reason, and the same way: they
+// are a definition-time gate on what a rule may read, so `serve`'s editor and a
+// one-shot command's validation have to apply the identical one. It is not a grant
+// or a denial of anything — a deployment that declares nothing passes every rule it
+// passed before — and it never reaches a decision.
 func (s decisionStack) newService(opts ...service.Option) *service.Service {
-	all := make([]service.Option, 0, len(opts)+2)
-	all = append(all, service.WithProviders(s.registry), service.WithAttributes(s.attributes))
+	all := make([]service.Option, 0, len(opts)+3)
+	all = append(all, service.WithProviders(s.registry), service.WithAttributes(s.attributes),
+		service.WithDeclaredAttributeKeys(s.declaredKeys))
 	all = append(all, opts...)
 	return service.New(s.eng, all...)
 }

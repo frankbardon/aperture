@@ -665,6 +665,30 @@ preserved, so `aperture wiring pull` reproduces the author's
 list rather than a sorted paraphrase, and push → pull → push is a fixed point for a
 slot that declares a set.
 
+#### What a declaring slot refuses
+
+Enforcement is **definition-time**, in rule validation, and never at decision time: a
+rule reading a key the slot does not declare is refused when it is saved or checked
+(`APERTURE_RULE_UNDECLARED_ATTRIBUTE`, naming the key and the slot, shown on the rule
+editor's canvas), while a rule already stored keeps deciding exactly as it did. A
+refusal in production, on some instances and not others, would be the very divergence
+the declared set removes.
+
+Two things a declared set never covers:
+
+- **The floor.** `principal.id`, `principal.kind` and `account.id` are stamped by the
+  engine over every resolver's answer, so they are always readable and are never part
+  of a declared set. Declaring them is redundant, not required.
+- **A whole-bag read.** A bare `principal` or `account` with no path reads whatever
+  the bag carries, so it is refused outright by a declaring root rather than treated
+  as naming nothing.
+
+The `account` root is backed by one slot and is enforced when that slot declares. The
+`principal` root is backed by **two** — user and machine — and `principal.*` resolves
+to one or the other by the asking principal's kind, which validation cannot know: so
+the permitted set is the **union** of the two, and the root is enforced only when
+**both** slots declare. `skills/attribute-providers.md` has the argument for each half.
+
 ### The bare-id contract
 
 An attribute key is a **bare** principal id or account id — an opaque handle into

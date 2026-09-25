@@ -250,6 +250,26 @@ const (
 	// configured rule source cannot resolve. Raised before evaluation when the
 	// rule-backed inclusive/exclusive path looks up its rule.
 	APERTURE_RULE_NOT_FOUND Code = "APERTURE_RULE_NOT_FOUND"
+	// APERTURE_RULE_UNDECLARED_ATTRIBUTE — a rule reads an attribute key off
+	// `principal` or `account` that the deployment's shared wiring does not
+	// DECLARE for that root. Raised by AST validation, never at decision time: the
+	// point is that the rule is refused where it is authored rather than shipped
+	// and then silently wrong somewhere else.
+	//
+	// A slot that declares no key set is not enforced at all, so this code cannot
+	// be raised against a deployment that has declared nothing — which is every
+	// deployment that has not opted in. A `principal` read is enforced only when
+	// BOTH principal slots (user and machine) declare, because a rule cannot know
+	// which kind will ask.
+	//
+	// What it prevents is an over-grant BETWEEN INSTANCES. A local attribute layer
+	// may add keys the shared directory does not carry; a rule naming one of them
+	// decides on the instance that has the key and reads a MISSING PATH on the
+	// instance that does not — and a missing path neither denies nor errors, it
+	// makes every predicate over it false, so an inclusive grant denies and an
+	// EXCLUSIVE grant stops excluding, with nothing in any verdict, trace or note
+	// to say why.
+	APERTURE_RULE_UNDECLARED_ATTRIBUTE Code = "APERTURE_RULE_UNDECLARED_ATTRIBUTE"
 	// APERTURE_DELEGATION_DENIED — a delegator tried to bestow (or revoke) a grant
 	// that exceeds the authority they hold in the active account: it is not a
 	// subset of their own effective allow grants, they hold no "may delegate"
@@ -711,6 +731,15 @@ var Registry = map[Code]Metadata{
 			"Confirm the rule reference exists in the configured rule source.",
 		},
 	},
+	APERTURE_RULE_UNDECLARED_ATTRIBUTE: {
+		Message: "rule reads an attribute key the wiring does not declare",
+		Fixups: []string{
+			"Add the key to declared_keys: on the attribute_providers: entry for the slot the message names, then push the wiring again.",
+			"Or stop reading the key in the rule: a key no shared entry declares is served by at most one instance's local layer, so a rule over it decides differently per instance.",
+			"Read individual keys rather than the whole bag — a bare `principal` or `account` reference reads every key the bag happens to carry, which no declared set can cover.",
+			"A slot that declares no key set is not enforced at all; remove declared_keys: from the entry to opt that slot back out.",
+		},
+	},
 	APERTURE_DELEGATION_DENIED: {
 		Message: "the delegator may not bestow this grant",
 		Fixups: []string{
@@ -885,6 +914,7 @@ var AllCodes = []Code{
 	APERTURE_RULE_TYPE_ERROR,
 	APERTURE_RULE_EVAL,
 	APERTURE_RULE_NOT_FOUND,
+	APERTURE_RULE_UNDECLARED_ATTRIBUTE,
 	APERTURE_DELEGATION_DENIED,
 	APERTURE_DELEGATION_NOT_DELEGATABLE,
 	APERTURE_IMPERSONATION_DENIED,
