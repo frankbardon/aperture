@@ -876,16 +876,56 @@ func varyField(v reflect.Value) bool {
 		// owned child table.
 		v.Set(reflect.Append(v, reflect.New(v.Type().Elem()).Elem()))
 		return true
-	case reflect.Struct:
-		for i := 0; i < v.NumField(); i++ {
-			if v.Type().Field(i).IsExported() && varyField(v.Field(i)) {
-				return true
-			}
-		}
-		return false
 	default:
+		// A STRUCT reaches here only if varyPointsOf did not expand it, which is a
+		// defect in this gate rather than a type it may stand in for. It used to vary
+		// the FIRST field it could and return — which for model.DeclaredKeys{Declared
+		// bool, Keys []string} meant `Declared`, so `Keys` was never varied in any
+		// subtest and a digest that dropped it would have left the gate GREEN. A gate
+		// that fails by passing is the one thing this one must not be.
 		return false
 	}
+}
+
+// varyPoint is one leaf of a wiring row: the chain of field indices that reaches it
+// from the row, and the name to report it by.
+type varyPoint struct {
+	name  string
+	index []int
+}
+
+// varyPointsOf enumerates every leaf of t, expanding a STRUCT-valued field into its
+// own fields rather than letting one of them stand in for the rest.
+//
+// The expansion is the correctness of the gate it serves. A column whose type is a
+// struct holds several independent things a push can change — model.DeclaredKeys
+// distinguishes `”` (not declared) from `'[]'` (declared empty) in `Declared` and
+// carries the set in `Keys` — and a walk that varied one field and moved on would
+// assert nothing about the others while reporting a pass for the column.
+//
+// time.Time is a leaf, not a struct to expand: varyField knows how to move an
+// instant, and its unexported fields are not wiring.
+func varyPointsOf(t reflect.Type, name string, index []int) []varyPoint {
+	if t.Kind() != reflect.Struct || t == reflect.TypeOf(time.Time{}) {
+		return []varyPoint{{name: name, index: index}}
+	}
+	var out []varyPoint
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if !f.IsExported() {
+			continue
+		}
+		out = append(out, varyPointsOf(f.Type, name+"."+f.Name, append(append([]int{}, index...), i))...)
+	}
+	return out
+}
+
+// resolveVaryPoint walks a point's index chain from a row to the value it names.
+func resolveVaryPoint(row reflect.Value, p varyPoint) reflect.Value {
+	for _, i := range p.index {
+		row = row.Field(i)
+	}
+	return row
 }
 
 // TestTheDigestCoversEveryContentFieldAndNoStamp is the gate the whole change
@@ -904,65 +944,83 @@ func varyField(v reflect.Value) bool {
 //
 // A field of a type varyField does not know how to change fails the test rather
 // than being skipped. A silent skip here is exactly how the first direction gets
-// shipped.
+// shipped — and a STRUCT-valued column is the shape that skips without looking like
+// one, which is why varyPointsOf expands one into a subtest per leaf rather than
+// letting its first field stand in for the rest.
 func TestTheDigestCoversEveryContentFieldAndNoStamp(t *testing.T) {
 	base := mustDigest(t, digestFixture())
 
-	sections := []string{"Connections", "Providers", "FieldTypes", "AttributeProviders"}
-	for _, section := range sections {
-		elem := reflect.ValueOf(digestFixture()).FieldByName(section).Type().Elem()
-		if elem.Kind() != reflect.Struct {
-			t.Fatalf("section %s is a slice of %s, not of a struct: the gate below cannot walk it", section, elem.Kind())
+	// Every row the digest is taken over, and how to reach it from a fresh fixture.
+	// The owned child table is in the list for the same reason the four sections are:
+	// WiringReference carries no stamps of its own (its history is its provider
+	// entry's), so every field of it is content.
+	rows := []struct {
+		label string
+		row   func(*model.WiringSet) reflect.Value
+	}{
+		{"Connections", func(s *model.WiringSet) reflect.Value {
+			return reflect.ValueOf(s).Elem().FieldByName("Connections").Index(0)
+		}},
+		{"Providers", func(s *model.WiringSet) reflect.Value {
+			return reflect.ValueOf(s).Elem().FieldByName("Providers").Index(0)
+		}},
+		{"FieldTypes", func(s *model.WiringSet) reflect.Value {
+			return reflect.ValueOf(s).Elem().FieldByName("FieldTypes").Index(0)
+		}},
+		{"AttributeProviders", func(s *model.WiringSet) reflect.Value {
+			return reflect.ValueOf(s).Elem().FieldByName("AttributeProviders").Index(0)
+		}},
+		{"WiringReference", func(s *model.WiringSet) reflect.Value {
+			return reflect.ValueOf(s).Elem().FieldByName("Providers").Index(0).FieldByName("References").Index(0)
+		}},
+	}
+
+	for _, r := range rows {
+		fixture := digestFixture()
+		rowType := r.row(&fixture).Type()
+		if rowType.Kind() != reflect.Struct {
+			t.Fatalf("%s is a %s, not a struct: the gate below cannot walk it", r.label, rowType.Kind())
 		}
-		for i := 0; i < elem.NumField(); i++ {
-			field := elem.Field(i)
+		for i := 0; i < rowType.NumField(); i++ {
+			field := rowType.Field(i)
 			if !field.IsExported() {
 				continue
 			}
-			name := section + "." + field.Name
-			t.Run(name, func(t *testing.T) {
-				set := digestFixture()
-				target := reflect.ValueOf(&set).Elem().FieldByName(section).Index(0).Field(i)
-				if !varyField(target) {
-					t.Fatalf("this gate does not know how to vary %s (a %s), so it cannot say whether the "+
-						"digest covers it. Teach varyField the type — do NOT skip the field: a field the "+
-						"digest ignores is a wiring change no instance ever notices", name, field.Type)
-				}
-				got := mustDigest(t, set)
-				stamp := field.Name == "CreatedAt" || field.Name == "UpdatedAt"
-				if stamp && got != base {
-					t.Errorf("changing %s changed the digest. Stamps are OUT: ReplaceWiring re-stamps every "+
-						"row on every push, so a stamp in the digest makes an identical re-push read as a "+
-						"change and costs a needless rebuild", name)
-				}
-				if !stamp && got == base {
-					t.Errorf("changing %s did NOT change the digest, so a push that changes it is a change "+
-						"this instance never sees — a silently stale instance that reports itself healthy", name)
-				}
-			})
-		}
-	}
-
-	// The owned child table too. WiringReference carries no stamps of its own (its
-	// history is its provider entry's), so every field of it is content.
-	refType := reflect.TypeOf(model.WiringReference{})
-	for i := 0; i < refType.NumField(); i++ {
-		field := refType.Field(i)
-		if !field.IsExported() {
-			continue
-		}
-		t.Run("WiringReference."+field.Name, func(t *testing.T) {
-			set := digestFixture()
-			target := reflect.ValueOf(&set).Elem().FieldByName("Providers").Index(0).
-				FieldByName("References").Index(0).Field(i)
-			if !varyField(target) {
-				t.Fatalf("this gate does not know how to vary WiringReference.%s (a %s)", field.Name, field.Type)
+			// A stamp is named at the TOP level of a row, so a nested leaf inherits its
+			// column's answer — which is right: a struct-valued stamp would be out whole.
+			stamp := field.Name == "CreatedAt" || field.Name == "UpdatedAt"
+			points := varyPointsOf(field.Type, field.Name, []int{i})
+			if len(points) == 0 {
+				t.Run(r.label+"."+field.Name, func(t *testing.T) {
+					t.Fatalf("%s.%s (a %s) expands to NO variation points, so this gate asserts nothing about "+
+						"it. Teach varyPointsOf the type — do NOT let it pass silently: a field the digest "+
+						"ignores is a wiring change no instance ever notices", r.label, field.Name, field.Type)
+				})
+				continue
 			}
-			if mustDigest(t, set) == base {
-				t.Errorf("changing WiringReference.%s did not change the digest: a re-pointed declared "+
-					"reference is a wiring change", field.Name)
+			for _, pt := range points {
+				name := r.label + "." + pt.name
+				t.Run(name, func(t *testing.T) {
+					set := digestFixture()
+					target := resolveVaryPoint(r.row(&set), pt)
+					if !varyField(target) {
+						t.Fatalf("this gate does not know how to vary %s (a %s), so it cannot say whether the "+
+							"digest covers it. Teach varyField the type — do NOT skip the field: a field the "+
+							"digest ignores is a wiring change no instance ever notices", name, target.Type())
+					}
+					got := mustDigest(t, set)
+					if stamp && got != base {
+						t.Errorf("changing %s changed the digest. Stamps are OUT: ReplaceWiring re-stamps every "+
+							"row on every push, so a stamp in the digest makes an identical re-push read as a "+
+							"change and costs a needless rebuild", name)
+					}
+					if !stamp && got == base {
+						t.Errorf("changing %s did NOT change the digest, so a push that changes it is a change "+
+							"this instance never sees — a silently stale instance that reports itself healthy", name)
+					}
+				})
 			}
-		})
+		}
 	}
 }
 
