@@ -29,13 +29,16 @@ import (
 // coded error: the failure's OWN code when it has one, and APERTURE_BOOT only
 // when it does not. See bootError for why that distinction is not cosmetic.
 //
-// The SHARED WIRING is not read here, although it is read from a store this
+// The SHARED WIRING is not HANDED OUT here, although it is read from a store this
 // function has already run Setup on. It is read by readSharedWiring, from
 // buildDecisionStack, which is the one place the registries are built — the set
 // has no use before that and no caller of buildStore that does not go on to build
 // a stack has anything to do with it (`aperture import` seeds a model; `aperture
-// wiring push` writes the set it is about to replace). Reading it here would mean
+// wiring push` writes the set it is about to replace). Returning it here would mean
 // handing every one of those callers a value to carry and ignore.
+//
+// refuseUndeclaredSeedRules does read it, and CONSUMES it locally rather than
+// returning it, which is why that objection does not apply to it.
 func buildStore(ctx context.Context, storeDSN, seedPath string) (model.Storage, error) {
 	kind := classifyStore(storeDSN)
 	store, err := openStore(storeDSN)
@@ -45,6 +48,10 @@ func buildStore(ctx context.Context, storeDSN, seedPath string) (model.Storage, 
 	if err := store.Setup(ctx); err != nil {
 		_ = store.Close()
 		return nil, bootError("cli: storage setup failed", err)
+	}
+	if err := refuseUndeclaredSeedRules(ctx, store, seedPath, kind); err != nil {
+		_ = store.Close()
+		return nil, err
 	}
 	if err := loadSeed(ctx, store, seedPath, kind); err != nil {
 		_ = store.Close()

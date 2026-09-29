@@ -37,21 +37,26 @@ import (
 //
 // The sentence above is an argument about reachability, so one unchecked writer
 // falsifies it for the whole deployment rather than merely leaving a gap. The
-// writers are service.PutRule and service.ValidateRule (both through
-// ValidateASTDeclaring), service.EvaluateRulePreview, and service.Import — which
-// checks every rule in a document through CheckDeclaredAttributeKeys and refuses
-// the file whole. Import was NOT checked for a while, and the claim was simply
-// false while that was true: seed.Document.Apply's validateRuleAST is a structural
-// check, so an admin-tier import wrote rules past this package entirely.
+// writers, and all of them check:
 //
-// One route is still unchecked, deliberately and not silently: applying a --seed
-// document at BOOT. The declared sets are not yet known when internal/cli's
-// loadSeed runs — they are collected from the shared wiring and the local document
-// afterwards — and this package cannot close it, because the slot-to-root collapse
-// lives in service.WithDeclaredAttributeKeys and seed cannot import service. The
-// close belongs in internal/cli, between reading the wiring and applying the
-// document. Until it lands, a rule authored into a --seed file can name an
-// undeclared key; a rule authored through any API cannot.
+//   - service.PutRule and service.ValidateRule, through ValidateASTDeclaring;
+//   - service.EvaluateRulePreview, so the editor's "check" button and its save
+//     cannot disagree;
+//   - service.Import (requireDeclaredRuleKeys), which walks every rule in a
+//     document and refuses the file WHOLE, before the transaction opens; and
+//   - the --seed boot path (internal/cli's refuseUndeclaredSeedRules), which reads
+//     the shared wiring, checks the document's rules against the declared sets, and
+//     refuses to START rather than apply them.
+//
+// The last two were BOTH unchecked for a while, and the claim above was simply
+// false while that was true: seed.Document.Apply's validateRuleAST is a structural
+// check, so an admin-tier import and a --seed file each wrote rules past this
+// package entirely. The boot one had to be refused before the document is applied
+// rather than after: a rule that reaches storage is in the SHARED database and so
+// reaches every other instance, at which point refusing one instance's boot is no
+// protection. Neither could live in seed, because the slot-to-root collapse belongs
+// to whoever can see both slots and roots and seed cannot import service — hence
+// service.DeclaredAttributeKeysFor, which is that collapse exported for the boot.
 //
 // # Opt-in, per slot
 //

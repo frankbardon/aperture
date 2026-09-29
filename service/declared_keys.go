@@ -58,7 +58,20 @@ import (
 // The floor keys (`principal.id`, `principal.kind`, `account.id`) are not part of
 // any declared set and are always readable — see rules/declared.go.
 func WithDeclaredAttributeKeys(sets map[provider.AttributeSlot]model.DeclaredKeys) Option {
-	return func(s *Service) { s.declaredKeys = declaredAttributeKeys(sets) }
+	return func(s *Service) { s.declaredKeys = DeclaredAttributeKeysFor(sets) }
+}
+
+// DeclaredAttributeKeysFor is the slot-to-root collapse, exported for a caller that
+// has to apply the same gate WITHOUT a facade.
+//
+// The boot path is that caller: applying a --seed document writes rules straight to
+// storage, with no Service in front of it, and a writer that skipped the check would
+// falsify the inertness argument the whole declared set rests on (rules/declared.go).
+// Exporting the collapse is what keeps it stated ONCE: the alternative is internal/cli
+// reimplementing "union the principal slots, and only when every one of them
+// declares", which is silently wrong in the widening direction if the two drift.
+func DeclaredAttributeKeysFor(sets map[provider.AttributeSlot]model.DeclaredKeys) rules.DeclaredAttributeKeys {
+	return declaredAttributeKeys(sets)
 }
 
 // declaredAttributeKeys collapses the per-slot declarations onto the two rule

@@ -816,6 +816,18 @@ document **whole and before the transaction opens** and passing
 `APERTURE_RULE_UNDECLARED_ATTRIBUTE` through rather than re-stamping it, so the
 refusal still names the key and the entry to edit.
 
+The **`--seed` boot path** was the other one, and `internal/cli`'s
+`refuseUndeclaredSeedRules` closes it: it reads the shared wiring, checks the
+document's rules against the merged declared sets, and **refuses to start** rather
+than applying them. It has to run *before* the document is applied, not after — a
+rule that reaches storage is in the shared database and therefore reaches every
+other instance, and at that point refusing one instance's boot protects nothing. It
+is a no-op for a deployment that declares nothing: no wiring read, no parse, no
+walk. The slot-to-root collapse it uses is `service.DeclaredAttributeKeysFor` — the
+same one the facade uses, exported rather than reimplemented, because "union the
+principal slots, and only when every one declares" is silently wrong in the
+widening direction if two copies drift.
+
 It is refused at **authoring** and never at decision time, deliberately. A
 decision-time refusal would let a bad rule ship and then fail in production — on
 some instances and not others, which is the very divergence being removed, wearing
