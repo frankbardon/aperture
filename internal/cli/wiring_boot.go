@@ -650,10 +650,14 @@ func wiringSeedAttributeProvider(ap model.WiringAttributeProvider) seed.Attribut
 //     the name and builds its own pool. Arc does exactly this today, with a
 //     dsn_env: it has deliberately set to a placeholder.
 //  2. This instance's own seed file declares a connections: entry under the same
-//     name. The entry is used verbatim — dsn_env:, pool sizes, query_timeout —
-//     because a route is precisely what a local connections: entry is. Its four
-//     wiring sections are not read for a DB-wired boot; this one key is a route
-//     table, not wiring.
+//     name AND that entry actually says where the DSN is (localEntryIsARoute). The
+//     entry is then used verbatim — dsn_env:, pool sizes, query_timeout — because a
+//     route is precisely what a local connections: entry is. Its four wiring
+//     sections are not read for a DB-wired boot; this one key is a route table, not
+//     wiring. An entry with an EMPTY dsn_env: is not a route and falls through to
+//     (3), keeping whatever pool tuning it carried: that is the shape
+//     `aperture wiring pull` emits for every manifest name, and treating it as a
+//     route sent the operator of the commonest workflow to the wrong refusal.
 //  3. Neither: the name resolves to the conventional environment variable
 //     (connectionDSNEnvVar), which is what `aperture serve --store <dsn>` with no
 //     --seed has left.
@@ -700,12 +704,19 @@ func connectionRoutes(manifest []model.WiringConnection, local *seed.Document) (
 	// somewhere nobody asked for.
 	derived := make(map[string][]string, len(manifest))
 	for _, c := range manifest {
-		if _, routed := out[c.Name]; routed {
+		if local, ok := out[c.Name]; ok && localEntryIsARoute(local) {
 			continue
 		}
 		env := connectionDSNEnvVar(c.Name)
 		derived[env] = append(derived[env], c.Name)
-		out[c.Name] = seed.Connection{DSNEnv: env}
+		// The local entry's own POOL TUNING is kept when there was one — only the
+		// missing half, the variable to read the DSN from, is supplied. A
+		// `connections:` entry that sizes a pool and names no variable is still that
+		// pool's settings; dropping them because the credential half was blank would
+		// silently re-tune a connection an operator configured.
+		route := out[c.Name]
+		route.DSNEnv = env
+		out[c.Name] = route
 	}
 	for _, env := range sortedMapKeys(derived) {
 		names := derived[env]
@@ -820,6 +831,32 @@ func connectionDSNEnvVar(name string) string {
 	}
 	b.WriteString(connectionDSNEnvSuffix)
 	return b.String()
+}
+
+// localEntryIsARoute reports whether a local connections: entry actually ROUTES
+// the name it is declared under — that is, whether it says where this instance's
+// DSN is to be read from.
+//
+// An entry whose dsn_env: is EMPTY does not. It used to count as one, and that let
+// the name skip refuseUnroutedConnections entirely, which mattered because
+// `aperture wiring pull` emits `dsn_env: ""` for every name in the manifest BY
+// DESIGN — the shared tables hold a connection's name and nothing else, and a pull
+// that invented a variable name would be guessing at another machine's environment.
+// So the one workflow that produces the shape was the one workflow whose boot got
+// the WORSE refusal: seed.resolveConnection's APERTURE_SQL_PROVIDER_CONNECTION,
+// whose fixups send the operator to a document's connections: block — which, for a
+// name that came out of the database, is exactly the "greps a seed file that never
+// mentioned main" problem APERTURE_WIRING_CONNECTION_UNROUTED was written to fix.
+//
+// Both refusals are refusals, so nothing unsafe booted either way; what was wrong
+// was the remedy. A pulled file used as --seed now falls through to the conventional
+// variable and is refused by the check that names it.
+//
+// A DSNLiteral counts as a route: it cannot reach a parsed document (seed.Parse
+// refuses one before the file is usable) but a Go-assembled document may carry one,
+// and it does say where the DSN is.
+func localEntryIsARoute(c seed.Connection) bool {
+	return strings.TrimSpace(c.DSNEnv) != "" || strings.TrimSpace(c.DSNLiteral) != ""
 }
 
 // sortedMapKeys returns a map's keys in a stable order, so a refusal built by
