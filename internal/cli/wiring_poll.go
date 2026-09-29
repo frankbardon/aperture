@@ -146,6 +146,44 @@ const (
 // without an interval.
 const defaultWiringPollInterval = 30 * time.Second
 
+// wiringPollCloseGrace and wiringPollCloseWait bound how long a stopping process
+// waits for a tick that is still running, and are the answer to a shutdown that
+// used to be unbounded and silent.
+//
+// # What was wrong with waiting forever
+//
+// Close cancels the loop's context and waits for the goroutine, and NOTHING inside
+// a rebuild is cancellable: seedDocument reads the --seed file, csvprovider opens
+// every declared CSV, and the registries are constructed from what they hold. A
+// SIGTERM landing while a tick rebuilds over a large CSV provider on a stalled
+// network mount therefore let httpServer.Shutdown complete within shutdownTimeout
+// and then parked the process inside Close for the rebuild's duration, with nothing
+// on stderr, exiting only on SIGKILL. An orchestrator's termination grace period is
+// sized against shutdownTimeout; that exceeded it and reported nothing.
+//
+// # Why two numbers
+//
+// The GRACE is silence. A loop parked in its own select returns within
+// microseconds of the cancel, which is what happens on essentially every shutdown,
+// and a line printed for that would be noise on every restart of every deployment
+// — and noise is how the line that matters gets skipped.
+//
+// The WAIT is the bound, and 5s against shutdownTimeout's 10s is chosen so the
+// worst case of the two together stays inside the 30s termination grace an
+// orchestrator gives by default. Longer buys the rebuild nothing: it either
+// finishes quickly or it is blocked on I/O that is not coming back. Shorter would
+// abandon rebuilds that were about to finish, for no gain — nothing waits on this
+// but the exit.
+//
+// Abandoning is safe in the direction that counts. A version is installed whole or
+// not at all (wiring_swap.go), so a rebuild interrupted by the process exiting
+// installs nothing; the pools it borrowed belong to the boot, which serve closes
+// once; and whatever it was going to adopt is re-read by the next process to start.
+const (
+	wiringPollCloseGrace = 100 * time.Millisecond
+	wiringPollCloseWait  = 5 * time.Second
+)
+
 // wiringPollFlag is the one declaration of --wiring-poll, constructed fresh per
 // command because a ucli.Flag carries parse state and must not be shared between
 // two commands in one tree.
@@ -413,10 +451,18 @@ type wiringPoll struct {
 
 	// cancel and done are the shutdown pair Close drives: cancel trips the loop's
 	// context, done is closed by the goroutine as it returns. Close waits on it, so
-	// a returned Close is a proof the goroutine is gone and not a request that it
-	// go.
+	// a returned Close is normally a proof the goroutine is gone rather than a
+	// request that it go — see Close for the one bounded exception.
 	cancel context.CancelFunc
 	done   chan struct{}
+
+	// closeGrace and closeWait are wiringPollCloseGrace / wiringPollCloseWait, held
+	// per poller so a test can assert the BOUND itself without spending the real one.
+	// They are read by Close, on the caller's goroutine, and never by the loop. A
+	// non-positive value falls back to the constant, so a poller built by hand cannot
+	// accidentally have no bound at all.
+	closeGrace time.Duration
+	closeWait  time.Duration
 
 	// ticks and changes are observability for the tests, and the reason they are
 	// atomics is that the loop writes them while a test reads them. They are what
@@ -495,34 +541,81 @@ func startWiringPoll(ctx context.Context, store model.Storage, every time.Durati
 	}
 	loopCtx, cancel := context.WithCancel(ctx)
 	p := &wiringPoll{
-		store:  store,
-		every:  every,
-		swap:   swap,
-		log:    log,
-		health: health,
-		digest: booted,
-		cancel: cancel,
-		done:   make(chan struct{}),
+		store:      store,
+		every:      every,
+		swap:       swap,
+		log:        log,
+		health:     health,
+		digest:     booted,
+		cancel:     cancel,
+		done:       make(chan struct{}),
+		closeGrace: wiringPollCloseGrace,
+		closeWait:  wiringPollCloseWait,
 	}
 	p.report("wiring poll: re-reading the shared wiring every %s; a change will be adopted and reported here", every)
 	go p.run(loopCtx)
 	return p
 }
 
-// Close stops the reader and waits for it to be gone. It is nil-safe and
-// idempotent, so `defer poll.Close()` is unconditional and a caller that stops
-// explicitly on shutdown may also defer it — the same contract decisionStack.Close
-// has, for the same reason.
+// Close stops the reader and waits for it to be gone, for a BOUNDED time. It is
+// nil-safe and idempotent, so `defer poll.Close()` is unconditional and a caller
+// that stops explicitly on shutdown may also defer it — the same contract
+// decisionStack.Close has, for the same reason.
+//
+// The bound is the fix for a shutdown that could hang. Cancelling the context stops
+// the loop between ticks at once, but a tick already inside a REBUILD is not
+// interruptible — see wiringPollCloseWait — so an unbounded wait here put the
+// process's exit at the mercy of a file read on a stalled mount, silently, after
+// httpServer.Shutdown had already returned. Now it waits, says so if the wait is
+// long enough to notice, and stops waiting.
+//
+// Abandoning the goroutine does not break "a version is installed whole or not at
+// all": the rebuild is in a background goroutine of a process that is exiting, it
+// installs nothing it had not already installed, and its pools are borrowed from
+// the boot. What it costs is that a returned Close is a proof the goroutine is gone
+// only when it did not time out — and when it did, it said so on stderr, which is
+// the one thing the old behaviour did not do.
 //
 // It returns an error only to fit the defer-and-ignore shape every other Close in
-// this package has; there is nothing here that can fail.
+// this package has. A timed-out wait is deliberately NOT one: every caller ignores
+// it, an error nobody reads is not a report, and failing a shutdown over a
+// background rebuild would turn a bounded exit into a non-zero one.
 func (p *wiringPoll) Close() error {
 	if p == nil {
 		return nil
 	}
 	p.cancel()
-	<-p.done
-	return nil
+
+	grace, wait := p.closeGrace, p.closeWait
+	if grace <= 0 {
+		grace = wiringPollCloseGrace
+	}
+	if wait <= 0 {
+		wait = wiringPollCloseWait
+	}
+
+	// The silent path, which is every ordinary shutdown: a loop parked in its own
+	// select returns within microseconds of the cancel.
+	select {
+	case <-p.done:
+		return nil
+	case <-time.After(grace):
+	}
+
+	// Past the grace means a tick is in flight, and the only step in one long enough
+	// to be noticed is a rebuild. Whichever way it ends, it is now legible: silence
+	// was the worst part of the old behaviour, because the symptom was a process that
+	// simply took minutes to exit.
+	p.report("wiring poll: a wiring refresh is still in flight; waiting up to %s for it before this process exits", wait)
+	select {
+	case <-p.done:
+		p.report("wiring poll: the refresh in flight finished, and this process is stopping")
+		return nil
+	case <-time.After(wait):
+		p.report("wiring poll: the refresh in flight did not finish within %s, so this process stops without "+
+			"waiting for it; a wiring version is installed whole or not at all, so it installed nothing", wait)
+		return nil
+	}
 }
 
 // run is the loop. It reads nothing before its first tick, because the boot has

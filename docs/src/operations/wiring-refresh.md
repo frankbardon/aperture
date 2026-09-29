@@ -177,6 +177,17 @@ Four things about the read are worth knowing before you build a sweep on it:
   knowingly running superseded wiring, which is a worse posture than not having
   looked, and it says so.
 
+### Stopping an instance mid-refresh
+
+A `SIGTERM` stops the reader immediately. A refresh that is already rebuilding is
+waited for, for five seconds, and then abandoned with a line saying so — because a
+rebuild re-reads the local seed file and opens every declared CSV, and none of that
+is interruptible. Sizing your termination grace against the ten seconds of graceful
+shutdown is therefore still right, with five seconds of headroom rather than an
+unbounded wait. Nothing is lost: a wiring version is installed whole or not at all,
+so an abandoned rebuild installed nothing, and the replacement instance reads the
+wiring from scratch.
+
 ### A shutdown is not a failure
 
 SIGTERM landing while a tick is mid-read — or mid-rebuild — cancels it. That is

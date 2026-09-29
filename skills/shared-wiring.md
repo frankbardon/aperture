@@ -310,6 +310,17 @@ The interval vocabulary, how a change is detected, and what a tick costs are all
 `docs/src/cli/global-options.md` ("The wiring is read once, unless you ask for
 more"). They are not restated here.
 
+One property of the loop belongs here because it is about the PROCESS and not the
+interval: **a shutdown's wait on a tick is bounded, and it says so.** Cancelling the
+context stops a loop between ticks at once, but nothing inside a rebuild is
+cancellable — the seed file is re-read and every declared CSV is opened — so
+`wiringPoll.Close` waits `wiringPollCloseWait` (5s, against `shutdownTimeout`'s 10s)
+and then stops waiting, having written a line either way. An unbounded wait there
+held the process open for the rebuild's duration AFTER graceful shutdown had
+returned, silently, past the termination grace an orchestrator sized against
+`shutdownTimeout`. Abandoning costs nothing: a version is installed whole or not at
+all (`TestAShutdownDoesNotWaitForeverOnAWiringRebuild`).
+
 ## What a swap replaces, and what a decision sees
 
 A change that a tick notices is **adopted**, not merely reported. The unit of

@@ -280,6 +280,30 @@ The digest ignores the `created_at` / `updated_at` stamps on purpose. A push
 rewrites every row, so an identical re-push — the same pipeline running twice —
 is **not** a change, and is not reported as one.
 
+#### What a shutdown does with a tick in flight
+
+`SIGINT` / `SIGTERM` cancels the reader at once, so a loop waiting for its next
+tick is gone before graceful shutdown even starts. A tick that is already *inside a
+rebuild* is different: a rebuild re-reads the seed file and opens every declared
+CSV, and none of that is interruptible. A rebuild that has not begun declines to
+start; one that has is waited for, **for five seconds**, and then abandoned:
+
+```text
+wiring poll: a wiring refresh is still in flight; waiting up to 5s for it before
+this process exits
+wiring poll: the refresh in flight did not finish within 5s, so this process stops
+without waiting for it; a wiring version is installed whole or not at all, so it
+installed nothing
+```
+
+Five seconds against the ten of graceful shutdown keeps the worst case of the two
+together inside the 30-second termination grace an orchestrator gives by default —
+which is the point: before it was bounded, a rebuild on a stalled mount could hold
+the process open for minutes after the HTTP server had finished draining, and say
+nothing. Abandoning is safe: a version is installed whole or not at all, so the
+abandoned rebuild installed nothing, and the next process to start re-reads the
+wiring from scratch. A shutdown that made no such wait is silent.
+
 Under `serve`, the facade is wired with everything the other surfaces expect: the
 admin gate, delegation and impersonation mutators, the append-only audit trail,
 the rules engine over a storage-backed rule source, and the object providers the

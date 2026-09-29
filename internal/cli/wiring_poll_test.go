@@ -1182,3 +1182,109 @@ func TestPostgresLiveTheDigestAgreesAcrossTheTwoDialects(t *testing.T) {
 			shortDigest(fromSQLite), shortDigest(fromPostgres))
 	}
 }
+
+// lockedBuffer is a log writer a test may read while the loop goroutine is still
+// alive. Every other case in this file reads probe.out only after Close has proved
+// the goroutine gone; the bounded-Close case reads it while a rebuild is
+// deliberately still in flight, which is exactly the window a plain bytes.Buffer
+// would race in.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// TestAShutdownDoesNotWaitForeverOnAWiringRebuild is the unbounded, silent exit.
+//
+// Close cancels the loop and waited for the goroutine with no timeout, and nothing
+// inside a rebuild is cancellable — the seed file is read, every declared CSV is
+// opened, the registries are built from what they hold. A SIGTERM landing while a
+// tick rebuilt over a stalled mount therefore let httpServer.Shutdown finish within
+// shutdownTimeout and then parked the process inside Close for the rebuild's
+// duration, with nothing on stderr and no exit until SIGKILL. An orchestrator sizes
+// its termination grace against shutdownTimeout, so that overran it invisibly.
+//
+// Both halves are asserted, and the SILENCE is the half that made it a support
+// ticket rather than a log line: a shutdown that waits on a rebuild has to say so.
+func TestAShutdownDoesNotWaitForeverOnAWiringRebuild(t *testing.T) {
+	log := &lockedBuffer{}
+	entered, release := make(chan struct{}), make(chan struct{})
+	defer close(release)
+
+	var once sync.Once
+	// The store answers every re-read with a set the poller has not adopted, so the
+	// loop reaches the swap; the swapper then blocks, which is the stalled rebuild.
+	poll := startWiringPoll(context.Background(), wiringReadReturns{set: digestFixture()},
+		time.Millisecond, "the-boot-digest",
+		func(context.Context, model.WiringSet, string) error {
+			once.Do(func() { close(entered) })
+			<-release
+			return nil
+		}, log, nil)
+	if poll == nil {
+		t.Fatal("a 1ms interval started no poller")
+	}
+	// The real bound is 5s, which is the right number for a process exiting and the
+	// wrong one for a test to spend. These fields are read by Close on this
+	// goroutine and never by the loop.
+	poll.closeGrace, poll.closeWait = time.Millisecond, 50*time.Millisecond
+
+	<-entered
+
+	start := time.Now()
+	closed := make(chan struct{})
+	go func() {
+		_ = poll.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Close did not return while a rebuild was in flight. Nothing in a rebuild is cancellable, " +
+			"so an unbounded wait here puts the process's exit at the mercy of a file read on a stalled " +
+			"mount — after graceful shutdown has already finished")
+	}
+	if waited := time.Since(start); waited > 5*time.Second {
+		t.Errorf("Close waited %s against a %s bound", waited, poll.closeWait)
+	}
+
+	out := log.String()
+	for _, want := range []string{"still in flight", "did not finish within"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("a shutdown that abandoned a rebuild did not say %q. Silence is the worst part: the "+
+				"symptom is a process that takes minutes to exit and logs nothing. Output:\n%s", want, out)
+		}
+	}
+}
+
+// TestAnOrdinaryShutdownSaysNothingAboutWaiting is the other side of the bound. A
+// line printed on every restart of every deployment is noise, and noise is how the
+// line that matters gets skipped — so the grace exists to keep the ordinary path
+// silent, and a loop parked in its own select returns within microseconds of the
+// cancel.
+func TestAnOrdinaryShutdownSaysNothingAboutWaiting(t *testing.T) {
+	log := &lockedBuffer{}
+	poll := startWiringPoll(context.Background(), wiringReadReturns{set: digestFixture()},
+		time.Hour, "the-boot-digest",
+		func(context.Context, model.WiringSet, string) error { return nil }, log, nil)
+	if poll == nil {
+		t.Fatal("an hourly interval started no poller")
+	}
+	if err := poll.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if out := log.String(); strings.Contains(out, "in flight") {
+		t.Errorf("an ordinary shutdown narrated a wait it did not have to make: %q", out)
+	}
+}
