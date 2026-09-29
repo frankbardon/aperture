@@ -141,3 +141,54 @@ grants:
 		t.Fatalf("the printed error must still name the constraint refusal, got %q", err.Error())
 	}
 }
+
+// TestSeedDocumentDoesNotBuryTheDocumentsOwnRefusal is the same hazard on the
+// OTHER read of the same file.
+//
+// buildStore reads the seed to APPLY it, and seedDocument reads it again as a
+// Document, because six of its sections are runtime wiring Apply never writes.
+// The second read wrapped unconditionally, so a document carrying a literal
+// `dsn:` came back as `[APERTURE_BOOT] cli: parsing the seed file failed:
+// [APERTURE_SQL_PROVIDER_DSN_LITERAL] ...` and aerr.CodeOf reported
+// APERTURE_BOOT — the fixups an operator got were "check your environment
+// variables" and "confirm the backend is reachable" instead of "move it to
+// dsn_env: and ROTATE the credential".
+//
+// Reachable today from `aperture attributes slots`, which parses the document
+// before it builds a stack, and from every wiring rebuild in a running `serve`,
+// which re-reads the file and hands whatever it gets to the staleness alarm.
+//
+// Depth is asserted as well as the code, because a same-code re-stamp is
+// invisible to CodeOf and the next edit that wraps in a DIFFERENT code is the one
+// that buries the refusal again.
+func TestSeedDocumentDoesNotBuryTheDocumentsOwnRefusal(t *testing.T) {
+	const literalDSN = `
+accounts:
+  - {id: acme, name: Acme}
+connections:
+  main:
+    dsn: postgres://someone:secret@127.0.0.1:5432/app
+`
+	path := writeSeed(t, "dsn.yaml", literalDSN)
+
+	_, err := seedDocument(path, storeSQLite)
+	if err == nil {
+		t.Fatal("a seed document carrying a literal dsn: must be refused")
+	}
+	if got := aerr.CodeOf(err); got != aerr.APERTURE_SQL_PROVIDER_DSN_LITERAL {
+		t.Fatalf("code = %q, want %q — the document's OWN refusal is the one whose fixups "+
+			"say to rotate the credential; APERTURE_BOOT's say to check the environment "+
+			"(err: %v)", got, aerr.APERTURE_SQL_PROVIDER_DSN_LITERAL, err)
+	}
+	if chain := codeChain(err); len(chain) != 1 {
+		t.Fatalf("code chain = %v, want exactly one coded error: aerr.Wrap RE-STAMPS, so "+
+			"seedDocument must write the pass-through guard "+
+			"(if aerr.CodeOf(err) != \"\" { return err }) rather than wrap", chain)
+	}
+	// The value is never in the message, only the entry. That is seed.Parse's own
+	// posture and re-stating it here is what stops a "helpful" edit printing the
+	// password the refusal exists to get rotated.
+	if strings.Contains(err.Error(), "secret") {
+		t.Fatalf("the refusal printed the credential: %q", err.Error())
+	}
+}
