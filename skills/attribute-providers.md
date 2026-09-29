@@ -438,6 +438,35 @@ Aperture, and self-contained for a one-shot CLI invocation (which starts cold an
 exits cold) — but it **cannot reach a running `aperture serve`**. The controls
 that reach that process's cache are the slot's `ttl:` and a restart.
 
+### Only SUCCESSES are cached, and layering doubles what that costs
+
+`fetchAttributeLayer` caches what a provider **returned**; a layer's
+`APERTURE_NOT_FOUND` is not cached. So a key a layer does not know is re-asked of
+that layer on **every decision**, for the life of the process, with no TTL and
+nothing to invalidate.
+
+On a single-layer slot that is the ordinary cost of a key nobody has. Layering
+doubles the number of layers that can not-know a key, and the common shape makes it
+concrete: a **shared** SQL directory beside a **local** three-entry `attributes:`
+block means every decision for one of those three principals issues a fresh
+`get_one` against the shared directory first — the local bag is cached and the
+shared miss is not. The same holds in reverse for a subject the directory carries
+and the file does not, except that a `StaticAttributes` miss is a map lookup and
+costs nothing. It is the **SQL and CSV** layers where the misses are round trips.
+
+Nothing in the benchmark suite sees this: `bench.TestCheckNFRAttributes` measures
+warm-cache hits, which is exactly the case a negative lookup is not.
+
+This is **not** fixed by caching negatives, and that is a deliberate refusal rather
+than a gap. A cached negative is a **staleness window on an addition**: a subject
+added to the directory — a clearance just granted, a machine just enrolled — would
+stay invisible for the whole `ttl:`, which is the mirror image of the revocation
+window this section is about, and is a security tradeoff an operator would be paying
+without having been asked. If the misses are hot enough to matter, the answers are
+in the wiring rather than in the registry: carry the subject in the layer that
+already has it, or give the shared layer the subject rather than leaning on the local
+one (see the two corollaries under [Precedence](#precedence-two-layers-and-the-shared-layer-wins)).
+
 ## Containment: enumeration is never scope resolution
 
 `*provider.Registry` deliberately **does** satisfy `scope.ObjectLister`.

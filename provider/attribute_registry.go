@@ -471,6 +471,16 @@ func (r *AttributeRegistry) Fetch(ctx context.Context, slot AttributeSlot, id st
 // fetchAttributeLayer serves one layer: its cache first, its provider second,
 // caching what the provider returned.
 //
+// Only SUCCESSES are cached. A layer's APERTURE_NOT_FOUND is not, so a key a layer
+// does not know is re-asked of that layer on every decision, with no ttl and
+// nothing to invalidate — and layering doubles the number of layers that can
+// not-know a key, which for a SQL or CSV layer is a round trip per decision. That
+// is a deliberate refusal rather than an oversight: a cached negative is a
+// staleness window on an ADDITION, so a clearance just granted or a machine just
+// enrolled would stay invisible for the whole ttl, which is the revocation window
+// this file is careful about, running the other way. The remedy is in the wiring —
+// see "Only SUCCESSES are cached" in skills/attribute-providers.md.
+//
 // This is the ONLY writer of a layer's cache, and it stays that way. The cache is
 // the DECISION PATH's view of a subject; an enumeration's bags are Query's
 // projection, which the loaders' own contract allows to be narrower, and warming
