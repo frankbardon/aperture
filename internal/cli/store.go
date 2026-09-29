@@ -246,6 +246,22 @@ func loadSeed(ctx context.Context, store model.Storage, seedPath string, kind st
 // lives in ONE place. A second notion of durability written out again here could
 // drift from the backend actually opened, and drifting in the permissive
 // direction means wiring somebody's production decisions to the demo fixture.
+//
+// Both failures go through bootError rather than through a bare aerr.Wrap, and
+// that is not cosmetic here either. seed.Parse's own refusals are the ones an
+// operator can act on: a document carrying a literal dsn: is
+// APERTURE_SQL_PROVIDER_DSN_LITERAL, whose fixups say to move it to dsn_env: and
+// ROTATE the credential, and a malformed section is APERTURE_CONFIG_INVALID
+// naming the entry. Re-stamping either APERTURE_BOOT hands the operator "check
+// your environment variables; confirm the backend is reachable" — true of every
+// startup failure there is, and no help with a password checked into a file.
+//
+// It is load-bearing on two paths that reach this function long after a boot:
+// `aperture attributes slots` parses the document BEFORE it builds a stack, so
+// the refusal it prints is this one; and buildWiredStack re-parses the file on
+// every wiring rebuild, so an edited-on-disk document's coded refusal is what the
+// staleness alarm reports — and that alarm's own pass-through guard can only
+// preserve a code it was handed.
 func seedDocument(seedPath string, kind storeKind) (*seed.Document, error) {
 	if seedPath == "" {
 		if kind.durable() {
@@ -253,13 +269,13 @@ func seedDocument(seedPath string, kind storeKind) (*seed.Document, error) {
 		}
 		doc, err := seed.Parse(seed.Example, seed.FormatYAML)
 		if err != nil {
-			return nil, aerr.Wrap(aerr.APERTURE_BOOT, "cli: parsing the embedded seed failed", err)
+			return nil, bootError("cli: parsing the embedded seed failed", err)
 		}
 		return doc, nil
 	}
 	doc, err := seed.ParseFile(seedPath)
 	if err != nil {
-		return nil, aerr.Wrap(aerr.APERTURE_BOOT, "cli: parsing the seed file failed", err)
+		return nil, bootError("cli: parsing the seed file failed", err)
 	}
 	return doc, nil
 }

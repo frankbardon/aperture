@@ -766,6 +766,124 @@ func TestPushedAttributeSlotsAreNotDeclaredAndDeclaredEmptySurvives(t *testing.T
 	}
 }
 
+// TestAnAllEmptyPushIsRefusedRatherThanRetiringTheFleetsWiring is the guard on the
+// one push whose input is not malformed and whose effect is the largest.
+//
+// A push is a REPLACE, so a document with no wiring in it empties all five tables
+// and retires every entry the deployment is running. Nothing else in the pipeline
+// objects: wiringFromDocument projects an empty set happily, model.ValidateWiringSet
+// passes it, and checkWiringAgainstModel only asks whether the STORE holds object
+// types. The command exited 0 and printed five zeroes followed by "the store's shared
+// wiring is now exactly this set" — true, and reading like a summary.
+//
+// What it does to the fleet is the reason it is a refusal. model.WiringSet.IsEmpty()
+// means both "never pushed" and "pushed empty", and buildWiredStack reads it as "use
+// the local file": for `aperture serve --store <dsn>` with NO --seed, the deployment
+// shape this whole feature exists to enable, the local document is empty and the
+// instance boots with an empty provider registry and an empty attribute registry —
+// and STILL BOOTS. Every slot unregistered, the leniency contract collapsing an
+// unregistered slot to an empty bag, and a rule that EXCLUDED on an attribute no
+// longer excluding: the grant WIDENS, with nothing in a verdict, a trace or a note to
+// say so.
+func TestAnAllEmptyPushIsRefusedRatherThanRetiringTheFleetsWiring(t *testing.T) {
+	// Deployed wiring to lose. Everything below is about whether it survives.
+	dsn := newWiringStore(t, wiringModelSeed)
+	if out, err := runWiringCLI(t, "push", writeWiringSeed(t, wiringSharedSeed), dsn); err != nil {
+		t.Fatalf("the first push: %v\n%s", err, out)
+	}
+	deployed := readWiring(t, dsn)
+	if deployed.IsEmpty() {
+		t.Fatal("the fixture deployed nothing; the test would assert nothing")
+	}
+
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{
+			// The wrong file: a document that is perfectly valid and is simply not
+			// a wiring document.
+			name: "a model-only document",
+			body: wiringModelSeed,
+		},
+		{
+			// The mistyped section key, which is the one that gets pushed by
+			// accident. seed.Parse is NOT strict about unknown keys, so
+			// `field_type:` is not an error — the section is simply absent, and
+			// nothing anywhere says so.
+			//
+			// The fixture's ONLY wiring section is the mistyped one, because that
+			// is the reach of this guard: a document whose four sections are all
+			// mistyped, or whose one section is, comes out empty and is caught. A
+			// key mistyped in ONE section of a document that still declares others
+			// is a PARTIAL retirement, and IsEmpty() cannot see it — the push is a
+			// replace of a non-empty set by a smaller non-empty set, which is also
+			// exactly what deliberately dropping an entry looks like. `aperture
+			// wiring diff` is the answer to that one, and this is not it.
+			name: "a document whose only wiring section has a mistyped key",
+			body: wiringModelSeed + `
+field_type:
+  - object_type: document
+    fields:
+      due: date
+`,
+		},
+		{
+			name: "an empty document",
+			body: "{}\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := runWiringCLI(t, "push", writeWiringSeed(t, tc.body), dsn)
+			mustRefuse(t, tc.name, err, aerr.APERTURE_WIRING_EMPTY_PUSH, "--allow-empty")
+			if got := readWiring(t, dsn); !sameWiringShape(got, deployed) {
+				t.Fatalf("a refused push changed the deployed wiring: %+v", got)
+			}
+		})
+	}
+
+	// The mistyped-key case has to be a REAL absence and not a parse failure, or the
+	// case above is asserting the wrong refusal for the right reason.
+	t.Run("the mistyped key is silently absent, not a parse error", func(t *testing.T) {
+		doc, err := seed.Parse([]byte(wiringModelSeed+"\nfield_type:\n  - object_type: document\n    fields:\n      due: date\n"), seed.FormatYAML)
+		if err != nil {
+			t.Fatalf("seed.Parse refused the mistyped key: %v — if it ever starts doing "+
+				"that, this guard has one fewer cause to catch, which is good news and a "+
+				"reason to rewrite the case rather than delete it", err)
+		}
+		if len(doc.FieldTypes) != 0 {
+			t.Fatalf("field_types = %d; the fixture is not testing a mistyped key at all",
+				len(doc.FieldTypes))
+		}
+	})
+}
+
+// TestAnEmptyPushWithAllowEmptyRetiresTheWiringAndSaysSo is the other half: the
+// refusal is a GUARD and not a prohibition, because retiring a deployment's wiring is
+// a legitimate act — and the summary has to say what just happened, since five zeroes
+// read as a summary rather than as a retirement.
+func TestAnEmptyPushWithAllowEmptyRetiresTheWiringAndSaysSo(t *testing.T) {
+	dsn := newWiringStore(t, wiringModelSeed)
+	if out, err := runWiringCLI(t, "push", writeWiringSeed(t, wiringSharedSeed), dsn); err != nil {
+		t.Fatalf("the first push: %v\n%s", err, out)
+	}
+
+	out, err := runWiringCLI(t, "push", writeWiringSeed(t, wiringModelSeed), dsn, "--allow-empty")
+	if err != nil {
+		t.Fatalf("--allow-empty must permit the push: %v\n%s", err, out)
+	}
+	if got := readWiring(t, dsn); !got.IsEmpty() {
+		t.Fatalf("the wiring was not retired: %+v", got)
+	}
+	for _, want := range []string{"EMPTY", "own --seed file", "widens"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the summary must say %q: the five zeroes above it read as a summary "+
+				"rather than as the retirement they are, and this is not an act with an "+
+				"undo. Got:\n%s", want, out)
+		}
+	}
+}
+
 // TestPushNeedsBothFlags: a missing --seed or --store is a usage error, reported
 // before anything is opened. There is no embedded-example fallback here, because
 // pushing the demo's wiring into a real deployment is not a default anyone wants,

@@ -413,6 +413,58 @@ func TestAnUnroutedSharedConnectionNamesTheVariableItWanted(t *testing.T) {
 		"main", connectionDSNEnvVar("main"))
 }
 
+// TestAPulledFileIsNotARouteForTheNamesItLists is the same refusal reached from
+// the one workflow that actually produces the shape.
+//
+// `aperture wiring pull` emits `dsn_env: ""` for every name in the manifest BY
+// DESIGN: the shared tables hold a connection's NAME and nothing else, so a pull
+// that invented a variable name would be guessing at another machine's
+// environment. An operator who then uses that file as --seed on a DB-wired
+// instance has a `connections:` entry under every shared name and a route for
+// none of them — and an empty dsn_env: counted as a route, so
+// refuseUnroutedConnections never fired for any of them.
+//
+// The boot still refused, further in, with seed.resolveConnection's
+// APERTURE_SQL_PROVIDER_CONNECTION — whose fixups send the operator to a
+// document's `connections:` block. For a name that came out of the database that
+// is exactly the "greps a seed file that never mentioned main" problem
+// APERTURE_WIRING_CONNECTION_UNROUTED was written to fix, so the commonest
+// workflow was the one getting the worse remedy.
+func TestAPulledFileIsNotARouteForTheNamesItLists(t *testing.T) {
+	// What `wiring pull` writes: the name, and nothing else.
+	pulled := &seed.Document{Connections: map[string]seed.Connection{
+		"main": {},
+	}}
+	t.Setenv(connectionDSNEnvVar("main"), "")
+
+	_, err := wiringDocument(sharedWiringSet(time.Now().UTC()), pulled)
+	mustRefuse(t, "a pulled document used as --seed", err,
+		aerr.APERTURE_WIRING_CONNECTION_UNROUTED,
+		"main", connectionDSNEnvVar("main"))
+
+	// And it is a ROUTE once the variable is exported, which is the remedy the
+	// refusal names — so the fix is one export and not an edit to the pulled file.
+	// Any pool tuning the entry carried survives, because only the missing half is
+	// supplied.
+	t.Setenv(connectionDSNEnvVar("main"), unroutedDSN)
+	tuned := &seed.Document{Connections: map[string]seed.Connection{
+		"main": {QueryTimeout: "7s"},
+	}}
+	doc, err := wiringDocument(sharedWiringSet(time.Now().UTC()), tuned)
+	if err != nil {
+		t.Fatalf("with the conventional variable exported the boot must proceed: %v", err)
+	}
+	got := doc.Connections["main"]
+	if got.DSNEnv != connectionDSNEnvVar("main") {
+		t.Errorf("dsn_env = %q, want the conventional variable %q",
+			got.DSNEnv, connectionDSNEnvVar("main"))
+	}
+	if got.QueryTimeout != "7s" {
+		t.Errorf("query_timeout = %q, want 7s: only the missing credential half is supplied, "+
+			"and silently re-tuning a pool an operator sized is its own regression", got.QueryTimeout)
+	}
+}
+
 // TestTwoSharedNamesCannotDeriveOneEnvironmentVariable refuses the ambiguity the
 // conventional spelling can create rather than resolving it. "main-db" and
 // "main_db" are two connections — two pools, possibly two servers — and routing

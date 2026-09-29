@@ -511,6 +511,26 @@ const (
 	// names two configuration sources an operator can edit, where that one names a
 	// duplicate registration a developer has to remove.
 	APERTURE_WIRING_LOCAL_COLLISION Code = "APERTURE_WIRING_LOCAL_COLLISION"
+	// APERTURE_WIRING_EMPTY_PUSH — `aperture wiring push` was handed a document
+	// with NO wiring in it at all, and --allow-empty was not given.
+	//
+	// The push is a REPLACE, so an empty set is not "nothing to do": it empties all
+	// five tables and retires every entry the deployment was running. Every instance
+	// then boots — or, under --wiring-poll, rebuilds without restarting — as though
+	// nothing had ever been pushed, which for the deployment shape this feature
+	// exists for (`aperture serve --store <dsn>` with NO --seed) means an EMPTY
+	// object registry and an EMPTY attribute registry. It still starts. Every slot is
+	// unregistered, the leniency contract collapses an unregistered slot to a nil
+	// bag, and a rule that EXCLUDED on an attribute it can no longer see stops
+	// excluding — so the grant WIDENS, with nothing in a verdict, a trace or a note
+	// to say so.
+	//
+	// It is refused rather than warned about because the two documents that produce
+	// it are indistinguishable from the store's side and both are usually mistakes:
+	// the wrong file, and a file whose section key is mistyped (`provider:` for
+	// `providers:`), which the seed reader does not police. Retiring a whole
+	// deployment's wiring is a legitimate act, so --allow-empty says it deliberately.
+	APERTURE_WIRING_EMPTY_PUSH Code = "APERTURE_WIRING_EMPTY_PUSH"
 	// APERTURE_WIRING_NOTHING_DEPLOYED — `aperture wiring pull` was pointed at a
 	// store that has no shared wiring in it at all.
 	//
@@ -989,6 +1009,16 @@ var Registry = map[Code]Metadata{
 			"A host registering its own providers in Go gets the same refusal from the registry as APERTURE_PROVIDER_INVALID: the rule is about the registry, not about which syntax declared the entry.",
 		},
 	},
+	APERTURE_WIRING_EMPTY_PUSH: {
+		Message: "the document being pushed declares no shared wiring at all, and a push is a REPLACE",
+		Fixups: []string{
+			"Check the --seed path first: the likeliest cause is the wrong file, and the second likeliest is a mistyped section key (`provider:` for `providers:`, `field_type:` for `field_types:`), which the seed reader does not refuse — it simply reads no section.",
+			"Confirm what the document declares with `aperture wiring push --seed <file> --store <dsn>`'s summary on a store you do not mind replacing, or read the file's four shared sections directly: `connections:`, `providers:`, `field_types:`, `attribute_providers:`.",
+			"If retiring the deployment's wiring really is the intent, pass --allow-empty. Every instance then builds its wiring from its own --seed file again, and an instance with no --seed file builds NONE — an empty object registry and an empty attribute registry, which still starts.",
+			"Retiring an attribute slot is the dangerous half: an unregistered slot answers with an empty bag, and a rule that EXCLUDED on an attribute it can no longer see stops excluding, so the grant widens with nothing in a verdict, a trace or a note to say so. Prefer pushing a document that keeps the slots and changes what you meant to change.",
+			"`aperture wiring show --store <dsn>` prints what is deployed right now, and `aperture wiring pull --out <file>` writes it out as a document you can edit and push back.",
+		},
+	},
 	APERTURE_WIRING_NOTHING_DEPLOYED: {
 		Message: "the store has no shared wiring deployed, so there is nothing to pull",
 		Fixups: []string{
@@ -1075,6 +1105,7 @@ var AllCodes = []Code{
 	APERTURE_WIRING_CONNECTION_UNROUTED,
 	APERTURE_WIRING_RESTART_REQUIRED,
 	APERTURE_WIRING_LOCAL_COLLISION,
+	APERTURE_WIRING_EMPTY_PUSH,
 	APERTURE_WIRING_NOTHING_DEPLOYED,
 	APERTURE_WIRING_OUTPUT_EXISTS,
 	APERTURE_WIRING_REFRESH_FAILED,

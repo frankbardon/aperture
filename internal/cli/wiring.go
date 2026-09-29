@@ -92,13 +92,19 @@ func wiringCommand() *ucli.Command {
 	}
 }
 
-// wiringFlags are the two flags a push needs. They are declared here rather than
-// taken from storeFlags(), because --seed means something different: no model
-// state is applied from it, and there is no embedded-example fallback.
+// wiringFlags are the flags a push needs. --seed and --store are declared here
+// rather than taken from storeFlags(), because --seed means something different: no
+// model state is applied from it, and there is no embedded-example fallback.
+//
+// --allow-empty is the third, and it is a SAFETY flag rather than a mode. A push is
+// a REPLACE, so a document with no wiring in it retires the whole deployment's
+// wiring; the flag is how an operator says they meant that. See
+// refuseEmptyWiringPush.
 func wiringFlags() []ucli.Flag {
 	return []ucli.Flag{
 		&ucli.StringFlag{Name: "seed", Usage: "path to the JSON/YAML seed document whose four SHARED wiring sections are pushed (required; no model state is applied from it and there is no embedded-example fallback)"},
 		wiringStoreFlag(),
+		&ucli.BoolFlag{Name: "allow-empty", Usage: "push a document that declares NO wiring at all, which RETIRES every entry the deployment is running: all five tables are emptied and every instance goes back to building its wiring from its own --seed file, or from nothing if it has none. Refused without this flag, because the commonest cause is the wrong --seed path or a mistyped section key"},
 	}
 }
 
@@ -145,7 +151,19 @@ func wiringPushCommand() *ucli.Command {
 			"  * an entry names a `connection:` the pushed `connections:` manifest does not\n" +
 			"    declare (named in the refusal)\n" +
 			"  * anything carries a literal `dsn:` — only `dsn_env:`, a variable NAME, is ever\n" +
-			"    accepted, and shared wiring stores neither\n\n" +
+			"    accepted, and shared wiring stores neither\n" +
+			"  * the document declares NO wiring at all and --allow-empty was not given\n\n" +
+			"AN ALL-EMPTY DOCUMENT IS REFUSED, and it is the one refusal about what the push\n" +
+			"would MEAN rather than about what is wrong with it. Because a push replaces, an\n" +
+			"empty set retires every entry the deployment is running: all five tables are\n" +
+			"emptied and every instance goes back to building its wiring from its own --seed\n" +
+			"file — or, if it has none, from NOTHING, which still starts, with every attribute\n" +
+			"slot unregistered. An unregistered slot answers with an empty bag, so a rule that\n" +
+			"EXCLUDED on an attribute stops excluding and the grant WIDENS, with nothing in a\n" +
+			"verdict, a trace or a note to say so. The likeliest causes are the wrong --seed\n" +
+			"path and a mistyped section key (`provider:` for `providers:`), which is not an\n" +
+			"error — it is a section that simply is not there. Pass --allow-empty to retire the\n" +
+			"wiring deliberately.\n\n" +
 			"No actor is required: the store credential is the authority, exactly as it is for\n" +
 			"`aperture import`.",
 		Flags:  wiringFlags(),
@@ -196,6 +214,13 @@ func runWiringPush(ctx context.Context, cmd *ucli.Command) error {
 		return err
 	}
 
+	// Checked here, with the other document-only rules and before a connection is
+	// made: an all-empty document is a fact about the FILE, and the refusal reads
+	// better for having touched no database.
+	if err := refuseEmptyWiringPush(set, seedPath, cmd.Bool("allow-empty")); err != nil {
+		return err
+	}
+
 	// The empty --seed path is what stops buildStore applying the document's model
 	// state. A push that seeded the model would create the object types whose
 	// absence it is supposed to refuse, and the "no model state" refusal could then
@@ -225,6 +250,62 @@ func runWiringPush(ctx context.Context, cmd *ucli.Command) error {
 	// record saying it did.
 	recordWiringPush(ctx, cmd, store, set)
 	return printWiringPushed(cmd, set)
+}
+
+// refuseEmptyWiringPush refuses a document that declares NO shared wiring at all,
+// unless --allow-empty was given.
+//
+// # Why an empty push is not "nothing to do"
+//
+// A push is a REPLACE: ReplaceWiring empties all five tables and writes what it was
+// handed, so an empty set retires every entry the deployment is running. Nothing
+// below this point would have objected — wiringFromDocument projects an empty set
+// happily, model.ValidateWiringSet passes it (there is nothing malformed about it),
+// and checkWiringAgainstModel only asks whether the STORE holds some object types.
+// The command exited 0 and printed "connections 0 / providers 0 / … / attribute
+// providers 0" followed by "the store's shared wiring is now exactly this set",
+// which is true and reads like a summary rather than like a warning.
+//
+// # What it does to the fleet
+//
+// model.WiringSet.IsEmpty() is OVERLOADED: it means both "never pushed" and "pushed
+// empty", and every reader treats it as the first. buildWiredStack reads it as "use
+// the local file" — so for the deployment shape this whole feature exists to enable,
+// `aperture serve --store <dsn>` with no --seed, the local document is EMPTY and the
+// instance boots with an empty *provider.Registry and an empty
+// *provider.AttributeRegistry. It still starts.
+//
+// That is the one outcome wiring_boot.go's "Refusing to start beats degrading"
+// section exists to prevent, arrived at through a command that exited 0. Every
+// attribute slot is unregistered, the leniency contract collapses an unregistered
+// slot to a nil bag, and a rule that EXCLUDED on principal.clearance stops excluding
+// — the grant WIDENS, with nothing in a verdict, a trace or a note to say so.
+// Instances that still hold a stale pre-migration --seed silently revert to IT
+// instead, which is a fleet answering one question two ways. Under --wiring-poll all
+// of that lands with no restart.
+//
+// # Why a flag rather than a warning
+//
+// The two documents that produce an empty set are indistinguishable from here and
+// both are usually mistakes: the wrong --seed path, and a file whose section key is
+// mistyped. `provider:` for `providers:` is the worked example, because seed.Parse is
+// not strict about unknown keys — the section is simply absent, and nothing says so.
+// A warning on stderr is read after the fact, and this is not an act with an undo:
+// the superseded set is gone. Retiring a deployment's wiring is legitimate, so the
+// flag is how it is said on purpose.
+//
+// seedPath is named because the wrong file is the likeliest cause and the operator
+// needs to see which one they passed. It is a path the caller supplied on their own
+// command line, not a path read out of a wiring row — the rule that keeps filesystem
+// paths out of shared wiring is about what is STORED, and `aperture wiring pull`'s
+// --out refusal already names its own path for the same reason.
+func refuseEmptyWiringPush(set model.WiringSet, seedPath string, allowEmpty bool) error {
+	if !set.IsEmpty() || allowEmpty {
+		return nil
+	}
+	return aerr.WithContext(aerr.APERTURE_WIRING_EMPTY_PUSH,
+		fmt.Sprintf("cli: %s declares no shared wiring at all — no connections:, no providers:, no field_types: and no attribute_providers: — and a push is a REPLACE, so pushing it would EMPTY all five tables and retire every entry this deployment is running. Check the --seed path first, and then the section keys: `provider:` for `providers:` is not an error, it is a section that simply is not there. If retiring the wiring is what you mean, pass --allow-empty; every instance then builds its wiring from its own --seed file again, and an instance with no --seed file builds NONE — which still starts, with every attribute slot unregistered, and an unregistered slot answers with an empty bag, so a rule that EXCLUDED on an attribute stops excluding and the grant WIDENS", seedPath),
+		map[string]any{"seed": seedPath, "sections": 0})
 }
 
 // wiringPushActor is what the audit trail records as the actor of a push, and it
@@ -364,6 +445,14 @@ func printWiringPushed(cmd *ucli.Command, set model.WiringSet) error {
 	// Said explicitly, because REPLACE is the surprising half: an operator who
 	// pushes a trimmed document has just retired the entries they left out.
 	fmt.Fprintln(cmd.Writer, "the store's shared wiring is now exactly this set")
+	// An EMPTY set reaches here only behind --allow-empty (refuseEmptyWiringPush),
+	// and the five zeroes above read as a summary rather than as the retirement they
+	// are. So the consequence is spelled out, in the place the operator is already
+	// looking: the same sentence the refusal would have given them.
+	if set.IsEmpty() {
+		fmt.Fprintln(cmd.Writer, "that set is EMPTY: every entry this deployment was running has been retired, and every instance now builds its wiring from its own --seed file — or, with no --seed file, builds none at all")
+		fmt.Fprintln(cmd.Writer, "an instance with no wiring still starts, with every attribute slot unregistered, and an unregistered slot answers with an empty bag: a rule that EXCLUDED on an attribute stops excluding, so the grant widens with nothing in a verdict to say so")
+	}
 	return nil
 }
 

@@ -173,9 +173,18 @@ An instance can have wiring rows *and* a `--seed` file, and most will.
 - The **local file may ADD** an object type or an attribute slot the database never
   declared. It is built exactly as it would be on an instance that has never been
   pushed to, `kind: csv` and all.
-- A local entry for an object type or slot the database **already declares** fails
-  the boot with `APERTURE_WIRING_LOCAL_COLLISION`, naming the entry and both
+- A local WIRING entry for an object type or slot the database **already declares**
+  fails the boot with `APERTURE_WIRING_LOCAL_COLLISION`, naming the entry and both
   sections.
+- The two inline DATA sections are the exception, and they are **not one rule**. A
+  local `objects:` entry for a type the database serves is refused
+  (`seed.StrictProviderCollision()`, `APERTURE_CONFIG_INVALID` naming the type),
+  because the object rule is a type-level **discard** with no winner anybody chose. A
+  local `attributes:` block for a slot the database declares is **layered**, not
+  refused: the pushed row is that slot's shared layer, the inline bags its local one,
+  the shared layer wins every key both serve and nothing is dropped, so a contested
+  key reads the same on every instance in the fleet. It was refused once, and that
+  left no spelling at all for adding a field the shared directory does not carry.
 
 **Additive is what makes the surface usable at all.** A Go host's hand-written object
 providers are code no document can describe — Arc registers `wave` and `metric`
@@ -242,6 +251,29 @@ exactly the entries whose write failed, while reporting nothing.
 
 It follows that a push is **REPLACE and not merge**: an entry dropped from the
 document is dropped from the store. Push the whole wiring every time.
+
+**An ALL-EMPTY push is refused** (`APERTURE_WIRING_EMPTY_PUSH`) unless
+`--allow-empty` is given, and it is the only refusal about what a push would *mean*
+rather than about what is wrong with it. Because the write replaces, an empty set
+retires every entry the deployment is running, and `model.WiringSet.IsEmpty()` is
+**overloaded** — it means both "never pushed" and "pushed empty", and every reader
+takes the first. `internal/cli`'s `buildWiredStack` reads it as "use the local file",
+so an instance with no `--seed` file (`aperture serve --store <dsn>`, the shape this
+feature exists for) boots with an **empty** object registry and an **empty** attribute
+registry, and still starts: every slot unregistered, an unregistered slot answering
+with an empty bag, and a rule that *excluded* on an attribute no longer excluding — the
+grant **widens**, with nothing in a verdict, a trace or a note to say so. That is
+precisely the outcome "an instance that cannot honour the shared wiring refuses to
+boot" exists to prevent, reached through a command that exited 0.
+
+It is a flag and not a warning because the two documents that produce it are
+indistinguishable from here and both are usually mistakes — the wrong `--seed` path,
+and a mistyped section key, which the seed reader does not refuse — and because there
+is no undo: the superseded set is gone. The summary of an allowed empty push spells
+out what was retired, since five zeroes read as a summary. A **partial** retirement,
+one mistyped key in a document that still declares other sections, is invisible to
+`IsEmpty()` and indistinguishable from deliberately dropping an entry;
+`aperture wiring diff` is the guard for that one.
 
 There is deliberately **no per-row `Put` or `Delete`**. Adding one makes "the
 deployment's wiring" something a caller can leave half-applied, which is the state
@@ -489,6 +521,7 @@ are the two channels.
 | `APERTURE_WIRING_CONNECTION_UNROUTED` | boot | a shared connection name *this* instance has no route for |
 | `APERTURE_WIRING_RESTART_REQUIRED` | a running instance's refresh | the deployed wiring changes this process's connection NAME SET, which is frozen for its life — nothing in the push is applied, and the instance keeps deciding |
 | `APERTURE_WIRING_REFRESH_FAILED` | a running instance's refresh | a background re-read did not complete and nothing beneath it was coded; the instance keeps last-good wiring and goes on deciding |
+| `APERTURE_WIRING_EMPTY_PUSH` | `push` | the document declares no wiring at all and `--allow-empty` was not given, so the push would retire every entry the deployment is running |
 | `APERTURE_WIRING_LOCAL_COLLISION` | boot | the local file declares an object type or slot the shared wiring already declares |
 | `APERTURE_WIRING_NOTHING_DEPLOYED` | pull | the store has no shared wiring, and a pull's file is meant to be pushed back |
 | `APERTURE_WIRING_OUTPUT_EXISTS` | pull | `--out` names an existing path and `--force` was not given — the likeliest file there is the document the pull is to be compared with |

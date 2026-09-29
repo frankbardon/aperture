@@ -51,6 +51,18 @@ import (
 // neither, and the other twelve model-state sections of the document are not
 // wiring at all.
 
+// The kind: vocabulary. These two words are a THIRD spelling of a set seed/ holds
+// twice — the literal "sql"/"csv" cases in seed/provider.go's buildObjectProvider,
+// and attributeKindSQL / attributeKindCSV in seed/attribute_provider.go — and, like
+// the field-type words below, the restatement is pinned behaviourally rather than by
+// sharing a symbol: TestPushAndTheSeedBuildersAgreeOnTheKindVocabulary runs one
+// document per word through this projection and through seed's builder for BOTH
+// sections and requires them to agree.
+//
+// The drift is silent in the dangerous direction and fleet-wide: a push that
+// accepted a word no builder switch matches validates, ReplaceWiring stores it, and
+// every instance then fails BuildRegistryWithConnections on its next boot or poll
+// tick. Nothing in this package would have noticed a rename in seed/.
 const (
 	// wiringKindSQL is the database-backed kind: statements run against a named
 	// entry of the pushed connections: manifest. It is the only kind that can be
@@ -513,6 +525,15 @@ func wiringDeclaredKeys(declared *[]string, subject string) (model.DeclaredKeys,
 
 // checkWiringKind refuses a kind that cannot be shared wiring, and an unknown
 // kind.
+//
+// ONE vocabulary serves BOTH sections — providers: and attribute_providers: — where
+// seed implements them in two independent switches. That is deliberate (shareability
+// is a property of the kind, not of the section) and it is what makes the per-section
+// half of TestPushAndTheSeedBuildersAgreeOnTheKindVocabulary necessary: a kind
+// implemented for objects and not for attribute slots would be accepted here for a
+// slot, stored, and refused on every boot — and a slot whose provider cannot be
+// constructed answers with a NIL BAG, which widens an exclusive grant instead of
+// denying.
 //
 // The two refusals are deliberately different codes. kind: csv is IMPLEMENTED and
 // works perfectly in a local seed — it is unshareable, and the remedy is to move

@@ -95,9 +95,20 @@ So the two compose, additively:
 - The **local file may ADD** an object type or an attribute slot the database
   never declared. It is built exactly as it would be on an instance that has
   never been pushed to, `kind: csv` and all.
-- A local entry for an object type or slot the database **already declares**
-  fails the boot with `APERTURE_WIRING_LOCAL_COLLISION`, naming the entry and
-  both sections.
+- A local **wiring** entry for an object type or slot the database **already
+  declares** fails the boot with `APERTURE_WIRING_LOCAL_COLLISION`, naming the
+  entry and both sections.
+- The two inline **data** sections are the exception, and they answer differently
+  because the two seams resolve an overlap differently. A local `objects:` entry
+  for a type the database serves is refused (`APERTURE_CONFIG_INVALID` naming the
+  type): the object rule is a type-level *discard*, so a push on another host
+  would switch off metadata checked into this instance's file. A local
+  `attributes:` block for a slot the database declares is **layered** under it,
+  not refused — the pushed row is the slot's shared layer, the inline bags its
+  local one, the shared layer wins every key both serve and nothing is dropped, so
+  a contested key reads the same on every instance. See [Precedence: two layers,
+  and the shared layer
+  wins](../concepts/seed.md#precedence-two-layers-and-the-shared-layer-wins).
 
 The collision is refused rather than resolved because both resolutions are silent
 and both change what a decision reads: the database winning would discard wiring

@@ -343,7 +343,7 @@ func buildWiredStack(storeDSN string, store model.Storage, seedPath string, wiri
 		if err != nil {
 			return decisionStack{}, err
 		}
-		buildOpts = append(buildOpts, wiringBuildOptions()...)
+		buildOpts = append(buildOpts, wiringBuildOptions(wiring, local)...)
 	}
 	// The two-return form, always: the seed may declare `connections:`, whose
 	// pools outlive the build and have to be closed by whoever owns the stack.

@@ -161,33 +161,46 @@ aperture attributes query [options] <slot>
 
 ### `aperture attributes slots`
 
-List the three attribute slots, the source each is wired to, and its cache settings
+List every attribute slot's registration layers, where each one is wired from, and its own cache settings
 
-Prints one row per slot — user, machine, account — with the source the seed
-declares for it (csv, sql, or inline), the cache freshness window, the cached-bag
-cap, and how many bags this process currently holds.
+Prints one row per LAYER of each of the three slots — user, machine, account —
+with the source that layer is wired from, its cache freshness window, its
+cached-bag cap, and how many bags this process holds for the slot.
 
-A SLOT CAN HAVE TWO SOURCES, AND THE SOURCE COLUMN NAMES THE WINNER. An
-`attribute_providers:` entry is the slot's SHARED layer and an `attributes:` block
-is its LOCAL one; a fetch reads their merge and the shared layer wins every key
-both serve, so nothing is discarded and the inline bags still contribute the keys
-the external source does not carry. A slot declared both ways therefore reports
-csv or sql — the source a contested key is answered from — and `ttl` is that
-layer's window, since each layer caches on its own declaration.
+A SLOT HAS TWO REGISTRATION LAYERS AND EACH ONE CACHES ON ITS OWN DECLARATION.
+An `attribute_providers:` entry — a pushed wiring row, or one in this instance's
+seed file — is the slot's SHARED layer, and an `attributes:` block is its LOCAL
+one. A fetch reads their merge and the shared layer wins every key both serve, so
+nothing is discarded and the inline bags still contribute the keys the external
+source does not carry. The layers are printed in precedence order, highest first.
 
-THE TTL COLUMN IS THE REVOCATION WINDOW. A slot's cached bag keeps authorizing
-until it expires, so `ttl` is the longest a removed clearance can keep working.
+THE TTL COLUMN IS THE REVOCATION WINDOW, AND THERE IS ONE PER LAYER. A cached bag
+keeps authorizing until it expires, so `ttl` is the longest a removed clearance
+can keep working — for the keys THAT LAYER answers. Two layers are two caches and
+never an average: a shared directory on a five-minute window beside an inline
+block that never expires leaves the keys only the inline block serves unbounded.
 `never` means a bag, once fetched, is only dropped by eviction or by an explicit
 `aperture attributes invalidate` — correct for a fixed inline block, dangerous
 for a live directory.
 
-The `cached` column counts THIS process's cache, summed across a slot's layers —
-a subject both layers serve is held twice, because it is cached twice. A one-shot
-invocation starts cold, so it reads 0; it is the number that matters in a
-long-running `aperture serve`.
+THE SOURCE COLUMN NAMES THE PLACE, not just the kind. `(shared wiring)` is a row
+in the deployment's database, put there by `aperture wiring push` and read by
+every instance; `(--seed file)` is this instance's own document; `(host)` is a
+provider the binary embedding Aperture registered in Go, which no document
+describes. A slot with no source at all reads `(unwired)`: that is not an empty
+directory, it is a party this deployment declared nothing for, and every fetch
+against it fails — leniently on the decision path, which means the rule sees only
+the floor bag.
 
-No actor is required: this reports the wiring in the seed file you passed and
-the configuration this process built from it. It contacts no provider and prints
+The `cached` column counts THIS process's cache for the whole SLOT, summed across
+its layers — a subject both layers serve is held twice, because it is cached
+twice — so it appears once, on the slot's first row, and reads `-` on the second
+layer's. A one-shot invocation starts cold, so it reads 0; it is the number that
+matters in a long-running `aperture serve`.
+
+No actor is required: this reports the wiring this deployment is running — the
+seed file you passed, the shared wiring rows in the --store you named, and the
+configuration this process built from them. It contacts no provider and prints
 no subject key and no attribute value.
 
 ```
@@ -836,7 +849,20 @@ A push is refused when:
     declare (named in the refusal)
   * anything carries a literal `dsn:` — only `dsn_env:`, a variable NAME, is ever
     accepted, and shared wiring stores neither
+  * the document declares NO wiring at all and --allow-empty was not given
 ```
+
+AN ALL-EMPTY DOCUMENT IS REFUSED, and it is the one refusal about what the push
+would MEAN rather than about what is wrong with it. Because a push replaces, an
+empty set retires every entry the deployment is running: all five tables are
+emptied and every instance goes back to building its wiring from its own --seed
+file — or, if it has none, from NOTHING, which still starts, with every attribute
+slot unregistered. An unregistered slot answers with an empty bag, so a rule that
+EXCLUDED on an attribute stops excluding and the grant WIDENS, with nothing in a
+verdict, a trace or a note to say so. The likeliest causes are the wrong --seed
+path and a mistyped section key (`provider:` for `providers:`), which is not an
+error — it is a section that simply is not there. Pass --allow-empty to retire the
+wiring deliberately.
 
 No actor is required: the store credential is the authority, exactly as it is for
 `aperture import`.
@@ -847,6 +873,7 @@ aperture wiring push [options]
 
 | Name | Aliases | Type | Default | Usage |
 | --- | --- | --- | --- | --- |
+| `--allow-empty` | — | bool | — | push a document that declares NO wiring at all, which RETIRES every entry the deployment is running: all five tables are emptied and every instance goes back to building its wiring from its own --seed file, or from nothing if it has none. Refused without this flag, because the commonest cause is the wrong --seed path or a mistyped section key |
 | `--seed` | — | string | — | path to the JSON/YAML seed document whose four SHARED wiring sections are pushed (required; no model state is applied from it and there is no embedded-example fallback) |
 | `--store` | — | string | — | DSN for the shared store the wiring lives in: a postgres:// or postgresql:// URL for PostgreSQL, any other value as a SQLite path (required — there is nothing to share about an in-memory store). Set APERTURE_POSTGRES_SCHEMA to place Aperture's tables in a named PostgreSQL schema |
 
