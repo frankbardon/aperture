@@ -554,6 +554,25 @@ func (p *Provider) Fetch(ctx context.Context, id identity.Identity) (provider.Me
 	// The fetch statement's projection, recorded before any row is read: a column
 	// list is a property of the STATEMENT, so even a fetch that finds nothing
 	// teaches it. This is one half of what ListedMetadataMatchesFetch compares.
+	//
+	// It is recorded BEFORE validateColumns runs, where the list side deliberately
+	// waits until the projection is known well-formed (see enumerate). The
+	// asymmetry is real and it is safe only because of what validateColumns does:
+	// it REFUSES an unnamed or duplicated column and never rewrites cols, so a
+	// malformed fetch projection is recorded, then fails the very first fetch that
+	// reads a row, and is in any case never set-equal to a list projection that
+	// passed the same check — ["name","name"] and ["name"] are different sets.
+	// ListedMetadataMatchesFetch therefore cannot be made true by a projection
+	// validation would have rejected.
+	//
+	// That stops holding the moment a validation rule DROPS a column instead of
+	// refusing the statement — a tolerated duplicate, a synthetic column filtered
+	// out. Then the recorded list would be the raw projection and the effective one
+	// would be shorter, the two could agree by accident, and the warm would cache
+	// bags Fetch never produces. A rule like that must move this call after the
+	// validation (Fetch reads rows.Columns twice today, once here and once in
+	// scanRow, so there is room to hoist it) — and see the constraint stated on
+	// validateColumns itself.
 	if cols, cerr := rows.Columns(); cerr == nil {
 		p.observeFetchColumns(cols)
 	}
@@ -733,9 +752,22 @@ func (p *Provider) enumerate(ctx context.Context, filter provider.Filter) ([]pro
 // row's NULLs — where comparing two bags would not be, since a NULL column omits
 // its field and an omitted field is indistinguishable from an unprojected one. The
 // one thing it does not prove is that two statements over the same id return the
-// same DATA; a get_all whose join produces a different value for a column get_one
-// also projects is a host bug about the object's own data, which nothing in this
-// package can see.
+// same DATA, and that gap is a real hazard rather than a formality:
+//
+//	get_one: SELECT b.tier FROM brands b WHERE b.id = $1
+//	get_all: SELECT 'brand:' || b.id AS id, COALESCE(b.tier, plans.tier) AS tier
+//	         FROM brands b LEFT JOIN plans ON plans.id = b.plan_id
+//
+// Both projections are {tier}, so this answers true, the enumeration warms the
+// per-type cache, and every decision reading object.tier for the whole ttl is
+// computed from the PLAN's tier — a value this type's own Fetch never produces —
+// after which the entry expires and the verdict changes with nothing having
+// happened. It is the same class of failure as an unequal projection, reached
+// through the one gap a column comparison cannot close, and it cannot be closed
+// here: closing it means fetching every listed object to compare, which is the work
+// the warm exists to remove. It is therefore a DEVELOPER OBLIGATION — the two
+// statements read the same columns from the same EXPRESSIONS — and it is stated as
+// one in skills/sql-provider.md and docs/src/concepts/providers.md.
 //
 // The practical consequence of the "not known yet" answer is one cold enumeration
 // per process per object-type: the first List cannot warm, its candidates each
@@ -943,6 +975,16 @@ func scanRow(rows *sql.Rows, id string) (provider.Metadata, error) {
 // once per row. where names whatever the caller can say about the context — a
 // fetch's identity, or an enumeration's object-type — and is merged into every
 // diagnostic.
+//
+// It REFUSES, and it must keep refusing rather than repairing. cols is the
+// caller's slice and is never rewritten, so the projection a caller observed
+// (observeFetchColumns / observeListColumns) is always the projection that is
+// actually in force. A rule that DROPPED a column instead of refusing the
+// statement would break that: the fetch side records its projection before this
+// runs (see Fetch), so the recorded list and the effective one would diverge, the
+// two sides could compare equal by accident, and ListedMetadataMatchesFetch would
+// license warming the per-type cache with bags Fetch never produces. Adding a
+// dropping rule therefore means moving that recording after this call.
 func validateColumns(cols []string, where map[string]any) error {
 	seen := make(map[string]bool, len(cols))
 	for i, name := range cols {

@@ -384,6 +384,32 @@ checked. Metadata is opaque host data, one object's bags agreeing proves nothing
 about the next object's, and comparing per object would cost the very `Fetch` the
 warm exists to avoid.
 
+**Columns are cheap to compare; values are not compared at all.** Deriving the
+answer from the two SELECT lists proves the two statements project the same
+*field names*. It proves nothing about the *values* behind them, and the two can
+diverge while the columns agree:
+
+```yaml
+get_one: SELECT b.tier FROM brands b WHERE b.id = $1
+get_all: SELECT 'brand:' || b.id AS id,
+                COALESCE(b.tier, plans.tier) AS tier      -- same COLUMN, different VALUE
+         FROM brands b LEFT JOIN plans ON plans.id = b.plan_id
+```
+
+Both projections are `{tier}`, so `ListedMetadataMatchesFetch` is `true` and the
+enumeration warms the cache — with a `tier` that comes from the plan, which this
+type's own `Fetch` would never produce. Every decision reading `object.tier` for
+the whole of the TTL window is then computed from a value no `Fetch` in the
+deployment returns, and when the entry expires the verdict changes with nothing
+having happened. It is the same class of failure as an unequal projection, arrived
+at through the one gap the column check cannot close.
+
+Nothing can close it from inside Aperture — that would mean fetching every listed
+object to compare, which is exactly the work the warm removes. So it is a
+**developer obligation**: the two statements must read the same columns *from the
+same expressions*, and a `get_all` that computes, coalesces, or joins for a column
+`get_one` reads plainly is a bug in the pair even though every gate passes.
+
 ### Cache tuning and invalidation
 
 Each type's cache is an in-memory LRU (`MemoryCache`) behind the pluggable

@@ -405,7 +405,32 @@ indistinguishable from an unprojected one. There is deliberately **no** `Config`
 field and no YAML key for it: an operator's unchecked promise about two statements is
 exactly what this replaces.
 
-Two things follow for the developer:
+**It proves column equality, not bag equality, and the gap is a real hazard.** Two
+statements can project the same field *names* from different *expressions*:
+
+```yaml
+get_one: SELECT b.tier FROM brands b WHERE b.id = $1
+get_all: SELECT 'brand:' || b.id AS id,
+                COALESCE(b.tier, plans.tier) AS tier      # same COLUMN, different VALUE
+         FROM brands b LEFT JOIN plans ON plans.id = b.plan_id
+```
+
+Both projections are `{tier}`, so `ListedMetadataMatchesFetch` answers `true`, the
+enumeration warms the per-type cache, and every decision reading `object.tier` for
+the whole TTL window is computed from the plan's tier — a value this type's own
+`Fetch` never produces. When the entry expires the verdict changes with nothing
+having happened. That is the same class of failure as an unequal projection, reached
+through the one gap the column check cannot close, and it is why the Go doc on
+`ListedMetadataMatchesFetch` says outright that it "does not prove that two
+statements over the same id return the same DATA".
+
+Nothing can close it: closing it means fetching every listed object to compare,
+which is the work the warm exists to remove. So it is a **developer obligation** —
+the two statements read the same columns *from the same expressions*, and a `get_all`
+that computes, coalesces or joins for a column `get_one` reads plainly is a bug in
+the pair even though every gate is green.
+
+Two more things follow for the developer:
 
 - **An unequal pair stays legal and stays correct.** A deliberately narrow display
   projection over a wide table is a reasonable thing to write. It costs a fetch per
