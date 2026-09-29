@@ -134,10 +134,31 @@ reader does not refuse unknown keys, so the section is simply not there.
 
 Retiring a deployment's wiring is a legitimate act, so `--allow-empty` says it
 deliberately; the summary then spells out what was retired, because five zeroes read
-as a summary rather than as a retirement. What the refusal cannot see is a *partial*
-retirement — one mistyped key in a document that still declares other sections — which
-is indistinguishable from deliberately dropping an entry. [`diff`](#diff--compare-the-deployment-against-the-repository)
-is the command for that.
+as a summary rather than as a retirement.
+
+### A key that names no section is reported
+
+The refusal above only fires when the document has **no** wiring at all. A *partial*
+retirement — one mistyped key in a document that still declares other sections, so the
+set is not empty and the push legitimately proceeds — is invisible to it, and from the
+store's side indistinguishable from deliberately dropping an entry.
+
+So `push` **warns** about every top-level key that names no section, before it writes:
+
+```
+warning: wiring.yaml carries 1 top-level key(s) that name no section: provider
+         Nothing was read from them. If one is a mistyped wiring section, the push below
+         retires that section for every instance of the deployment.
+```
+
+It is a warning and never a refusal, because a document may legitimately carry keys
+Aperture does not know — another tool's section, or a key from a newer Aperture than the
+binary reading it — and refusing those would break files that work today. Only the key
+**names** are printed: a value under an unknown key could be anything, including a
+credential somebody put in the wrong place.
+
+[`diff`](#diff--compare-the-deployment-against-the-repository) is the other half, and
+the one that catches a section dropped without a typo.
 
 A push is **audited**: one `WiringPush` mutation record against
 `model.AccountWildcard`, carrying the per-section counts and the deployed connection

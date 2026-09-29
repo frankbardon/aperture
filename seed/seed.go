@@ -17,6 +17,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 
 	aerr "github.com/frankbardon/aperture/errors"
@@ -136,6 +138,69 @@ type Document struct {
 	// of the deployment reads it back. See attribute_provider.go for why it is its
 	// own top-level key rather than a discriminated variant of providers:.
 	AttributeProviders []AttributeProvider `yaml:"attribute_providers,omitempty" json:"attribute_providers,omitempty"`
+
+	// UnknownKeys is the TOP-LEVEL keys in the parsed document that name no section,
+	// sorted. It is a parse observation and not content: Parse fills it, nothing
+	// reads it to decide anything, and both tags are "-" so it stays out of an
+	// export, out of a re-parse, and out of the digest a wiring version is
+	// identified by.
+	//
+	// It exists because an unknown key is SILENTLY ABSENT, and for the four shared
+	// wiring sections that is indistinguishable from deliberately dropping one. A
+	// `providers:` mistyped as `provider:` makes `aperture wiring push` store a set
+	// with no providers in it, and every instance of the deployment then reads that
+	// set back — so a typo retires wiring fleet-wide and the command exits 0.
+	// `refuseEmptyWiringPush` catches the case where the document has NO wiring at
+	// all; this catches the PARTIAL case it cannot see, where other sections are
+	// present and the set is therefore not empty.
+	//
+	// It is reported and never refused. A document may legitimately carry keys
+	// Aperture does not know — a `# yaml-language-server:` companion block, another
+	// tool's section, a key from a newer Aperture than this binary — and refusing
+	// those would break files that work today, in a release that only meant to add
+	// a diagnostic. The caller decides what a warning is worth; `aperture wiring
+	// push` prints one, because that is the command where being wrong is fleet-wide.
+	UnknownKeys []string `yaml:"-" json:"-"`
+}
+
+// documentSectionKeys is the set of top-level keys a Document declares, derived from
+// the struct's own json tags so a section added later needs nothing here. A tag of
+// "-" is not a section — UnknownKeys itself is the reason that case exists.
+func documentSectionKeys() map[string]struct{} {
+	rt := reflect.TypeOf(Document{})
+	out := make(map[string]struct{}, rt.NumField())
+	for i := 0; i < rt.NumField(); i++ {
+		tag := rt.Field(i).Tag.Get("json")
+		name, _, _ := strings.Cut(tag, ",")
+		if name == "" || name == "-" {
+			continue
+		}
+		out[name] = struct{}{}
+	}
+	return out
+}
+
+// unknownTopLevelKeys reports the keys in a decoded document that name no section.
+//
+// It reads the NORMALIZED JSON rather than the original YAML, so it asks about the
+// keys the decoder actually saw: a YAML anchor, an alias or a merge key has already
+// been resolved by then, and asking the raw file would report keys that never
+// reached the struct. Anything that is not a JSON object yields nothing — a
+// malformed document is the decoder's error to report, not this function's.
+func unknownTopLevelKeys(normalized []byte) []string {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(normalized, &top); err != nil {
+		return nil
+	}
+	known := documentSectionKeys()
+	var out []string
+	for key := range top {
+		if _, ok := known[key]; !ok {
+			out = append(out, key)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Account mirrors model.Account in declarative form.
@@ -254,8 +319,12 @@ type Rule struct {
 // against the documented field names lands in the same shape either way.
 func Parse(data []byte, format Format) (*Document, error) {
 	var doc Document
+	// normalized is the JSON both formats decode from, kept so the unknown-key scan
+	// below asks about exactly the keys the decoder saw.
+	var normalized []byte
 	switch format {
 	case FormatJSON:
+		normalized = data
 		if err := json.Unmarshal(data, &doc); err != nil {
 			return nil, aerr.Wrap(aerr.APERTURE_INVALID_INPUT, "seed: decode JSON document", err)
 		}
@@ -268,12 +337,14 @@ func Parse(data []byte, format Format) (*Document, error) {
 		if err != nil {
 			return nil, aerr.Wrap(aerr.APERTURE_INVALID_INPUT, "seed: normalize YAML document", err)
 		}
+		normalized = jb
 		if err := json.Unmarshal(jb, &doc); err != nil {
 			return nil, aerr.Wrap(aerr.APERTURE_INVALID_INPUT, "seed: decode YAML document", err)
 		}
 	default:
 		return nil, aerr.Newf(aerr.APERTURE_INVALID_INPUT, "seed: unknown format %q", format)
 	}
+	doc.UnknownKeys = unknownTopLevelKeys(normalized)
 	// A literal dsn: is refused HERE, at decode, and not at BuildRegistry: the
 	// harm is that a password was written into a committed file, so the document
 	// must not be loadable — not by Apply, not by an export round-trip, not by a

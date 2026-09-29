@@ -1329,3 +1329,53 @@ func equalWiring(a, b model.WiringSet) bool {
 	}
 	return true
 }
+
+// TestAMistypedWiringSectionIsWarnedAboutOnAPush is the residual `refuseEmptyWiringPush`
+// cannot cover: a document that still declares OTHER sections, so the set is not empty
+// and the push legitimately proceeds, while one wiring section silently vanished. The
+// warning is the only thing standing between a typo and a fleet-wide retirement.
+func TestAMistypedWiringSectionIsWarnedAboutOnAPush(t *testing.T) {
+	doc, err := seed.Parse([]byte(`
+object_types:
+  - name: document
+    actions: [read]
+connections:
+  main:
+    dsn_env: APERTURE_TEST_DSN
+provider:
+  - object_type: document
+    kind: sql
+    connection: main
+    get_one: SELECT 1
+`), seed.FormatYAML)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(doc.Providers) != 0 {
+		t.Fatalf("fixture is wrong: providers = %v, the key is meant to be mistyped", doc.Providers)
+	}
+
+	var out bytes.Buffer
+	warnUnknownWiringKeys(&ucli.Command{ErrWriter: &out}, doc, "wiring.yaml")
+
+	got := out.String()
+	for _, want := range []string{"wiring.yaml", "provider", "name no section", "retires that section"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("warning does not mention %q; got:\n%s", want, got)
+		}
+	}
+}
+
+// A clean document must print nothing. A warning on every push is a warning nobody
+// reads, and this one has to still be legible on the day it matters.
+func TestACleanWiringDocumentWarnsAboutNothing(t *testing.T) {
+	doc, err := seed.Parse([]byte("object_types:\n  - name: document\n    actions: [read]\n"), seed.FormatYAML)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var out bytes.Buffer
+	warnUnknownWiringKeys(&ucli.Command{ErrWriter: &out}, doc, "wiring.yaml")
+	if out.Len() != 0 {
+		t.Fatalf("a clean document warned: %q", out.String())
+	}
+}

@@ -208,6 +208,11 @@ func runWiringPush(ctx context.Context, cmd *ucli.Command) error {
 		return aerr.Wrap(aerr.APERTURE_INVALID_INPUT, "cli: parsing the wiring document", err)
 	}
 
+	// A key that names no section is SILENTLY ABSENT, and for a wiring section that
+	// is indistinguishable from deliberately dropping it. Reported before the write,
+	// so an operator who mistyped `providers:` sees it beside the counts.
+	warnUnknownWiringKeys(cmd, doc, seedPath)
+
 	// One instant for the whole push. See wiringFromDocument.
 	set, err := wiringFromDocument(doc, time.Now().UTC())
 	if err != nil {
@@ -299,6 +304,29 @@ func runWiringPush(ctx context.Context, cmd *ucli.Command) error {
 // command line, not a path read out of a wiring row — the rule that keeps filesystem
 // paths out of shared wiring is about what is STORED, and `aperture wiring pull`'s
 // --out refusal already names its own path for the same reason.
+// warnUnknownWiringKeys reports top-level keys in the pushed document that name no
+// section. It WARNS and never refuses, for the reason seed.Document.UnknownKeys gives:
+// a document may legitimately carry a key this binary does not know.
+//
+// It is here rather than in seed because this is the command where being wrong is
+// fleet-wide. refuseEmptyWiringPush catches a document with NO wiring at all; this
+// catches the partial case it cannot — `providers:` mistyped as `provider:` in a
+// document that still declares connections:, where the set is not empty, the push
+// succeeds, and every instance of the deployment reads back a set with no providers.
+//
+// The key NAMES are printed and nothing else. A value under an unknown key could be
+// anything, including a credential somebody put in the wrong place.
+func warnUnknownWiringKeys(cmd *ucli.Command, doc *seed.Document, seedPath string) {
+	if len(doc.UnknownKeys) == 0 {
+		return
+	}
+	fmt.Fprintf(cmd.ErrWriter,
+		"warning: %s carries %d top-level key(s) that name no section: %s\n"+
+			"         Nothing was read from them. If one is a mistyped wiring section, the push below "+
+			"retires that section for every instance of the deployment.\n",
+		seedPath, len(doc.UnknownKeys), strings.Join(doc.UnknownKeys, ", "))
+}
+
 func refuseEmptyWiringPush(set model.WiringSet, seedPath string, allowEmpty bool) error {
 	if !set.IsEmpty() || allowEmpty {
 		return nil

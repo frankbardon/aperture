@@ -270,10 +270,25 @@ It is a flag and not a warning because the two documents that produce it are
 indistinguishable from here and both are usually mistakes — the wrong `--seed` path,
 and a mistyped section key, which the seed reader does not refuse — and because there
 is no undo: the superseded set is gone. The summary of an allowed empty push spells
-out what was retired, since five zeroes read as a summary. A **partial** retirement,
-one mistyped key in a document that still declares other sections, is invisible to
-`IsEmpty()` and indistinguishable from deliberately dropping an entry;
-`aperture wiring diff` is the guard for that one.
+out what was retired, since five zeroes read as a summary.
+
+A **partial** retirement — one mistyped key in a document that still declares other
+sections, so the set is not empty and the push proceeds — is invisible to `IsEmpty()`
+and indistinguishable from deliberately dropping an entry. Two things cover it.
+`seed.Parse` records every top-level key that named no section on
+`Document.UnknownKeys`, and `aperture wiring push` **warns** about them by name before
+it writes (`warnUnknownWiringKeys`); and `aperture wiring diff` catches the case with
+no typo in it, where a section was dropped on purpose or by a bad merge.
+
+The unknown-key report **warns and never refuses**, which is the opposite posture from
+the all-empty case, and deliberately: a document may legitimately carry a key this
+binary does not know — another tool's section, or a key from a newer Aperture — so
+refusing would break files that work today in a release that only meant to add a
+diagnostic. The all-empty case has no such innocent reading. Only the key NAMES are
+printed, because a value under an unknown key could be anything, a misplaced
+credential included. `UnknownKeys` is tagged `-` in both encodings: it is a parse
+observation, not content, so it reaches no export, no re-parse, and not the local
+wiring digest a version is identified by.
 
 There is deliberately **no per-row `Put` or `Delete`**. Adding one makes "the
 deployment's wiring" something a caller can leave half-applied, which is the state
