@@ -499,6 +499,36 @@ The precedence is fixed and does not depend on registration order. It is the eng
 the winner is stamped last over a fresh map and the floor then stamps over both, so
 the tiers compose in one direction — **floor over shared over local**.
 
+**"Shared wins" is about keys the shared layer *serves*, and absence has two
+consequences worth knowing before you use the local layer.** The merge copies the
+local bag and stamps the shared one over it, so a key the shared bag does not
+carry is answered from the local one — which is the whole point, and also this:
+
+- **A shared source that omits a key for one subject falls through to the local
+  layer, inside its own declared set.** A SQL `NULL` (and a JSON `null`) becomes an
+  **absent field**, not a null value, so a directory whose `clearance` is NULL for
+  one person returns a bag with no `clearance` key and the merge reads that
+  person's `clearance` out of the local file. `declared_keys:` does not prevent it:
+  the declaration is what a *rule* is validated against, not a promise that every
+  row is populated. Nothing can detect it either — a bag is opaque host data, and
+  "no opinion" and "explicitly unset" are the same absent key. Fix it in the
+  statement: `COALESCE(u.clearance, 0) AS clearance` makes the directory's "unset"
+  arrive as a value rather than as a hole.
+- **Removing a subject from the shared directory is not a revocation on an
+  instance whose local file still lists it.** A shared layer with no record for a
+  key reports `APERTURE_NOT_FOUND`, which a fetch reads as *this layer has no
+  record* — the ordinary case — and answers from the local bag. Deleting a
+  principal from the SQL directory therefore changes nothing on an instance whose
+  seed `attributes:` block still names that principal, and it never times out: an
+  inline layer is registered with a TTL of `0` because inline data cannot change
+  while the process runs, so invalidation has nothing to drop. The remedy is to
+  remove the local entry — or better, to use the local layer for **fields** the
+  directory does not carry, never for **subjects** the directory is the register of.
+
+Neither is fixed by reversing the precedence: the discard this layering replaced
+made the two sections mutually exclusive, which was worse. They are the price of
+additive layering.
+
 A second registration **in the same layer** is still **refused**, not replaced: "last
 writer wins" is how one deployment's directory quietly shadows another's during
 wiring, and the failure then surfaces as attributes that are merely *wrong* rather

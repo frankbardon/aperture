@@ -883,6 +883,48 @@ displays the wiring does not re-derive the rule and eventually disagree with it;
 surface that needs to name both layers asks
 `provider.AttributeRegistry.Layers(slot)` for the shape that was actually built.
 
+##### Two corollaries of additive layering, neither of them nice
+
+"Shared wins" is a statement about keys the shared layer **serves**, and the merge
+is exactly that: the local bag is copied first and the shared bag is stamped over
+it, so a key the shared bag does not carry is answered out of the local one. That
+is the whole point — it is what lets an instance add a field the directory does not
+have. It also has two consequences that no code can distinguish from the intended
+case, and they are written down here because nothing else can catch them.
+
+**A shared layer that serves a key but omits it for one row falls through to the
+local layer, *inside* its own declared set.** `sqlprovider`'s `rowMetadata` omits a
+NULL column's field **entirely** rather than carrying a null — `metadataValue` maps
+a SQL `NULL` and a JSON `null` to an *absent* field on purpose — so a directory whose
+`clearance` is NULL for one subject returns a bag with no `clearance` key at all,
+and the merge reads that subject's `clearance` out of the local file. `declared_keys:`
+does **not** mitigate this: the shared entry declares `clearance`, the rule validates
+against the declaration, and the value the rule then compares is the local one. The
+registry cannot help, because it cannot tell "this layer has no opinion about
+`clearance`" from "this layer says `clearance` is unset" — an attribute bag is opaque
+host data and both are the same absent key. The remedy is in the **statement**: a
+shared `get_one` that must answer for a key should say so
+(`COALESCE(u.clearance, 0) AS clearance`), so the directory's "unset" arrives as a
+value rather than as a hole for the local file to fill.
+
+**Removing a subject from the shared directory is not a revocation on any instance
+whose local file still lists it.** A shared layer that has no record for a key
+returns `APERTURE_NOT_FOUND`, which `Fetch` treats as *this layer has no record* —
+the ordinary, necessary case — and the answer is the local bag. So deleting a
+principal from the SQL directory does not stop an instance whose `attributes:`
+block still names that principal from deciding against the inline bag, and it never
+expires: `seed/` registers the inline layer with `provider.WithTTL(0)`, because
+inline data is fixed for the life of the process. Invalidation does not help either
+— there is nothing stale to drop. The remedy is to **remove the local entry**, or,
+better, not to carry subjects locally that the directory administers: use the local
+layer for *fields* the directory does not have, not for *subjects* it is the
+register of.
+
+Neither is a bug in the merge, and neither is fixed by reversing it — the discard
+this layering replaced made the two sections mutually exclusive, which was worse.
+They are the price of additive layering, and the price is only payable if it is
+known about.
+
 #### The `get_all` bare-id contract — a failure with no error
 
 This is the trap, and **nothing can catch it**:
