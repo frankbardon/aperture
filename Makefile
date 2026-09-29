@@ -1,4 +1,4 @@
-.PHONY: build run clean test bench fmt vet lint proto vendor-rete docs docs-serve docs-clean docs-gen
+.PHONY: build run clean test test-race bench fmt vet lint proto vendor-rete docs docs-serve docs-clean docs-gen
 
 BINARY_NAME=aperture
 BUILD_DIR=bin
@@ -61,6 +61,22 @@ clean:
 # file — pass it in the environment.
 test:
 	$(GO) test ./...
+
+# test-race runs the same suite under the race detector. It is a SEPARATE target
+# and deliberately not folded into `test`: -race rebuilds the world with
+# instrumentation and runs several times slower, which is a CI-cost decision to
+# make on purpose rather than by accident.
+#
+# It is not redundant with `test`. A shared registry read on the decision path
+# (provider.AttributeRegistry, provider.Registry) is concurrency-safe by an
+# argument about publication, not by a lock held across the read, and an
+# unsynchronised write to an already-published entry is invisible to a suite that
+# runs every case single-threaded — `make test` cannot see that class of bug at
+# all. Run this after touching anything a decision reads concurrently:
+#
+#   make test-race
+test-race:
+	$(GO) test -race ./...
 
 # bench runs the performance benchmark suite in ./bench (INFORMATIONAL): it
 # prints ns/op, allocs/op, and the computed p99 (p99-ns) + sustained throughput

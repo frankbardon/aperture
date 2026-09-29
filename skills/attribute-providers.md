@@ -438,6 +438,35 @@ Aperture, and self-contained for a one-shot CLI invocation (which starts cold an
 exits cold) — but it **cannot reach a running `aperture serve`**. The controls
 that reach that process's cache are the slot's `ttl:` and a restart.
 
+### Only SUCCESSES are cached, and layering doubles what that costs
+
+`fetchAttributeLayer` caches what a provider **returned**; a layer's
+`APERTURE_NOT_FOUND` is not cached. So a key a layer does not know is re-asked of
+that layer on **every decision**, for the life of the process, with no TTL and
+nothing to invalidate.
+
+On a single-layer slot that is the ordinary cost of a key nobody has. Layering
+doubles the number of layers that can not-know a key, and the common shape makes it
+concrete: a **shared** SQL directory beside a **local** three-entry `attributes:`
+block means every decision for one of those three principals issues a fresh
+`get_one` against the shared directory first — the local bag is cached and the
+shared miss is not. The same holds in reverse for a subject the directory carries
+and the file does not, except that a `StaticAttributes` miss is a map lookup and
+costs nothing. It is the **SQL and CSV** layers where the misses are round trips.
+
+Nothing in the benchmark suite sees this: `bench.TestCheckNFRAttributes` measures
+warm-cache hits, which is exactly the case a negative lookup is not.
+
+This is **not** fixed by caching negatives, and that is a deliberate refusal rather
+than a gap. A cached negative is a **staleness window on an addition**: a subject
+added to the directory — a clearance just granted, a machine just enrolled — would
+stay invisible for the whole `ttl:`, which is the mirror image of the revocation
+window this section is about, and is a security tradeoff an operator would be paying
+without having been asked. If the misses are hot enough to matter, the answers are
+in the wiring rather than in the registry: carry the subject in the layer that
+already has it, or give the shared layer the subject rather than leaning on the local
+one (see the two corollaries under [Precedence](#precedence-two-layers-and-the-shared-layer-wins)).
+
 ## Containment: enumeration is never scope resolution
 
 `*provider.Registry` deliberately **does** satisfy `scope.ObjectLister`.
@@ -477,14 +506,27 @@ wired to what they look like.
 
 `Fields` and `Limit` are re-enforced by the registry on whatever a provider
 returns (`MatchFields`, plus the limit), so a provider that ignores them is still
-correct, only less efficient. The limit is **honoured, not clamped down**: a
-positive `Limit` is passed through verbatim and enforced at that value, and
-`provider.DefaultListLimit` (= 1000) is only what a non-positive `Limit` means.
-`Enumerate` is deliberately **uncapped** — it is the system-tier admin read of a
-directory, and an operator asking "who is in the user slot?" may legitimately need
-all of it; a page size chosen inside the registry would only make the honest
-answer arrive in pieces. What keeps the read safe is the authority required to
-reach it (`service.requireAttributeAdmin`), not a number in `provider`.
+correct, only less efficient.
+
+There is **no ceiling, but there is a default, and it truncates silently.** The
+limit is **honoured, not clamped down**: a positive `Limit` is passed through
+verbatim and enforced at that value, above `provider.DefaultListLimit` included,
+because this is the system-tier admin read of a directory and an operator asking
+"who is in the user slot?" may legitimately need all of it — a page size chosen
+inside the registry would only make the honest answer arrive in pieces. What keeps
+the read safe is the authority required to reach it
+(`service.requireAttributeAdmin`), not a number in `provider`.
+
+A caller that names **no** limit is a different case, and it is not unbounded: a
+non-positive `Limit` means `provider.DefaultListLimit` (= 1000), the same
+substitution `Registry.List` makes. Nothing in the result says so. A 5000-record
+slot read with no limit returns exactly 1000 records with no error, no flag and no
+count, and that answer is **indistinguishable from a complete directory of 1000**.
+So an operator who needs the whole of a slot must name a limit larger than it
+(`aperture attributes query user --limit 6000`), and one who needs to know whether
+an answer is complete must ask for one more record than they expect and see
+whether they get it. The CLI's `--limit` flag says the same thing from the other
+side: `<=0` means the default, and the registry applies it regardless.
 ### `Enumerate` never writes the slot's cache
 
 A slot's caches are **`Fetch`'s** caches — the decision path's view of a subject —
@@ -869,6 +911,48 @@ each slot's bags come from (`"csv"`, `"sql"`, or `seed.AttributeSourceInline` =
 displays the wiring does not re-derive the rule and eventually disagree with it; a
 surface that needs to name both layers asks
 `provider.AttributeRegistry.Layers(slot)` for the shape that was actually built.
+
+##### Two corollaries of additive layering, neither of them nice
+
+"Shared wins" is a statement about keys the shared layer **serves**, and the merge
+is exactly that: the local bag is copied first and the shared bag is stamped over
+it, so a key the shared bag does not carry is answered out of the local one. That
+is the whole point — it is what lets an instance add a field the directory does not
+have. It also has two consequences that no code can distinguish from the intended
+case, and they are written down here because nothing else can catch them.
+
+**A shared layer that serves a key but omits it for one row falls through to the
+local layer, *inside* its own declared set.** `sqlprovider`'s `rowMetadata` omits a
+NULL column's field **entirely** rather than carrying a null — `metadataValue` maps
+a SQL `NULL` and a JSON `null` to an *absent* field on purpose — so a directory whose
+`clearance` is NULL for one subject returns a bag with no `clearance` key at all,
+and the merge reads that subject's `clearance` out of the local file. `declared_keys:`
+does **not** mitigate this: the shared entry declares `clearance`, the rule validates
+against the declaration, and the value the rule then compares is the local one. The
+registry cannot help, because it cannot tell "this layer has no opinion about
+`clearance`" from "this layer says `clearance` is unset" — an attribute bag is opaque
+host data and both are the same absent key. The remedy is in the **statement**: a
+shared `get_one` that must answer for a key should say so
+(`COALESCE(u.clearance, 0) AS clearance`), so the directory's "unset" arrives as a
+value rather than as a hole for the local file to fill.
+
+**Removing a subject from the shared directory is not a revocation on any instance
+whose local file still lists it.** A shared layer that has no record for a key
+returns `APERTURE_NOT_FOUND`, which `Fetch` treats as *this layer has no record* —
+the ordinary, necessary case — and the answer is the local bag. So deleting a
+principal from the SQL directory does not stop an instance whose `attributes:`
+block still names that principal from deciding against the inline bag, and it never
+expires: `seed/` registers the inline layer with `provider.WithTTL(0)`, because
+inline data is fixed for the life of the process. Invalidation does not help either
+— there is nothing stale to drop. The remedy is to **remove the local entry**, or,
+better, not to carry subjects locally that the directory administers: use the local
+layer for *fields* the directory does not have, not for *subjects* it is the
+register of.
+
+Neither is a bug in the merge, and neither is fixed by reversing it — the discard
+this layering replaced made the two sections mutually exclusive, which was worse.
+They are the price of additive layering, and the price is only payable if it is
+known about.
 
 #### The `get_all` bare-id contract — a failure with no error
 

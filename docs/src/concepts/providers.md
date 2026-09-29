@@ -384,6 +384,32 @@ checked. Metadata is opaque host data, one object's bags agreeing proves nothing
 about the next object's, and comparing per object would cost the very `Fetch` the
 warm exists to avoid.
 
+**Columns are cheap to compare; values are not compared at all.** Deriving the
+answer from the two SELECT lists proves the two statements project the same
+*field names*. It proves nothing about the *values* behind them, and the two can
+diverge while the columns agree:
+
+```yaml
+get_one: SELECT b.tier FROM brands b WHERE b.id = $1
+get_all: SELECT 'brand:' || b.id AS id,
+                COALESCE(b.tier, plans.tier) AS tier      -- same COLUMN, different VALUE
+         FROM brands b LEFT JOIN plans ON plans.id = b.plan_id
+```
+
+Both projections are `{tier}`, so `ListedMetadataMatchesFetch` is `true` and the
+enumeration warms the cache — with a `tier` that comes from the plan, which this
+type's own `Fetch` would never produce. Every decision reading `object.tier` for
+the whole of the TTL window is then computed from a value no `Fetch` in the
+deployment returns, and when the entry expires the verdict changes with nothing
+having happened. It is the same class of failure as an unequal projection, arrived
+at through the one gap the column check cannot close.
+
+Nothing can close it from inside Aperture — that would mean fetching every listed
+object to compare, which is exactly the work the warm removes. So it is a
+**developer obligation**: the two statements must read the same columns *from the
+same expressions*, and a `get_all` that computes, coalesces, or joins for a column
+`get_one` reads plainly is a bug in the pair even though every gate passes.
+
 ### Cache tuning and invalidation
 
 Each type's cache is an in-memory LRU (`MemoryCache`) behind the pluggable
@@ -499,6 +525,36 @@ The precedence is fixed and does not depend on registration order. It is the eng
 the winner is stamped last over a fresh map and the floor then stamps over both, so
 the tiers compose in one direction — **floor over shared over local**.
 
+**"Shared wins" is about keys the shared layer *serves*, and absence has two
+consequences worth knowing before you use the local layer.** The merge copies the
+local bag and stamps the shared one over it, so a key the shared bag does not
+carry is answered from the local one — which is the whole point, and also this:
+
+- **A shared source that omits a key for one subject falls through to the local
+  layer, inside its own declared set.** A SQL `NULL` (and a JSON `null`) becomes an
+  **absent field**, not a null value, so a directory whose `clearance` is NULL for
+  one person returns a bag with no `clearance` key and the merge reads that
+  person's `clearance` out of the local file. `declared_keys:` does not prevent it:
+  the declaration is what a *rule* is validated against, not a promise that every
+  row is populated. Nothing can detect it either — a bag is opaque host data, and
+  "no opinion" and "explicitly unset" are the same absent key. Fix it in the
+  statement: `COALESCE(u.clearance, 0) AS clearance` makes the directory's "unset"
+  arrive as a value rather than as a hole.
+- **Removing a subject from the shared directory is not a revocation on an
+  instance whose local file still lists it.** A shared layer with no record for a
+  key reports `APERTURE_NOT_FOUND`, which a fetch reads as *this layer has no
+  record* — the ordinary case — and answers from the local bag. Deleting a
+  principal from the SQL directory therefore changes nothing on an instance whose
+  seed `attributes:` block still names that principal, and it never times out: an
+  inline layer is registered with a TTL of `0` because inline data cannot change
+  while the process runs, so invalidation has nothing to drop. The remedy is to
+  remove the local entry — or better, to use the local layer for **fields** the
+  directory does not carry, never for **subjects** the directory is the register of.
+
+Neither is fixed by reversing the precedence: the discard this layering replaced
+made the two sections mutually exclusive, which was worse. They are the price of
+additive layering.
+
 A second registration **in the same layer** is still **refused**, not replaced: "last
 writer wins" is how one deployment's directory quietly shadows another's during
 wiring, and the failure then surfaces as attributes that are merely *wrong* rather
@@ -611,6 +667,17 @@ object seam's [`Filter.Fields` contract](#the-filterfields-contract), and both
 `Fields` and `Limit` are re-enforced by the registry on whatever a provider
 returns, so a provider that ignores them is still correct and no caller can
 materialise an unbounded directory.
+
+There is **no ceiling on the limit, but there is a default, and it truncates
+silently.** A positive `Limit` is honoured verbatim however large — an operator
+asking "who is in the user slot?" may legitimately need all of it — but a
+non-positive one means `DefaultListLimit` (= 1000), so a read that names no limit
+is not an unbounded one. Nothing in the result says which happened: a
+5000-subject slot read with no limit returns exactly 1000 records with no error,
+no flag and no count, and that is **indistinguishable from a complete directory
+of 1000**. To read a whole slot, name a limit larger than it
+(`aperture attributes query user --limit 6000`); to find out whether an answer is
+complete, ask for one more record than you expect and see whether you get it.
 
 Enumeration is therefore reachable from exactly one place: `service.ListAttributes`,
 a **system-tier** administrative read gated through `authz.Gate.RequireSystemAdmin`,
