@@ -155,6 +155,20 @@ func (r *Registry) Keys() []string {
 }
 
 // entry resolves the type entry for objectType, or APERTURE_PROVIDER_UNREGISTERED.
+//
+// It releases r.mu before its callers read the entry's fields, and that is safe for
+// one specific reason: a typeEntry is built WHOLE and inserted once, and Register
+// refuses a duplicate rather than adding to an existing entry, so nothing ever
+// mutates an entry a reader may already hold. The map write under r.mu.Lock is
+// therefore the single happens-before that publishes every field, and the
+// lock-free field reads on the decision path need no lock of their own.
+//
+// AttributeRegistry had exactly this shape until slots grew a second LAYER, and
+// adding in-place mutation of a published entry turned the same lock-free reads
+// into a data race whose losing interleaving returned the wrong layer's bag. If a
+// type ever gains something registered after the fact, copy-on-write is the fix
+// (see AttributeRegistry.register) — not a lock across these reads, and not an
+// in-place write.
 func (r *Registry) entry(objectType string) (*typeEntry, error) {
 	r.mu.RLock()
 	e, ok := r.entries[objectType]
