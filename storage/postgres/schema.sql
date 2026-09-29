@@ -664,7 +664,16 @@ CREATE TABLE IF NOT EXISTS apt_schema.apt_wiring_attribute_providers (
     -- column existed; the second opts IN and permits no keys at all. Do not
     -- collapse them into one value.
     --
-    -- This column is READ on the rule-DEFINITION path, not on any decision path:
+    -- This column has TWO readers, on two different paths.
+    --
+    -- On the DECISION path it is authoritative for the slot's SHARED attribute
+    -- layer: provider.WithDeclaredKeys carries the set into the registry, and only
+    -- the declaring layer may answer the keys in it. A declared key the shared
+    -- directory leaves unset, or has no record for at all, is absent from the bag
+    -- rather than falling through to an instance's local file — which is what makes
+    -- deleting a subject from the shared directory an actual revocation.
+    --
+    -- On the rule-DEFINITION path:
     -- internal/cli's declaredAttributeKeySets collects the per-slot sets straight
     -- off these rows, service.WithDeclaredAttributeKeys collapses them onto the
     -- rule roots, and rules.CheckDeclaredAttributeKeys then refuses a rule that

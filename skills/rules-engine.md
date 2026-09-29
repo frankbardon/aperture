@@ -764,6 +764,13 @@ to start). A writer that skipped it would make the whole set of declared keys
 decorative: the point is that no rule naming an undeclared key can be **saved**, by
 any route.
 
+This is one of **two** jobs the same list does. The other is on the decision path: a
+declared set is **authoritative** for the slot's shared attribute layer, so a local
+layer cannot answer a reserved key even when the shared directory is silent about it.
+`skills/attribute-providers.md` is the full account; the consequence worth knowing
+here is that the keys a rule may name are exactly the keys the **deployment** answers
+— not the keys one machine's file happens to carry.
+
 **It is entirely opt-in.** A slot that declares no key set is not enforced at all,
 so `rules.ValidateAST` (a zero-value `rules.DeclaredAttributeKeys`) refuses nothing
 and every rule that validated before declaring existed still validates.

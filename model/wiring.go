@@ -174,7 +174,9 @@ type WiringAttributeProvider struct {
 	// Negative is refused.
 	MaxSize int
 	// DeclaredKeys is the OPTIONAL declared key set: the attribute keys this
-	// shared slot guarantees. It is a DeclaredKeys rather than a []string because
+	// shared slot guarantees — and, because it guarantees them, the keys it alone
+	// ANSWERS, so a local layer cannot serve one of them. It is a DeclaredKeys
+	// rather than a []string because
 	// "not declared" and "declared empty" are different answers and a plain slice
 	// loses one of them the first time a clone helper collapses an empty slice to
 	// nil. See DeclaredKeys.
@@ -207,7 +209,16 @@ type WiringAttributeProvider struct {
 // governs shape, and a second typing mechanism is a second place for two
 // declarations to disagree.
 //
-// A declared set is ENFORCED, and enforced at rule-DEFINITION time only.
+// A declared set is ENFORCED, and it has TWO readers on two different paths.
+//
+// On the DECISION path it is AUTHORITATIVE for the slot's shared attribute layer:
+// the set reaches provider.AttributeRegistry through provider.WithDeclaredKeys, and
+// only the declaring layer may answer the keys in it — a declared key the shared
+// directory leaves unset, or has no record for at all, reads as ABSENT rather than
+// falling through to one instance's local bag. That is what makes removing a subject
+// from the shared directory a revocation rather than a suggestion.
+//
+// On the rule-DEFINITION path it gates authoring.
 // internal/cli's declaredAttributeKeySets reads these values off the wiring rows,
 // service.WithDeclaredAttributeKeys collapses them per slot onto the two rule
 // roots, and rules.CheckDeclaredAttributeKeys refuses a rule naming a key the
