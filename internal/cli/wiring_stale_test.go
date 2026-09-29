@@ -947,3 +947,60 @@ func TestACleanShutdownDoesNotReportItselfStale(t *testing.T) {
 		}
 	})
 }
+
+// TestARevertedConnectionChangeStopsBeingReported is the revert path, and it is
+// here rather than in wiring_frozen_test.go because the thing that has to clear
+// lives on the recorder and not on the version holder.
+//
+// The frozen-name-set refusal used to be recorded TWICE: once on
+// service.WiringHealth, which any completed refresh clears, and once as a latch on
+// liveWiring, which only a successful SWAP cleared. A push reverted to exactly the
+// wiring this instance booted on takes tick's NO-CHANGE branch, which never calls
+// swap — so the two records disagreed for the life of the process, with the posture
+// reporting healthy and the latch still naming the connection the withdrawn push
+// had added.
+//
+// The latch is gone and the recorder is the one record. This case is what says so:
+// the operator's remedy does not have to be a forward push.
+func TestARevertedConnectionChangeStopsBeingReported(t *testing.T) {
+	probe := newStalenessProbe(t)
+	baseline := probe.poll.digest
+
+	// The push that cannot be adopted.
+	set := staleWiringSet(time.Now().UTC())
+	set.Connections = append(set.Connections,
+		model.WiringConnection{Name: "replica", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()})
+	if err := probe.counting.ReplaceWiring(probe.ctx, set); err != nil {
+		t.Fatalf("pushing the wiring: %v", err)
+	}
+	if probe.poll.tick(probe.ctx) {
+		t.Fatal("a push this instance cannot route was adopted")
+	}
+	if p := probe.health.Posture(); !p.Stale || p.Code != string(aerr.APERTURE_WIRING_RESTART_REQUIRED) {
+		t.Fatalf("the refused push was not reported: %+v", p)
+	}
+
+	// The operator undoes it, which is the remedy nobody documents and everybody
+	// reaches for. Fresh stamps, exactly as ReplaceWiring writes them — they are out
+	// of the digest, so this is the boot's wiring again and the tick sees NO CHANGE.
+	if err := probe.counting.ReplaceWiring(probe.ctx, staleWiringSet(time.Now().UTC())); err != nil {
+		t.Fatalf("reverting the wiring: %v", err)
+	}
+	if probe.poll.tick(probe.ctx) {
+		t.Fatal("a revert to the boot's own wiring was reported as a change")
+	}
+	if probe.poll.digest != baseline {
+		t.Errorf("the digest moved to %q on a revert to the boot's wiring", probe.poll.digest)
+	}
+
+	p := probe.health.Posture()
+	if p.Stale {
+		t.Errorf("a withdrawn push is still reported as requiring a restart: %+v\n"+
+			"A revert takes the NO-CHANGE branch, which never calls swap — so any record that only a "+
+			"successful swap clears outlives the push that caused it, for the life of the process", p)
+	}
+	if p.Failures != 0 || p.Code != "" {
+		t.Errorf("the revert cleared the boolean and left the numbers: %+v", p)
+	}
+	probe.decides(t, "after the revert")
+}

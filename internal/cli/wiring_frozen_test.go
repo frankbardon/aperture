@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -28,9 +29,17 @@ import (
 //
 // All three leave the instance deciding, and (2) and (3) both leave the digest
 // where it was. So every case here asserts more than "it was not adopted": the
-// version POINTER (nothing was rebuilt at all), the latched condition
-// (liveWiring.restartRequired, which only (3) sets), and the added/removed split
-// (which is what tells an operator whether to export a DSN or to drain a pool).
+// version POINTER (nothing was rebuilt at all), the CODE (only (3) is
+// APERTURE_WIRING_RESTART_REQUIRED), and the added/removed split (which is what
+// tells an operator whether to export a DSN or to drain a pool).
+//
+// The split is read off the coded error's context map, or off the line the poller
+// printed. There is deliberately no second record of the condition on the holder:
+// the operator-visible posture is service.WiringHealth, and a latch beside it was
+// a second answer that only a successful swap cleared — so a push REVERTED to the
+// boot's own wiring left the posture healthy and the latch still naming the added
+// connection, for the life of the process. See wiring_swap.go's header, and
+// TestARevertedConnectionChangeStopsBeingReported.
 //
 // # The two traps
 //
@@ -136,22 +145,31 @@ func (p *swapProbe) assertHeldWhole(t *testing.T, ctx context.Context, boot *wir
 	}
 }
 
-// assertRestartRequired reads the latched condition and checks both directions of
-// it.
-func assertRestartRequired(t *testing.T, live *liveWiring, added, removed []string) *wiringRestart {
+// assertRestartNames reads the added/removed split off the CODED ERROR a refused
+// swap returns, which is the one machine-readable form of the condition: the
+// context map carries the names that arrived, the names that went and the digest of
+// the push that asked for them.
+//
+// Reading it from the error rather than from a latch on the holder is the point.
+// One record cannot disagree with itself, and the record the operator actually
+// reads — service.WiringHealth, which the poller writes from this very error — is
+// cleared by any completed refresh, including the no-change tick a reverted push
+// produces.
+func assertRestartNames(t *testing.T, err error, added, removed []string) *aerr.CodedError {
 	t.Helper()
-	got := live.restartRequired()
-	if got == nil {
-		t.Fatal("no restart condition was latched. A refusal that only reaches stderr is a refusal nobody " +
-			"is paged for; liveWiring.restartRequired is the seam an operator-visible posture reads")
+	var coded *aerr.CodedError
+	if !errors.As(err, &coded) {
+		t.Fatalf("a refused push returned no coded error: %v", err)
 	}
-	if !sameNames(got.added, added) {
-		t.Errorf("latched added = %v, want %v", got.added, added)
+	gotAdded, _ := coded.Context["added"].([]string)
+	gotRemoved, _ := coded.Context["removed"].([]string)
+	if !sameNames(gotAdded, added) {
+		t.Errorf("the refusal reports added = %v, want %v", gotAdded, added)
 	}
-	if !sameNames(got.removed, removed) {
-		t.Errorf("latched removed = %v, want %v", got.removed, removed)
+	if !sameNames(gotRemoved, removed) {
+		t.Errorf("the refusal reports removed = %v, want %v", gotRemoved, removed)
 	}
-	return got
+	return coded
 }
 
 // sameNames compares two name lists, treating nil and empty as the same answer.
@@ -185,7 +203,7 @@ func TestAPushThatAddsAConnectionNameIsFlaggedAndNotApplied(t *testing.T) {
 	if verdict(t, ctx, boot) {
 		t.Fatal("the booted instance already ALLOWS, so this case cannot tell a held push from an adopted one")
 	}
-	if probe.live.restartRequired() != nil {
+	if strings.Contains(probe.out.String(), "RESTART THIS INSTANCE") {
 		t.Fatal("a freshly booted instance already reports a restart condition")
 	}
 
@@ -195,7 +213,6 @@ func TestAPushThatAddsAConnectionNameIsFlaggedAndNotApplied(t *testing.T) {
 	}
 
 	probe.assertHeldWhole(t, ctx, boot, baseline)
-	assertRestartRequired(t, probe.live, []string{"main"}, nil)
 
 	// The new name is not routed: the installed version reads through the pools the
 	// boot opened, and "main" is not one of them.
@@ -203,8 +220,10 @@ func TestAPushThatAddsAConnectionNameIsFlaggedAndNotApplied(t *testing.T) {
 		t.Error("the added connection has a pool although the push was refused")
 	}
 
+	// The added/removed split reaches the operator on the line the poller printed:
+	// which name arrived is what tells them to export a DSN rather than drain a pool.
 	report := probe.out.String()
-	for _, want := range []string{"CHANGED", "could not adopt", "RESTART THIS INSTANCE", `"main"`} {
+	for _, want := range []string{"CHANGED", "could not adopt", "RESTART THIS INSTANCE", `adds connection name "main"`} {
 		if !strings.Contains(report, want) {
 			t.Errorf("the refusal report does not mention %q. Report:\n%s", want, report)
 		}
@@ -243,7 +262,6 @@ func TestAPushThatRemovesAConnectionNameIsFlaggedAndNotApplied(t *testing.T) {
 	}
 
 	probe.assertHeldWhole(t, ctx, boot, baseline)
-	assertRestartRequired(t, probe.live, nil, []string{"main"})
 
 	// The pool is still open, and still the same one. A refusal that tore it down
 	// would take the serving instance's database access with it.
@@ -257,7 +275,7 @@ func TestAPushThatRemovesAConnectionNameIsFlaggedAndNotApplied(t *testing.T) {
 	}
 
 	report := probe.out.String()
-	for _, want := range []string{"could not adopt", "RESTART THIS INSTANCE", "drops connection", `"main"`} {
+	for _, want := range []string{"could not adopt", "RESTART THIS INSTANCE", `drops connection name "main"`} {
 		if !strings.Contains(report, want) {
 			t.Errorf("the refusal report does not mention %q. Report:\n%s", want, report)
 		}
@@ -304,7 +322,9 @@ func TestANameSetChangingPushIsHeldWhole(t *testing.T) {
 	}
 
 	probe.assertHeldWhole(t, ctx, boot, baseline)
-	assertRestartRequired(t, probe.live, []string{"replica"}, nil)
+	if want := `adds connection name "replica"`; !strings.Contains(probe.out.String(), want) {
+		t.Errorf("the refusal report does not mention %q. Report:\n%s", want, probe.out.String())
+	}
 
 	// Nothing was rebuilt, which is the strong form of "held whole": not an
 	// equivalent registry, the SAME registry.
@@ -342,11 +362,11 @@ func TestBothDirectionsOfAConnectionNameChangeAreReportedApart(t *testing.T) {
 		aerr.APERTURE_WIRING_RESTART_REQUIRED,
 		`adds connection name "replica"`, `drops connection name "main"`, "RESTART THIS INSTANCE")
 
-	latched := assertRestartRequired(t, probe.live, []string{"replica"}, []string{"main"})
-	if latched.digest != "pushed-digest" {
-		t.Errorf("the latched condition names digest %q, want the digest of the push that requires the "+
+	coded := assertRestartNames(t, err, []string{"replica"}, []string{"main"})
+	if got, _ := coded.Context["digest"].(string); got != "pushed-digest" {
+		t.Errorf("the refusal names digest %q, want the digest of the push that requires the "+
 			"restart: an operator reading a posture and an operator reading stderr must be looking at one push",
-			latched.digest)
+			got)
 	}
 }
 
@@ -372,8 +392,8 @@ func TestAPushThatLeavesTheConnectionNamesAloneIsStillAdopted(t *testing.T) {
 	if !verdict(t, ctx, probe.live.current()) {
 		t.Error("the push was reported as adopted but the field_types: row it carried did not take effect")
 	}
-	if probe.live.restartRequired() != nil {
-		t.Error("a push that changed no connection name latched a restart condition")
+	if strings.Contains(probe.out.String(), "RESTART THIS INSTANCE") {
+		t.Errorf("a push that changed no connection name was reported as needing a restart:\n%s", probe.out.String())
 	}
 }
 
@@ -441,10 +461,9 @@ func TestTheFrozenNameSetIsCheckedBeforeAnythingIsRebuilt(t *testing.T) {
 	if live.current().digest != "boot" {
 		t.Error("the refused push still moved the installed version")
 	}
-	assertRestartRequired(t, live, []string{"replica"}, nil)
+	assertRestartNames(t, err, []string{"replica"}, nil)
 
-	// The operator's remedy: a push that restores the name set. It is adopted, and
-	// the condition is cleared.
+	// The operator's remedy: a push that restores the name set. It is adopted.
 	if err := live.swap(ctx, withConnections(now, "main"), "restores-main"); err != nil {
 		t.Fatalf("a push that restored the frozen name set was refused: %v", err)
 	}
@@ -454,9 +473,9 @@ func TestTheFrozenNameSetIsCheckedBeforeAnythingIsRebuilt(t *testing.T) {
 	if live.current().digest != "restores-main" {
 		t.Error("the adoptable push was not installed")
 	}
-	if got := live.restartRequired(); got != nil {
-		t.Errorf("the restart condition survived a successful swap (added=%v removed=%v): an instance that "+
-			"goes on reporting \"restart required\" after adopting a push is reporting a fact about wiring it "+
-			"no longer runs", got.added, got.removed)
-	}
+	// What CLEARS the condition an operator reads is not asserted here, because this
+	// file's holder keeps no record of it: service.WiringHealth does, the poller
+	// writes it from the error above, and any completed refresh clears it — including
+	// the no-change tick a reverted push produces
+	// (TestARevertedConnectionChangeStopsBeingReported).
 }

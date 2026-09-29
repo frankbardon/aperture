@@ -125,18 +125,27 @@ import (
 // TestANameSetChangingPushIsHeldWhole, and it is why the check sits at the top of
 // swap rather than inside the rebuild.
 //
-// The seams the rest of the epic attaches here:
+// # Where the condition is REPORTED, and why not here
 //
-//   - E4-S4 (last-good on failure, and the alarm) owns what wiring_poll.go's tick
-//     does with the error this returns. Last-good is already the behaviour: a
-//     failed rebuild installs nothing, the digest does not advance, and the
-//     instance keeps deciding through the version it has. The frozen-name-set
-//     condition is latched separately, on the holder, for whatever
-//     operator-visible posture that story lands: liveWiring.restartRequired is the
-//     one seam it needs, and it is deliberately the narrowest thing that can be —
-//     no writer, no clock, no second alarm mechanism. "A restart is required" is
-//     mutable runtime state and therefore not a service.Capabilities boolean; that
-//     tension is E4-S4's to resolve, and nothing here pre-empts it.
+// wiring_poll.go's tick owns the error swap returns, and E4-S4 (last-good on
+// failure, and the alarm) is what reports it. Last-good is already the behaviour
+// here: a failed rebuild installs nothing, the digest does not advance, and the
+// instance keeps deciding through the version it has.
+//
+// This file keeps NO parallel record of the frozen-name-set condition. It briefly
+// had one — an atomic latch on the holder, written for whatever operator-visible
+// posture E4-S4 would land — and E4-S4 landed the posture on
+// service.WiringHealth instead, which left the latch with no non-test reader and
+// one real defect: only a successful swap cleared it, and a push REVERTED to the
+// boot's own wiring takes tick's no-change branch, which never calls swap. So a
+// deployment that pushed a connection change and then undid it had
+// service.WiringPosture reporting healthy (refreshed() clears on the no-change
+// branch) while the latch still named the added connection for the life of the
+// process. Two records of one fact, disagreeing.
+//
+// One record, and it is the recorder the alarm already writes to. The coded error
+// this file returns carries the added and dropped NAMES in its context map, so
+// nothing an operator needs is lost with the latch.
 
 // wiringVersion is ONE coherent wiring version this process can answer a request
 // through: the decision stack, the facade composed over it, the HTTP handler that
@@ -196,52 +205,10 @@ type liveWiring struct {
 	// published, and never again.
 	frozen []string
 
-	// restart latches the frozen-name-set condition for a reader that is not the
-	// poll goroutine: nil means this instance has been asked to adopt nothing it
-	// cannot, and non-nil names what the push changed.
-	//
-	// It is an atomic pointer to an immutable record for the same reason cur is: the
-	// writer is the poll goroutine and the reader is whatever surface reports the
-	// instance's posture, and a posture read must never wait on a rebuild. It is the
-	// ONE seam E4-S4 needs from this file — see restartRequired.
-	restart atomic.Pointer[wiringRestart]
-
 	// swapping serialises writers. It protects the REBUILD as well as the store,
 	// so a second refresh cannot start while the first is half-way through reading
 	// the seed file and constructing registries.
 	swapping sync.Mutex
-}
-
-// wiringRestart is the frozen-connection-name condition in the form something other
-// than a log line can read: which names the deployed wiring added, which it
-// dropped, and the digest of the push that asked for them.
-//
-// It carries NAMES and a digest and nothing else. A connection name is
-// operator-supplied configuration and is safe to report; a DSN, a credential or a
-// pool size is not, and none of them is in the shared tables to begin with.
-//
-// It is immutable once stored, and it is deliberately minimal. There is no
-// timestamp, no counter and no severity on it: how long an instance has been
-// superseded, and how that is surfaced to an operator, is ONE staleness question
-// that belongs in one place (E4-S4), and a second answer to it invented here would
-// be a second alarm mechanism.
-type wiringRestart struct {
-	// digest is the digest of the pushed wiring that requires the restart — the same
-	// value wiring_poll.go compares and reports, so an operator reading a posture and
-	// an operator reading stderr are looking at one push.
-	digest string
-	// added are names the pushed manifest declares that the boot's manifest did not,
-	// sorted; removed are names the boot's declared that the push no longer does,
-	// sorted. At least one of the two is non-empty.
-	//
-	// An added name is normally one this process opened no pool for, but not always:
-	// a name this instance's own seed file already routes could arrive in the
-	// manifest, and it is a restart all the same. The frozen set is the MANIFEST's,
-	// so the answer is the same on every instance in the fleet — where "adopted here,
-	// restart required on the peer" would leave two instances running two wiring
-	// versions with only one of them saying so.
-	added   []string
-	removed []string
 }
 
 // newLiveWiring holds boot as the version every request is answered through until
@@ -260,21 +227,6 @@ func newLiveWiring(boot *wiringVersion, rebuild wiringRebuild) *liveWiring {
 	l := &liveWiring{rebuild: rebuild, frozen: boot.stack.wiringConnections}
 	l.cur.Store(boot)
 	return l
-}
-
-// restartRequired reports the frozen-connection-name condition, or nil when this
-// instance has not been asked to adopt a name set it cannot.
-//
-// It is the whole of this file's operator-visible surface, and it is a READ: no
-// writer, no clock, no formatting and no side effect, so a posture reader cannot
-// perturb what it is reporting and cannot block on a rebuild. The returned record
-// is immutable and safe to hold.
-//
-// It is nil-safe in the only sense that matters here — the record, not the
-// receiver — because "nothing to report" is the state every instance is in for its
-// whole life unless somebody pushes a connection change.
-func (l *liveWiring) restartRequired() *wiringRestart {
-	return l.restart.Load()
 }
 
 // current is THE PIN: the one resolution of "which wiring answers this request",
@@ -327,12 +279,12 @@ func (l *liveWiring) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // them is fixed by correcting the pushed document. See
 // refuseFrozenConnectionNames.
 //
-// A successful swap CLEARS the latched condition, because a push that restores the
-// name set is the operator's own remedy and an instance that went on reporting
-// "restart required" after adopting one would be reporting a fact about a push it
-// no longer runs. A failed REBUILD deliberately leaves the latch alone: whether a
-// rebuild failure is itself an operator-visible posture is E4-S4's question, and
-// answering it here would put two mechanisms on one signal.
+// Nothing here records the condition for a later reader. The operator-visible
+// posture is service.WiringHealth, which the poller writes from the error this
+// returns and which ANY completed refresh clears — including a tick that observed
+// no change, which is what a push reverting to this instance's own boot wiring
+// produces. A second record kept here would have to be cleared from the same three
+// places, and the one this file used to keep was not: see the file header.
 func (l *liveWiring) swap(ctx context.Context, set model.WiringSet, digest string) error {
 	l.swapping.Lock()
 	defer l.swapping.Unlock()
@@ -361,15 +313,11 @@ func (l *liveWiring) swap(ctx context.Context, set model.WiringSet, digest strin
 			"cli: rebuilding the wiring produced no version, so this instance keeps the wiring it has")
 	}
 	l.cur.Store(next)
-	// Cleared AFTER the install, so a reader that saw the condition and then sees it
-	// gone is looking at an instance that really is running the push.
-	l.restart.Store(nil)
 	return nil
 }
 
 // refuseFrozenConnectionNames refuses a push whose connection NAME SET differs from
-// the one this process resolved routes for at boot, in either direction, and latches
-// the condition for a reader that is not watching stderr.
+// the one this process resolved routes for at boot, in either direction.
 //
 // # Why both directions, and why they are reported apart
 //
@@ -426,12 +374,17 @@ func (l *liveWiring) swap(ctx context.Context, set model.WiringSet, digest strin
 // Only connection NAMES and a digest reach the message and the context map. A name
 // is operator-supplied configuration; a DSN is not, and is not in the shared tables
 // to be leaked in the first place.
+//
+// The context map is the whole of the machine-readable form of this condition —
+// which names arrived, which went, and the digest of the push that asked for them —
+// and it is deliberately the ONLY one. A latch on the holder saying the same thing
+// is a second record that has to be cleared from every place a refresh can
+// complete, and the one that lived here was not.
 func (l *liveWiring) refuseFrozenConnectionNames(set model.WiringSet, digest string) error {
 	added, removed := diffConnectionNames(l.frozen, wiringConnectionNames(set))
 	if len(added) == 0 && len(removed) == 0 {
 		return nil
 	}
-	l.restart.Store(&wiringRestart{digest: digest, added: added, removed: removed})
 
 	var changes []string
 	if len(added) > 0 {
