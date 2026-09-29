@@ -33,6 +33,26 @@ import (
 // production, on some instances and not others — exactly the divergence being
 // removed, wearing an error message.
 //
+// # "Cannot be saved" means EVERY writer, and the claim is only as good as the set
+//
+// The sentence above is an argument about reachability, so one unchecked writer
+// falsifies it for the whole deployment rather than merely leaving a gap. The
+// writers are service.PutRule and service.ValidateRule (both through
+// ValidateASTDeclaring), service.EvaluateRulePreview, and service.Import — which
+// checks every rule in a document through CheckDeclaredAttributeKeys and refuses
+// the file whole. Import was NOT checked for a while, and the claim was simply
+// false while that was true: seed.Document.Apply's validateRuleAST is a structural
+// check, so an admin-tier import wrote rules past this package entirely.
+//
+// One route is still unchecked, deliberately and not silently: applying a --seed
+// document at BOOT. The declared sets are not yet known when internal/cli's
+// loadSeed runs — they are collected from the shared wiring and the local document
+// afterwards — and this package cannot close it, because the slot-to-root collapse
+// lives in service.WithDeclaredAttributeKeys and seed cannot import service. The
+// close belongs in internal/cli, between reading the wiring and applying the
+// document. Until it lands, a rule authored into a --seed file can name an
+// undeclared key; a rule authored through any API cannot.
+//
 // # Opt-in, per slot
 //
 // A slot that declares nothing is not enforced. Nothing here fires for a

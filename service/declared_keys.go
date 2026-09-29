@@ -67,9 +67,38 @@ func WithDeclaredAttributeKeys(sets map[provider.AttributeSlot]model.DeclaredKey
 // both halves are silently wrong in the widening direction if they drift.
 func declaredAttributeKeys(sets map[provider.AttributeSlot]model.DeclaredKeys) rules.DeclaredAttributeKeys {
 	return rules.DeclaredAttributeKeys{
-		Principal: unionDeclaredKeys(sets, provider.AttributeSlotUser, provider.AttributeSlotMachine),
+		Principal: unionDeclaredKeys(sets, principalAttributeSlots()...),
 		Account:   unionDeclaredKeys(sets, provider.AttributeSlotAccount),
 	}
+}
+
+// principalAttributeSlots is the slots the `principal` root resolves over: every
+// attribute slot that is not the account slot.
+//
+// It is DERIVED from provider.AttributeSlots() rather than spelling the two
+// principal slots out, because spelling them out is silently wrong in the
+// widening direction. A fourth slot is a contract change and not a feature (see
+// CLAUDE.md), but if one is ever added for a new principal kind, a literal list
+// here would leave it out of the union — so `principal.newkey` would be refused
+// over a set the new slot's own wiring declared — and, worse, would leave it out
+// of the every-slot-must-declare bar, so declaring the user slot alone would
+// start enforcing the new kind against a set it never agreed to. Deriving makes
+// both follow from the slot set, which is where the closed set is already stated.
+//
+// The account slot is excluded by NAME rather than by a "is this a principal
+// slot?" predicate on AttributeSlot, because provider must stay a strict leaf
+// that knows nothing about rule roots (TestProviderPackageImportsOnlyIdentityAndErrors),
+// and the slot-to-root collapse is this file's job — stated once, at the top.
+func principalAttributeSlots() []provider.AttributeSlot {
+	all := provider.AttributeSlots()
+	out := make([]provider.AttributeSlot, 0, len(all))
+	for _, slot := range all {
+		if slot == provider.AttributeSlotAccount {
+			continue
+		}
+		out = append(out, slot)
+	}
+	return out
 }
 
 // unionDeclaredKeys unions the declared sets of slots, and reports NOT DECLARED —

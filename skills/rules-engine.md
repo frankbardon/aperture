@@ -757,6 +757,10 @@ A deployment's shared wiring may declare, per attribute slot, the keys that slot
 `rules.ValidateASTDeclaring` — and so `service.ValidateRule`, `service.PutRule` and
 `service.EvaluateRulePreview` — refuses a rule naming any other key, with
 `APERTURE_RULE_UNDECLARED_ATTRIBUTE` naming the key and the slot.
+`service.Import` applies the same check to every rule in a document, through
+`rules.CheckDeclaredAttributeKeys`, because a writer that skipped it would make the
+whole set of declared keys decorative: the point is that no rule naming an
+undeclared key can be **saved**, by any route.
 
 **It is entirely opt-in.** A slot that declares no key set is not enforced at all,
 so `rules.ValidateAST` (a zero-value `rules.DeclaredAttributeKeys`) refuses nothing

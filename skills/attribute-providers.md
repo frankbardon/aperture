@@ -798,11 +798,23 @@ declares a set.
 #### What enforcement actually refuses
 
 Enforcement is **definition-time**, in rule validation. `service.ValidateRule`,
-`service.PutRule` and `service.EvaluateRulePreview` refuse a rule that names an
-attribute key a declaring root does not declare, with
+`service.PutRule`, `service.EvaluateRulePreview` **and `service.Import`** refuse a
+rule that names an attribute key a declaring root does not declare, with
 `APERTURE_RULE_UNDECLARED_ATTRIBUTE` naming **the key and the slot** whose
 `attribute_providers:` entry has to change. The rule editor renders it on the canvas
 beside the structural and type errors (400 / `invalid_argument` on the wire).
+
+**Every path that WRITES a rule checks, and that is load-bearing rather than
+thorough.** The inertness argument is that a local layer's extra keys cannot be
+reached, because no rule naming one can be saved — so one unchecked writer falsifies
+it for the whole deployment. `Import` was that writer for a while: it handed the
+document to `seed.Document.Apply`, whose `validateRuleAST` is a structural check
+only, so a rule naming an undeclared key went in through an admin-tier Twirp call
+and then decided on the instance whose local layer served the key and read a missing
+path on every other. `service.requireDeclaredRuleKeys` closes it, refusing the
+document **whole and before the transaction opens** and passing
+`APERTURE_RULE_UNDECLARED_ATTRIBUTE` through rather than re-stamping it, so the
+refusal still names the key and the entry to edit.
 
 It is refused at **authoring** and never at decision time, deliberately. A
 decision-time refusal would let a bad rule ship and then fail in production — on

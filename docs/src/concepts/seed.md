@@ -686,7 +686,10 @@ slot that declares a set.
 Enforcement is **definition-time**, in rule validation, and never at decision time: a
 rule reading a key the slot does not declare is refused when it is saved or checked
 (`APERTURE_RULE_UNDECLARED_ATTRIBUTE`, naming the key and the slot, shown on the rule
-editor's canvas), while a rule already stored keeps deciding exactly as it did. A
+editor's canvas), while a rule already stored keeps deciding exactly as it did. That
+covers **importing** a document as well as saving one rule: `aperture import` and the
+`Import` rpc refuse the whole file, before anything is applied, if any rule in it
+reads a key the wiring does not declare. A
 refusal in production, on some instances and not others, would be the very divergence
 the declared set removes.
 

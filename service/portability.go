@@ -2,10 +2,12 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/frankbardon/aperture/authz"
 	aerr "github.com/frankbardon/aperture/errors"
 	"github.com/frankbardon/aperture/model"
+	"github.com/frankbardon/aperture/rules"
 	"github.com/frankbardon/aperture/seed"
 )
 
@@ -85,6 +87,58 @@ func (s *Service) Export(ctx context.Context, actor Actor) (*seed.Document, erro
 // as the switch itself; gating it would mean a deployment could not seed the very
 // entities it then declares unmanaged. Import is different because it is a
 // runtime RPC an authenticated caller reaches over the wire.
+// requireDeclaredRuleKeys applies DECLARED-KEY enforcement to a document's rules.
+//
+// Import is a rule-WRITING path, and for a while it was the hole in the gate. The
+// enforcement's whole argument is that the keys a LOCAL attribute layer adds are
+// inert BY CONSTRUCTION, because no rule naming one can be saved — and that only
+// holds if every way of saving a rule checks. PutRule and ValidateRule did; Import
+// handed the document to Apply with nothing in between, so a rule naming a key only
+// one instance's local layer serves could be written through this method and would
+// then decide on that instance and read a MISSING PATH on every other one. A missing
+// path neither denies nor errors: it makes every predicate over it false, so an
+// inclusive grant denies and an EXCLUSIVE grant stops excluding, with nothing in any
+// verdict, trace or note to say why. See rules/declared.go for the full argument.
+//
+// It refuses the document WHOLE and before the transaction opens, for the reason
+// requireImportable does: a half-applied import is worse than a refused one, and a
+// caller who has to work out which half landed has no way to find out.
+//
+// An AST this cannot parse is passed over rather than reported. seed.Document.Apply
+// validates every rule's structure immediately afterwards, with an
+// APERTURE_RULE_INVALID that names the rule; classifying it here as well would give
+// one bad file two different refusals depending on which check happened to run first.
+func (s *Service) requireDeclaredRuleKeys(doc *seed.Document) error {
+	if !s.declaredKeys.Enforcing() {
+		// The opt-out, taken once here rather than left to each
+		// CheckDeclaredAttributeKeys call: a deployment that declares nothing walks
+		// no AST at all, so importing into it costs exactly what it did before
+		// declaring existed.
+		return nil
+	}
+	for _, r := range doc.Rules {
+		var n rules.Node
+		if err := json.Unmarshal(r.AST, &n); err != nil {
+			continue
+		}
+		if err := rules.CheckDeclaredAttributeKeys(&n, s.declaredKeys); err != nil {
+			// The code is PASSED THROUGH rather than wrapped: Wrap re-stamps, and
+			// APERTURE_RULE_UNDECLARED_ATTRIBUTE's fixups are the ones that name the
+			// key and the attribute_providers: entry to go and edit. A generic import
+			// code here would cost the operator exactly the remedy.
+			return aerr.WithContext(aerr.CodeOf(err),
+				"service: import refused — rule "+r.Name+" reads an attribute key this deployment's "+
+					"wiring does not declare; nothing from the file was applied: "+err.Error(),
+				map[string]any{
+					"rule": r.Name,
+					"fix": "add the key to declared_keys: on the attribute_providers: entry that serves it, " +
+						"or stop reading it in rule " + r.Name,
+				})
+		}
+	}
+	return nil
+}
+
 func (s *Service) requireImportable(doc *seed.Document) error {
 	// The seed Document's YAML/JSON keys for the three gated kinds are exactly
 	// the managedKind plurals (accounts:, principals:, memberships:), so one
@@ -135,6 +189,9 @@ func (s *Service) Import(ctx context.Context, actor Actor, doc *seed.Document) (
 		return aerr.New(aerr.APERTURE_INVALID_INPUT, "service: import requires a document")
 	}
 	if err = s.requireImportable(doc); err != nil {
+		return err
+	}
+	if err = s.requireDeclaredRuleKeys(doc); err != nil {
 		return err
 	}
 	if err = s.authorize(ctx, actor, authz.MutationImport, ""); err != nil {
