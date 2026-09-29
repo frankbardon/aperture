@@ -53,7 +53,8 @@ single and bulk-batched. `Search` resolves a NAME to an id — it ranks the obje
 
 ```bash
 make build   # produce bin/aperture (-ldflags="-s -w" -trimpath, CGO off)
-make test    # go test ./...
+make test    # go test ./...  (NO -race; see make test-race)
+make test-race # go test -race ./...  — separate target, not part of make test
 make fmt     # go fmt ./...
 make vet     # go vet ./...
 make lint    # vet + staticcheck (degrades to vet-only when no USABLE analyser is on PATH)
@@ -255,6 +256,17 @@ audit, mcp), each story adds a `skills/<feature>.md` doc and a coverage gate in
 - `TestConformanceSuiteHasNoPrecisionKnob` / `TestConformanceSuiteIsBackendBlind`
   — `storage/storagetest` carries no tolerance/truncation knob and no
   backend-conditional assertion.
+
+- `make test-race` — `go test -race ./...`. **Deliberately not part of `make test`**,
+  and that has a cost worth knowing: for the whole of this repository's history the
+  race detector never ran in CI, so an unsynchronised-publication bug was invisible
+  to every gate. One had in fact landed — `provider.AttributeRegistry.register`
+  mutated a slot entry that readers already held, whose losing interleaving returns
+  the LOCAL attribute bag as a slot's whole answer — and `make test` was green
+  throughout. `provider/attribute_race_test.go` now fails under `-race` if it
+  returns, but only when someone runs this target. Whether it becomes a CI gate is
+  an unmade cost decision; until it is, a change to concurrent state on the decision
+  path should be run through it by hand.
 
 Gated, NOT in `make test` (a loaded runner would flake them):
 
