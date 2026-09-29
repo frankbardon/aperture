@@ -612,6 +612,17 @@ object seam's [`Filter.Fields` contract](#the-filterfields-contract), and both
 returns, so a provider that ignores them is still correct and no caller can
 materialise an unbounded directory.
 
+There is **no ceiling on the limit, but there is a default, and it truncates
+silently.** A positive `Limit` is honoured verbatim however large — an operator
+asking "who is in the user slot?" may legitimately need all of it — but a
+non-positive one means `DefaultListLimit` (= 1000), so a read that names no limit
+is not an unbounded one. Nothing in the result says which happened: a
+5000-subject slot read with no limit returns exactly 1000 records with no error,
+no flag and no count, and that is **indistinguishable from a complete directory
+of 1000**. To read a whole slot, name a limit larger than it
+(`aperture attributes query user --limit 6000`); to find out whether an answer is
+complete, ask for one more record than you expect and see whether you get it.
+
 Enumeration is therefore reachable from exactly one place: `service.ListAttributes`,
 a **system-tier** administrative read gated through `authz.Gate.RequireSystemAdmin`,
 surfaced as [`aperture attributes query`](../cli/attributes.md). The decision

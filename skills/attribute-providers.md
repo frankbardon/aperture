@@ -477,14 +477,27 @@ wired to what they look like.
 
 `Fields` and `Limit` are re-enforced by the registry on whatever a provider
 returns (`MatchFields`, plus the limit), so a provider that ignores them is still
-correct, only less efficient. The limit is **honoured, not clamped down**: a
-positive `Limit` is passed through verbatim and enforced at that value, and
-`provider.DefaultListLimit` (= 1000) is only what a non-positive `Limit` means.
-`Enumerate` is deliberately **uncapped** — it is the system-tier admin read of a
-directory, and an operator asking "who is in the user slot?" may legitimately need
-all of it; a page size chosen inside the registry would only make the honest
-answer arrive in pieces. What keeps the read safe is the authority required to
-reach it (`service.requireAttributeAdmin`), not a number in `provider`.
+correct, only less efficient.
+
+There is **no ceiling, but there is a default, and it truncates silently.** The
+limit is **honoured, not clamped down**: a positive `Limit` is passed through
+verbatim and enforced at that value, above `provider.DefaultListLimit` included,
+because this is the system-tier admin read of a directory and an operator asking
+"who is in the user slot?" may legitimately need all of it — a page size chosen
+inside the registry would only make the honest answer arrive in pieces. What keeps
+the read safe is the authority required to reach it
+(`service.requireAttributeAdmin`), not a number in `provider`.
+
+A caller that names **no** limit is a different case, and it is not unbounded: a
+non-positive `Limit` means `provider.DefaultListLimit` (= 1000), the same
+substitution `Registry.List` makes. Nothing in the result says so. A 5000-record
+slot read with no limit returns exactly 1000 records with no error, no flag and no
+count, and that answer is **indistinguishable from a complete directory of 1000**.
+So an operator who needs the whole of a slot must name a limit larger than it
+(`aperture attributes query user --limit 6000`), and one who needs to know whether
+an answer is complete must ask for one more record than they expect and see
+whether they get it. The CLI's `--limit` flag says the same thing from the other
+side: `<=0` means the default, and the registry applies it regardless.
 ### `Enumerate` never writes the slot's cache
 
 A slot's caches are **`Fetch`'s** caches — the decision path's view of a subject —

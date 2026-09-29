@@ -494,14 +494,29 @@ func fetchAttributeLayer(ctx context.Context, l *attributeLayerEntry, id string)
 // what comes back. A positive limit is honoured as given; a non-positive one
 // means DefaultListLimit.
 //
-// This read is UNCAPPED on purpose. It is the SYSTEM-TIER ADMIN READ of a
-// directory, and an operator answering "who is in the user slot?" may legitimately
-// need the whole of it — a page size chosen here would only make the honest
-// answer arrive in pieces. It is not a scope-resolution source, and its signature
-// is built so it cannot be mistaken for one — see the type doc on
-// AttributeRegistry for why each part of it differs from scope.ObjectLister.List.
-// What keeps it safe is the authority required to reach it (service tier), not a
-// number in this package.
+// # There is no CEILING, but there is a DEFAULT, and it truncates silently
+//
+// This read has no upper bound it imposes on a caller: a positive Limit is
+// honoured VERBATIM, above DefaultListLimit included, because it is the
+// SYSTEM-TIER ADMIN READ of a directory and an operator answering "who is in the
+// user slot?" may legitimately need the whole of it. A ceiling chosen here would
+// only make the honest answer arrive in pieces.
+//
+// A caller that names NO limit is a different case and is not unbounded. Limit <= 0
+// means DefaultListLimit (= 1000), the same substitution Registry.List makes, so a
+// directory with no bound asked of it does not become an unbounded read. The
+// consequence is worth stating plainly because nothing in the result says it: the
+// truncation is SILENT. A 5000-record slot read with no limit returns exactly 1000
+// records and no error, no flag and no count, and that answer is indistinguishable
+// from a complete directory of 1000. An operator who needs the whole of a slot has
+// to name a limit larger than it — `aperture attributes query user --limit 6000` —
+// and one who needs to know whether the answer is complete has to ask for one more
+// than they expect and see whether they get it.
+//
+// It is not a scope-resolution source, and its signature is built so it cannot be
+// mistaken for one — see the type doc on AttributeRegistry for why each part of it
+// differs from scope.ObjectLister.List. What keeps it safe is the authority
+// required to reach it (service tier), not the number above.
 //
 // # It does NOT write the slot's cache, and that is the contract
 //
@@ -605,6 +620,12 @@ func (r *AttributeRegistry) Enumerate(ctx context.Context, slot AttributeSlot, f
 // boundAttributeRecords re-enforces Fields and the limit on what an enumeration
 // produced. It is one implementation for the single-layer and merged paths, so
 // neither can drift into filtering differently.
+//
+// The truncation is SILENT — a full page is indistinguishable from a complete
+// directory of exactly that size. There is nowhere to say otherwise: the bound is
+// re-enforced on what a provider already truncated to it, so "there were more"
+// is not a fact this function has. See Enumerate's doc for what a caller does
+// about it.
 //
 // Deliberately no cache write anywhere in it. See Enumerate's doc: a slot's caches
 // are the DECISION PATH's, and these bags are Query's projection, which the
