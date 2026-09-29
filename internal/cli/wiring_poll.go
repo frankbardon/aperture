@@ -51,11 +51,13 @@ import (
 //   - The CONNECTION NAME SET is frozen for the life of a process, so a set whose
 //     connections: manifest differs from the one this instance resolved routes for
 //     at boot is refused WHOLE by liveWiring.swap before anything is rebuilt, in
-//     either direction, and latched as a standing "restart required" condition a
-//     posture reader can see without watching this writer
-//     (liveWiring.restartRequired). The error reaches the swap branch below like
-//     any other, so the line it prints is the same line — what differs is that the
-//     condition outlives the line.
+//     either direction. The refusal reaches the swap branch below like any other
+//     failed adoption and is recorded on the service.WiringHealth with its own
+//     APERTURE_WIRING_RESTART_REQUIRED, so a posture reader sees the standing
+//     condition without watching this writer. There is deliberately no second
+//     latch beside it: one existed, could be cleared only by a successful swap,
+//     and so went on reporting "restart required" after the operator withdrew the
+//     push — where the health record clears on the very next no-change tick.
 //   - E4-S4 (last-good on failure, and the alarm) owns tick's failure branches,
 //     and has landed: a failure records an alarm on a service.WiringHealth and
 //     keeps the wiring it has, and a successful refresh clears it. wiring_stale.go
