@@ -63,9 +63,9 @@ test:
 	$(GO) test ./...
 
 # test-race runs the same suite under the race detector. It is a SEPARATE target
-# and deliberately not folded into `test`: -race rebuilds the world with
-# instrumentation and runs several times slower, which is a CI-cost decision to
-# make on purpose rather than by accident.
+# from `test` because -race rebuilds the world with instrumentation and runs several
+# times slower, but it is NOT optional: it has its own CI job, so a data race reports
+# as a distinct failed check rather than inside a longer test log.
 #
 # It is not redundant with `test`. A shared registry read on the decision path
 # (provider.AttributeRegistry, provider.Registry) is concurrency-safe by an

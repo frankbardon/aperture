@@ -32,6 +32,32 @@ jobs:
       - name: Vet
         run: make vet
 
+  # race is its own job rather than a step on `test`, so a data race reports as a
+  # distinct failed check instead of hiding inside a longer test log, and so it runs
+  # in parallel with it.
+  #
+  # It is not redundant with `test`. A shared registry read on the decision path is
+  # concurrency-safe by an argument about PUBLICATION rather than by a lock held
+  # across the read, and an unsynchronised write to an already-published entry is
+  # invisible to a suite that runs every case single-threaded. One such race lived in
+  # provider.AttributeRegistry while every gate here was green, because the detector
+  # had never run in this pipeline at all.
+  race:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Test under the race detector
+        run: make test-race
+
   lint:
     runs-on: ubuntu-latest
     steps:

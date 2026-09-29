@@ -257,16 +257,18 @@ audit, mcp), each story adds a `skills/<feature>.md` doc and a coverage gate in
   — `storage/storagetest` carries no tolerance/truncation knob and no
   backend-conditional assertion.
 
-- `make test-race` — `go test -race ./...`. **Deliberately not part of `make test`**,
-  and that has a cost worth knowing: for the whole of this repository's history the
-  race detector never ran in CI, so an unsynchronised-publication bug was invisible
-  to every gate. One had in fact landed — `provider.AttributeRegistry.register`
-  mutated a slot entry that readers already held, whose losing interleaving returns
-  the LOCAL attribute bag as a slot's whole answer — and `make test` was green
-  throughout. `provider/attribute_race_test.go` now fails under `-race` if it
-  returns, but only when someone runs this target. Whether it becomes a CI gate is
-  an unmade cost decision; until it is, a change to concurrent state on the decision
-  path should be run through it by hand.
+- `make test-race` — `go test -race ./...`, its **own CI job**, so a data race reports
+  as a distinct failed check rather than inside a longer test log. It is a separate
+  target from `test` (the detector rebuilds the world with instrumentation and runs
+  several times slower) but it is **not optional**. It is also not redundant: a shared
+  registry read on the decision path is concurrency-safe by an argument about
+  PUBLICATION, not by a lock held across the read, and an unsynchronised write to an
+  already-published entry is invisible to a suite that runs every case
+  single-threaded. One such race lived in `provider.AttributeRegistry.register` —
+  mutating a slot entry readers already held, whose losing interleaving returns the
+  LOCAL attribute bag as a slot's whole answer — while `make test` was green
+  throughout, because the detector had never run in this pipeline at all.
+  `provider/attribute_race_test.go` fails under `-race` if it returns.
 
 Gated, NOT in `make test` (a loaded runner would flake them):
 
