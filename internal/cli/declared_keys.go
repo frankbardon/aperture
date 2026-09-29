@@ -25,13 +25,16 @@ import (
 // # Why the ROWS, and not the projected Document
 //
 // A DB-wired boot assembles an effective seed.Document from the wiring rows
-// (wiringDocument), and that projection does not carry DeclaredKeys — see
-// wiringSeedAttributeProvider. So the rows are read directly rather than through
-// the Document, which is both the shape that function's own comment predicted and
-// the right dependency: a declared set is not wiring the registry builders need,
-// it is a contract the rule gate needs, and routing it through a document
-// conversion would be one more place it could be dropped without anything going
-// red.
+// (wiringDocument). That projection DOES carry DeclaredKeys — the registry needs
+// the set now, to reserve a declared key to the slot's shared layer (see
+// wiringSeedAttributeProvider and provider.WithDeclaredKeys) — so reading the rows
+// here is no longer the only way to see it.
+//
+// The rows are still what is read, because this is the shorter dependency for what
+// this gate needs: a declared set reaches the RULE gate as a
+// map[slot]model.DeclaredKeys, and the stored rows already are that, where the
+// Document spells it as a *[]string that would have to be projected back. Both
+// derive from one stored set, so the two readers cannot disagree about it.
 
 // declaredAttributeKeySets collects the declared key set of every shared attribute
 // slot this instance is wired with, keyed by slot.

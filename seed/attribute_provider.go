@@ -204,21 +204,37 @@ type AttributeProvider struct {
 	//	    get_one: SELECT department, clearance FROM users WHERE id = $1
 	//	    declared_keys: [department, clearance]
 	//
-	// # What declaring DOES
+	// # What declaring DOES — two jobs, one list
 	//
 	// It opts the slot into key enforcement: a rule may then read only the keys
 	// this set names on that slot, and reading any other one is refused at
 	// validation. Declaring nothing opts out, and a slot with no set behaves
 	// exactly as every slot did before the key existed — no refusal, no warning.
 	//
-	// That is what makes a LOCAL layer safe. A slot holds two layers, and the
-	// shared one wins every key both serve (provider.AttributeLayer). The keys a
-	// local layer adds on top are therefore unreachable from any rule the
-	// deployment can validate, so one instance's extra bag fields are INERT rather
-	// than a second answer to a deployment-wide grant. The declared set is the
-	// contract that makes that true by construction instead of by convention, which
-	// is why it lives on the SHARED entry: a local layer that could narrow or widen
-	// it would be one machine changing which keys a deployment-wide rule may name.
+	// It ALSO makes this entry the only layer that ANSWERS those keys. A slot holds
+	// two layers, and this section is the SHARED one (provider.AttributeLayer); a
+	// declared key is reserved to it, so the inline attributes: block contributes
+	// nothing to that key — not when the two disagree, not when this entry's own bag
+	// OMITS it for one row, and not when this entry has no record for the subject at
+	// all. Keys OUTSIDE the set are untouched, which is what the local layer is for.
+	//
+	// The two jobs compose only because it is the same list, and each fixes what the
+	// other cannot. Enforcement is what makes a local layer's EXTRA keys safe: they
+	// are unreachable from any rule the deployment can validate, so one instance's
+	// added bag fields are INERT rather than a second answer to a deployment-wide
+	// grant. Reservation is what makes a key INSIDE the set safe: without it, a
+	// directory whose clearance is NULL for one subject (sqlprovider omits a NULL
+	// column's field entirely) or that has dropped the subject altogether would have
+	// that subject's clearance read out of one machine's file, inside the declared
+	// set, with the rule validating cleanly. That second half is a revocation
+	// control: deleting a subject from the directory removes every declared key for
+	// them on every instance.
+	//
+	// Both are why the set lives on the SHARED entry and nowhere else: a local layer
+	// that could narrow or widen it would be one machine changing which keys a
+	// deployment-wide rule may name, and which keys the deployment's own directory
+	// is allowed to answer. provider.AttributeRegistry refuses a declared set on the
+	// local layer outright.
 	//
 	// # The shape is a plain list of names, with NO per-key type information
 	//
@@ -272,9 +288,17 @@ type attributeSource struct {
 	// GetOne, GetAll and IDColumn are the declared statements and id column, with
 	// GetAll empty for a fetch-only slot.
 	GetOne, GetAll, IDColumn string
-	// cacheOpts are the per-slot cache options ttl: and max_size: imply, already
-	// parsed. Empty means "inherit the registry defaults".
-	cacheOpts []provider.CacheOption
+	// regOpts are the per-slot registration options the entry implies, already
+	// parsed: the cache options ttl: and max_size: build, plus the declared key set
+	// declared_keys: builds when it is PRESENT. Empty means "inherit the registry
+	// defaults and declare nothing".
+	//
+	// declared_keys: is carried here rather than being read off the declaration
+	// later because presence is the declaration: a *[]string that is nil is NOT
+	// DECLARED and one that is non-nil is DECLARED whatever it points at, and the
+	// only place that distinction can be turned into provider.WithDeclaredKeys
+	// without a length test is where the pointer is still in scope.
+	regOpts []provider.AttributeRegistrationOption
 }
 
 // attributeSourceOpener turns one resolved entry into the live
@@ -470,6 +494,15 @@ func (d *Document) buildAttributeRegistry(baseDir string, conns *Connections, op
 	// written into one instance's file; if the file could override a key the
 	// directory serves, one machine would silently answer a deployment-wide rule
 	// differently.
+	//
+	// A shared entry's declared_keys: goes in with it, in src.regOpts, and it
+	// RESERVES those keys to the shared layer: the inline block below then answers
+	// only outside the declared set, including for a subject the shared source has
+	// no record for. That is what makes deleting a subject from the directory a
+	// revocation on an instance whose own file still lists them — see
+	// AttributeProvider.DeclaredKeys and provider.WithDeclaredKeys. A slot that
+	// declares nothing reserves nothing, so a document that has never written the
+	// key builds exactly the registry it always did.
 	for _, slot := range provider.AttributeSlots() {
 		if src, ok := sources[slot]; ok {
 			impl, err := open(src)
@@ -481,7 +514,7 @@ func (d *Document) buildAttributeRegistry(baseDir string, conns *Connections, op
 					fmt.Sprintf("seed: the attribute source opener returned no provider for subject %q", slot),
 					map[string]any{"subject": slot.String(), "kind": src.Kind})
 			}
-			if err := reg.Register(slot, impl, src.cacheOpts...); err != nil {
+			if err := reg.Register(slot, impl, src.regOpts...); err != nil {
 				return nil, err
 			}
 		}
@@ -581,10 +614,18 @@ func resolveAttributeSource(ap AttributeProvider, baseDir string, conns *Connect
 				"seed: attribute provider has an invalid ttl",
 				map[string]any{"subject": slot.String(), "ttl": ap.TTL})
 		}
-		src.cacheOpts = append(src.cacheOpts, provider.WithTTL(ttl))
+		src.regOpts = append(src.regOpts, provider.WithTTL(ttl))
 	}
 	if ap.MaxSize != 0 {
-		src.cacheOpts = append(src.cacheOpts, provider.WithMaxSize(ap.MaxSize))
+		src.regOpts = append(src.regOpts, provider.WithMaxSize(ap.MaxSize))
+	}
+	// The POINTER is the test, never the length. A non-nil pointer is a
+	// declaration, so `declared_keys: []` reaches the registry as DECLARED EMPTY —
+	// opted in, reserving no key — and an absent key reaches it as nothing at all,
+	// which is the opt-out every deployment that has never written one is in.
+	// provider.WithDeclaredKeys copies the slice and normalises the names.
+	if ap.DeclaredKeys != nil {
+		src.regOpts = append(src.regOpts, provider.WithDeclaredKeys(*ap.DeclaredKeys))
 	}
 
 	switch src.Kind {

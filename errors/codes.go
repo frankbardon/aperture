@@ -745,6 +745,7 @@ var Registry = map[Code]Metadata{
 		Message: "attribute provider registration or attribute key is invalid",
 		Fixups: []string{
 			"Register a non-nil provider, and at most one per LAYER: Register fills a slot's shared layer and RegisterLocal its local one, so a slot holds two and a third is refused. A duplicate within a layer is refused rather than replaced, so one directory cannot silently shadow another.",
+			"Declare a key set on a slot's SHARED layer only (Register with provider.WithDeclaredKeys): a declared key is reserved to the layer that declared it, so a local declared set would reserve keys against the deployment's own directory. A local layer takes cache options only.",
 			"Declare each attribute key at most once within a provider.",
 			"Fetch with a real key: a principal id for the user and machine slots, an account id for the account slot. An empty key names nobody.",
 			"Resolve the account wildcard \"*\" to a concrete account before fetching attributes; it is never a legal attribute key.",

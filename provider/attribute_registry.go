@@ -25,6 +25,13 @@ type attributeLayerEntry struct {
 	provider AttributeProvider
 	cache    CacheBackend
 	config   CacheConfig
+	// declared is this layer's declared key set: the keys it ANSWERS for, which
+	// no layer under it may contribute. Only the shared layer may carry one
+	// (register refuses it on the local layer), it is read on the decision path
+	// with no lock held, and it is never written after the entry is published —
+	// see declaredKeySet and attribute_layer.go's file doc, which is the whole
+	// account of what declaring changes.
+	declared declaredKeySet
 }
 
 // attributeSlotEntry holds one slot's layers. At least one is non-nil — an entry
@@ -138,6 +145,13 @@ func (e *attributeSlotEntry) filled() []*attributeLayerEntry {
 // RegisterLocal the local one; a third registration for either layer is still
 // refused.
 //
+// A shared layer may go further and DECLARE the keys it answers for
+// (WithDeclaredKeys), which reserves them: the local layer then contributes
+// nothing to a declared key even where the shared layer's own bag is silent about
+// it, or has no record for the subject at all. That is opt-in — a layer that
+// declares nothing reserves nothing — and it is what makes deleting a subject from
+// a shared directory a revocation rather than a fall-through.
+//
 // # It is NOT an object lister, and that is a property of the type
 //
 // A *Registry deliberately satisfies the scope.ObjectLister contract, so it can
@@ -220,11 +234,89 @@ func NewAttributeRegistry(opts ...AttributeRegistryOption) *AttributeRegistry {
 	return r
 }
 
+// attributeRegistration is ONE layer registration's resolved options: the cache
+// configuration and the declared key set. It exists so the two can be collected
+// from one variadic, since they are set at the same call and neither belongs in
+// the other — a declared set is not cache tuning, and putting it on CacheConfig
+// would put an attribute-only field on the object registry's config too.
+type attributeRegistration struct {
+	cache    CacheConfig
+	declared declaredKeySet
+}
+
+// AttributeRegistrationOption configures ONE attribute-layer registration. Every
+// CacheOption is one (see below), so WithTTL / WithMaxSize / WithClock are passed
+// exactly as they always were, and WithDeclaredKeys sits alongside them.
+//
+// It is an interface with an unexported method, which SEALS it: a host cannot add
+// a third kind of registration option, and the set of things a registration can
+// say stays this package's to define. AttributeRegistryOption is the neighbouring
+// name and a different thing — that one configures the registry at construction,
+// this one configures one layer of one slot.
+type AttributeRegistrationOption interface {
+	applyAttributeRegistration(*attributeRegistration)
+}
+
+// applyAttributeRegistration makes every CacheOption an
+// AttributeRegistrationOption. A named function type can carry methods, which is
+// what lets the registration variadic widen without a single existing call site
+// changing: provider.WithTTL(0) is a CacheOption and therefore satisfies the
+// interface.
+func (o CacheOption) applyAttributeRegistration(reg *attributeRegistration) { o(&reg.cache) }
+
+// declaredKeysOption carries WithDeclaredKeys' argument. It is a struct rather
+// than a []string so that the DECLARED bit lives in the act of passing the option
+// at all: applying it declares, whatever the slice is.
+type declaredKeysOption struct{ keys []string }
+
+func (o declaredKeysOption) applyAttributeRegistration(reg *attributeRegistration) {
+	reg.declared = newDeclaredKeySet(o.keys)
+}
+
+// WithDeclaredKeys declares the attribute keys this layer ANSWERS for, which makes
+// it the only layer that may answer them: a layer under it contributes nothing to a
+// declared key, whether the declaring layer returned a different value, returned
+// the key absent, or returned no record for the subject at all. Keys OUTSIDE the
+// set are unaffected, so a local layer goes on adding fields the declaring one does
+// not carry. attribute_layer.go's file doc is the full account, including why the
+// absent-key and no-record cases are the two this closes.
+//
+// It is the registration half of a seed entry's (or wiring row's) `declared_keys:`,
+// whose other half is the definition-time refusal of a rule that names an
+// undeclared key (service.WithDeclaredAttributeKeys). One list, two jobs, and they
+// compose only because it is the same list.
+//
+// PASSING IT AT ALL IS THE DECLARATION. WithDeclaredKeys(nil) and
+// WithDeclaredKeys([]string{}) are DECLARED EMPTY — opted in, reserving no key —
+// and not calling it is NOT DECLARED. The two reserve the same amount (nothing), so
+// they merge identically, but they are different states everywhere else in the
+// codebase (model.DeclaredKeys, both dialects' declared_keys column, `aperture
+// wiring show`) and a caller must not have to collapse them here to express one.
+// A caller with a seed document's *[]string therefore tests the POINTER, never the
+// length.
+//
+// Only a slot's SHARED layer may declare: RegisterLocal with this option is
+// APERTURE_ATTRIBUTE_PROVIDER_INVALID, because a local declared set would be one
+// machine deciding which keys the deployment's directory may answer.
+//
+// keys is COPIED, and the copy is the set's own MAP (newDeclaredKeySet), which is
+// also why a declaredKeySet holds a map rather than the slice it arrived as: a
+// registered layer's reserved set is read on the decision path of every decision
+// about every subject in the slot, so it must not be aliased to a slice a host
+// still holds and may reuse.
+func WithDeclaredKeys(keys []string) AttributeRegistrationOption {
+	return declaredKeysOption{keys: keys}
+}
+
 // Register binds provider to slot's SHARED layer with a cache configured from the
 // registry defaults plus opts. It is the method a deployment's own wiring uses —
 // a database wiring row, a seed document's attribute_providers: entry, a host's
 // one directory — and for a slot with a single source it is the only method
 // needed: the bag it serves is the slot's bag, unmerged and verbatim.
+//
+// It is also the only method that may DECLARE a key set (WithDeclaredKeys): a
+// declared key is reserved to this layer, so the local layer stops contributing it
+// even where this layer's bag omits it or has no record at all.
 //
 // A slot outside the closed set is APERTURE_ATTRIBUTE_SLOT_UNKNOWN; a nil
 // provider, or a SECOND shared registration for a slot that already has one, is
@@ -236,7 +328,7 @@ func NewAttributeRegistry(opts ...AttributeRegistryOption) *AttributeRegistry {
 // rather than absent. That is why the second provider a slot accepts is not a
 // duplicate but a DIFFERENT LAYER with a stated, unconfigurable winner — see
 // RegisterLocal and AttributeLayer.
-func (r *AttributeRegistry) Register(slot AttributeSlot, provider AttributeProvider, opts ...CacheOption) error {
+func (r *AttributeRegistry) Register(slot AttributeSlot, provider AttributeProvider, opts ...AttributeRegistrationOption) error {
 	return r.register(slot, AttributeLayerShared, provider, opts...)
 }
 
@@ -246,9 +338,16 @@ func (r *AttributeRegistry) Register(slot AttributeSlot, provider AttributeProvi
 // not serve. It is the method this INSTANCE's own wiring uses — a seed document's
 // attributes: block, a provider a Go host registers for itself.
 //
+// A key the shared layer DECLARED is reserved to it, and this layer contributes
+// nothing to it — not even when the shared layer's own bag omits it, and not even
+// when the shared layer has no record for the subject at all. Keys outside the
+// declared set are unaffected, which is what this layer is for.
+//
 // Refusals are Register's, per layer: a second LOCAL registration for a slot that
 // already has one is APERTURE_ATTRIBUTE_PROVIDER_INVALID, so a slot accepts
-// exactly two providers and a third is refused whichever layer it names.
+// exactly two providers and a third is refused whichever layer it names. Passing
+// WithDeclaredKeys here is APERTURE_ATTRIBUTE_PROVIDER_INVALID as well: a local
+// declared set would reserve keys against the deployment's own directory.
 //
 // A slot whose ONLY registration is local behaves exactly as a slot whose only
 // registration is shared: one cache, one provider, the bag verbatim. The layer it
@@ -259,14 +358,14 @@ func (r *AttributeRegistry) Register(slot AttributeSlot, provider AttributeProvi
 // local bag that could override a shared key would let a file on one machine
 // change what a deployment-wide rule compares against, on that machine only, with
 // nothing in a verdict or a trace to say so — see AttributeLayer.
-func (r *AttributeRegistry) RegisterLocal(slot AttributeSlot, provider AttributeProvider, opts ...CacheOption) error {
+func (r *AttributeRegistry) RegisterLocal(slot AttributeSlot, provider AttributeProvider, opts ...AttributeRegistrationOption) error {
 	return r.register(slot, AttributeLayerLocal, provider, opts...)
 }
 
 // register is the one implementation behind both registration methods and both
 // Must forms, so the slot check, the nil check, the config resolution and the
 // duplicate refusal have exactly one definition each.
-func (r *AttributeRegistry) register(slot AttributeSlot, layer AttributeLayer, provider AttributeProvider, opts ...CacheOption) error {
+func (r *AttributeRegistry) register(slot AttributeSlot, layer AttributeLayer, provider AttributeProvider, opts ...AttributeRegistrationOption) error {
 	if !slot.Valid() {
 		return aerr.WithContext(aerr.APERTURE_ATTRIBUTE_SLOT_UNKNOWN,
 			"provider: cannot register an attribute provider under an unknown slot",
@@ -280,11 +379,22 @@ func (r *AttributeRegistry) register(slot AttributeSlot, layer AttributeLayer, p
 			"provider: cannot register a nil attribute provider",
 			map[string]any{"slot": string(slot), "layer": string(layer)})
 	}
-	cfg := r.defaults
+	reg := attributeRegistration{cache: r.defaults}
 	for _, opt := range opts {
-		opt(&cfg)
+		opt.applyAttributeRegistration(&reg)
 	}
-	cfg = cfg.withDefaults()
+	reg.cache = reg.cache.withDefaults()
+	// Only the SHARED layer may declare a key set, and the refusal is here rather
+	// than on RegisterLocal's doc alone because a local set is a precedence
+	// INVERSION, not a mis-tuning: it would reserve keys against the deployment's
+	// own directory, so one machine's file would decide which keys the shared
+	// directory is allowed to answer. See attribute_layer.go's file doc.
+	if layer != AttributeLayerShared && reg.declared.declared {
+		return aerr.WithContext(aerr.APERTURE_ATTRIBUTE_PROVIDER_INVALID,
+			"provider: only a slot's shared layer may declare an attribute key set; a local declared set would reserve keys against the deployment's own directory",
+			map[string]any{"slot": string(slot), "layer": string(layer),
+				"declaring_layer": string(AttributeLayerShared)})
+	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -307,8 +417,9 @@ func (r *AttributeRegistry) register(slot AttributeSlot, layer AttributeLayer, p
 	next := published.clone()
 	next.set(layer, &attributeLayerEntry{
 		provider: provider,
-		cache:    r.newCache(cfg),
-		config:   cfg,
+		cache:    r.newCache(reg.cache),
+		config:   reg.cache,
+		declared: reg.declared,
 	})
 	r.slots[slot] = next
 	return nil
@@ -316,7 +427,7 @@ func (r *AttributeRegistry) register(slot AttributeSlot, layer AttributeLayer, p
 
 // MustRegister is Register that panics on error; for host startup wiring where a
 // registration failure is a programming error.
-func (r *AttributeRegistry) MustRegister(slot AttributeSlot, provider AttributeProvider, opts ...CacheOption) {
+func (r *AttributeRegistry) MustRegister(slot AttributeSlot, provider AttributeProvider, opts ...AttributeRegistrationOption) {
 	if err := r.Register(slot, provider, opts...); err != nil {
 		panic(err)
 	}
@@ -324,7 +435,7 @@ func (r *AttributeRegistry) MustRegister(slot AttributeSlot, provider AttributeP
 
 // MustRegisterLocal is RegisterLocal that panics on error, for the same reason
 // MustRegister does.
-func (r *AttributeRegistry) MustRegisterLocal(slot AttributeSlot, provider AttributeProvider, opts ...CacheOption) {
+func (r *AttributeRegistry) MustRegisterLocal(slot AttributeSlot, provider AttributeProvider, opts ...AttributeRegistrationOption) {
 	if err := r.RegisterLocal(slot, provider, opts...); err != nil {
 		panic(err)
 	}
@@ -411,7 +522,8 @@ func (r *AttributeRegistry) entry(slot AttributeSlot) (*attributeSlotEntry, erro
 // A slot with one layer returns that layer's bag VERBATIM — the same map the
 // cache is holding, no copy, no merge, which is the path every single-source
 // deployment is on. A slot with two returns their merge over a fresh map, with the
-// shared layer's value standing on every key both serve (see mergeAttributeBags).
+// shared layer's value standing on every key both serve and its DECLARED keys
+// reserved to it even where its own bag is silent (see mergeAttributeBags).
 //
 // Both layers are consulted, and what each one's failure means differs:
 //
@@ -421,7 +533,10 @@ func (r *AttributeRegistry) entry(slot AttributeSlot) (*attributeSlotEntry, erro
 //     shared directory carrying one the local file does not — is the ordinary
 //     case, not a failure. Only when EVERY layer reports it does Fetch report it,
 //     and it reports the coded error a layer actually raised, so its registry
-//     fixups survive.
+//     fixups survive. When the SHARED layer is the one with no record and it
+//     DECLARED a key set, the local bag still answers only OUTSIDE that set: a
+//     subject deleted from the shared directory has every declared key revoked,
+//     on every instance, whatever a local file still says.
 //   - Anything else — an unreachable directory, a bag the value model rejects —
 //     aborts the fetch and surfaces VERBATIM. It is emphatically NOT answered out
 //     of the other layer: a shared directory that is down must not be silently
@@ -465,7 +580,14 @@ func (r *AttributeRegistry) Fetch(ctx context.Context, slot AttributeSlot, id st
 		// fixups anyway.
 		return nil, sharedErr
 	}
-	return mergeAttributeBags(shared, local), nil
+	// The merge is handed the SHARED layer's declared set, and it is handed it on
+	// this path too — the one where sharedErr is APERTURE_NOT_FOUND and `shared` is
+	// therefore nil. That is the revocation case: a subject deleted from the shared
+	// directory has no record there, and if the declared keys were not reserved
+	// here, a local bag would go on answering them forever (an inline layer is
+	// registered with WithTTL(0), so there is nothing for an invalidation to drop).
+	// See attribute_layer.go's file doc.
+	return mergeAttributeBags(shared, local, e.shared.declared), nil
 }
 
 // fetchAttributeLayer serves one layer: its cache first, its provider second,
@@ -592,6 +714,14 @@ func fetchAttributeLayer(ctx context.Context, l *attributeLayerEntry, id string)
 // bag the listing shows for a key is the bag a Fetch of that key would return,
 // which is the whole reason an operator reads this listing.
 //
+// A declared set therefore SUPPRESSES here as well, through the same
+// mergeAttributeBags. It has to: the subjects it matters most for are the ones the
+// shared directory no longer has a record for, and this listing is how an operator
+// checks that a revocation landed. Showing them the local value a decision can
+// never read would make `aperture attributes query` the one surface that still
+// reports the revoked attribute. It costs nothing and changes nothing else — the
+// suppression only ever removes keys, and this path still writes no cache.
+//
 // Fields is applied to the MERGED bag, not to each layer's. Filtering per layer
 // and merging afterwards would answer a different question in both directions: a
 // record admitted on a local value the shared layer overrides would not match the
@@ -624,7 +754,7 @@ func (r *AttributeRegistry) Enumerate(ctx context.Context, slot AttributeSlot, f
 	if err != nil {
 		return nil, attributeError(err)
 	}
-	return boundAttributeRecords(mergeAttributeRecords(shared, local), filter.Fields, limit), nil
+	return boundAttributeRecords(mergeAttributeRecords(shared, local, e.shared.declared), filter.Fields, limit), nil
 }
 
 // boundAttributeRecords re-enforces Fields and the limit on what an enumeration
