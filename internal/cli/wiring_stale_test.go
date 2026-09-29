@@ -644,3 +644,186 @@ func TestAnAdoptionThatFailsIsStaleAndNotHealthy(t *testing.T) {
 			"succeeded again — the refusal is re-detected every tick and must re-arm every time")
 	}
 }
+
+// pollLines is the poller's stderr output as the operator reads it: one entry per
+// line, blanks dropped. Every case below counts them, because the defect this
+// helper exists for was not a wrong line but an EXTRA one.
+func pollLines(out string) []string {
+	var lines []string
+	for _, l := range strings.Split(out, "\n") {
+		if strings.TrimSpace(l) != "" {
+			lines = append(lines, l)
+		}
+	}
+	return lines
+}
+
+// TestEachFailureConditionReportsOneLineInItsOwnWords is the assertion
+// TestAnAdoptionThatFailsIsStaleAndNotHealthy does not make, and the one whose
+// absence let the same defect through twice: it asserts the POSTURE and never the
+// TEXT, so a branch that recorded correctly and printed the wrong sentence — or
+// printed twice — passed everything.
+//
+// Two properties, on every failure branch a tick has:
+//
+//   - EXACTLY ONE line per condition per tick. Two lines for one fact is how the
+//     wrong one gets read, and a refused connection-name change never clears by
+//     itself, so a pair would print on every tick for the life of the process.
+//   - The line says what is TRUE of that branch. "Re-reading the shared wiring
+//     failed" is exactly right for the read and for the digest and FALSE of a
+//     refused adoption, where the re-read succeeded and the remedy is
+//     APERTURE_WIRING_RESTART_REQUIRED's restart rather than a check of store
+//     reachability and schema compatibility. An operator handed the read's sentence
+//     for an adoption failure is an operator sent to look at the wrong subsystem,
+//     forever.
+func TestEachFailureConditionReportsOneLineInItsOwnWords(t *testing.T) {
+	// The sentence that belongs to the READ, and must not appear on the adoption's
+	// line. It is spelled out once here so a case cannot assert a substring of it.
+	const readFailed = "re-reading the shared wiring failed"
+
+	t.Run("a read that failed", func(t *testing.T) {
+		probe := newStalenessProbe(t)
+		probe.poll.store = wiringReadFails{
+			Storage: probe.counting,
+			err:     aerr.New(aerr.APERTURE_STORAGE_SCHEMA_INCOMPATIBLE, "the wiring tables are from an older build"),
+		}
+		probe.out.Reset()
+		probe.poll.tick(probe.ctx)
+
+		lines := pollLines(probe.out.String())
+		if len(lines) != 1 {
+			t.Fatalf("a failed read printed %d lines, want 1:\n%s", len(lines), strings.Join(lines, "\n"))
+		}
+		if !strings.Contains(lines[0], readFailed) {
+			t.Errorf("a failed read did not say the re-read failed: %q", lines[0])
+		}
+		if !strings.Contains(lines[0], string(aerr.APERTURE_STORAGE_SCHEMA_INCOMPATIBLE)) {
+			t.Errorf("a failed read did not name the store's own code: %q", lines[0])
+		}
+	})
+
+	t.Run("an adoption that failed", func(t *testing.T) {
+		probe := newStalenessProbe(t)
+		baseline := probe.poll.digest
+
+		// A push that adds a connection name this instance has no route for: the read
+		// and the digest succeed on every tick, and the adoption fails on every tick,
+		// so this is also the branch whose wrong second line would never stop.
+		set := staleWiringSet(time.Now().UTC())
+		set.Connections = append(set.Connections,
+			model.WiringConnection{Name: "replica", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()})
+		if err := probe.counting.ReplaceWiring(probe.ctx, set); err != nil {
+			t.Fatalf("pushing the wiring: %v", err)
+		}
+
+		probe.out.Reset()
+		if probe.poll.tick(probe.ctx) {
+			t.Fatal("a push this instance cannot adopt was reported as adopted")
+		}
+
+		lines := pollLines(probe.out.String())
+		if len(lines) != 1 {
+			t.Fatalf("a refused adoption printed %d lines, want 1. Two lines for one fact is how the wrong "+
+				"one gets read, and this condition never clears by itself:\n%s", len(lines), strings.Join(lines, "\n"))
+		}
+		line := lines[0]
+		if strings.Contains(line, readFailed) {
+			t.Errorf("a refused ADOPTION claims the re-read failed: %q\nThe re-read succeeded — the adoption "+
+				"did not — and that sentence sends an operator to check store reachability and schema "+
+				"compatibility when the remedy is the restart APERTURE_WIRING_RESTART_REQUIRED's fixups name", line)
+		}
+		for _, want := range []string{"CHANGED", "could not adopt", string(aerr.APERTURE_WIRING_RESTART_REQUIRED)} {
+			if !strings.Contains(line, want) {
+				t.Errorf("the refused adoption's line does not mention %q: %q", want, line)
+			}
+		}
+
+		// And it stays one line per tick. The digest never advances, so the condition
+		// is re-detected forever; a branch that printed twice would print twice
+		// forever.
+		const more = 3
+		probe.out.Reset()
+		for i := 0; i < more; i++ {
+			if probe.poll.tick(probe.ctx) {
+				t.Fatalf("tick %d adopted a push this instance cannot route", i)
+			}
+		}
+		if lines := pollLines(probe.out.String()); len(lines) != more {
+			t.Errorf("%d refused ticks printed %d lines, want %d — one per tick:\n%s",
+				more, len(lines), more, strings.Join(lines, "\n"))
+		}
+		if probe.poll.digest != baseline {
+			t.Error("a refused adoption advanced the digest")
+		}
+	})
+
+	// The digest branch cannot be provoked through a tick: wiringDigest fails only
+	// where encoding/json does, and a model.WiringSet is strings, integers, slices of
+	// the same and time.Time. So its REPORTER is exercised directly — which is the
+	// whole of what that branch contributes, since it shares the read's sentence by
+	// design (neither of them got as far as looking at a change).
+	t.Run("a digest that could not be computed", func(t *testing.T) {
+		probe := newStalenessProbe(t)
+		probe.out.Reset()
+		probe.poll.alarm(aerr.New(aerr.APERTURE_BOOT, "digesting the shared wiring failed"))
+
+		lines := pollLines(probe.out.String())
+		if len(lines) != 1 {
+			t.Fatalf("the read/digest reporter printed %d lines, want 1:\n%s", len(lines), strings.Join(lines, "\n"))
+		}
+		if !strings.Contains(lines[0], readFailed) {
+			t.Errorf("the read/digest reporter did not say the re-read failed: %q", lines[0])
+		}
+		if !probe.health.Posture().Stale {
+			t.Error("the reporter printed without recording: the record is what an operator reads " +
+				"without logs, and the line is best-effort narration")
+		}
+	})
+}
+
+// TestTheAlarmRecordsBeforeItReports is the ORDER wiring_stale.go states and the
+// swap branch used to invert: the recorder is what an operator reads without logs
+// and the writer is best-effort narration, so a panic or a short write in the
+// writer must not be able to lose the alarm.
+//
+// It is asserted with a writer that PANICS, which is the only way to tell the two
+// orders apart — both of them record and both of them print when nothing goes
+// wrong.
+func TestTheAlarmRecordsBeforeItReports(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		raise func(p *wiringPoll, err error)
+	}{
+		{"the read's reporter", func(p *wiringPoll, err error) { p.alarm(err) }},
+		{"the adoption's reporter", func(p *wiringPoll, err error) {
+			p.alarmf(err, "wiring poll: the deployed wiring CHANGED (%s -> %s) but this instance could not adopt it: %v",
+				"aaaaaaaa", "bbbbbbbb")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			probe := newStalenessProbe(t)
+			probe.poll.log = panicWriter{}
+
+			func() {
+				defer func() {
+					if recover() == nil {
+						t.Fatal("the panicking writer did not panic, so this case proves nothing")
+					}
+				}()
+				tc.raise(probe.poll, aerr.New(aerr.APERTURE_STORAGE, "connection refused"))
+			}()
+
+			if p := probe.health.Posture(); !p.Stale || p.Code != string(aerr.APERTURE_STORAGE) {
+				t.Errorf("a writer that panicked lost the alarm: %+v. The record must be made BEFORE the "+
+					"line is written, or the one channel an operator can read without logs is the one a "+
+					"broken writer takes out", p)
+			}
+		})
+	}
+}
+
+// panicWriter is a log writer that fails the way the record-then-report order
+// exists for.
+type panicWriter struct{}
+
+func (panicWriter) Write([]byte) (int, error) { panic("the writer went away") }

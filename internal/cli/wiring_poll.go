@@ -58,10 +58,11 @@ import (
 //   - E4-S4 (last-good on failure, and the alarm) owns tick's failure branches,
 //     and has landed: a failure records an alarm on a service.WiringHealth and
 //     keeps the wiring it has, and a successful refresh clears it. wiring_stale.go
-//     holds the whole account, and wiringPoll.alarm / wiringPoll.refreshed are the
-//     two calls a rebuild attaches to — a failed rebuild is p.alarm(err) with
-//     p.digest left exactly where it is, and a successful swap advances p.digest
-//     and calls p.refreshed().
+//     holds the whole account. There is ONE recorder and one LINE PER CONDITION:
+//     a failed adoption records through p.alarmf with the adoption's own sentence
+//     and p.digest left exactly where it is, a read or digest failure through
+//     p.alarm with the read's, and a successful swap advances p.digest and calls
+//     p.refreshed().
 //
 // # Why the change check is a digest of a full read
 //
@@ -561,7 +562,9 @@ func (p *wiringPoll) run(ctx context.Context) {
 // needs. E4-S4 turns that repetition into an alarm with a staleness duration.
 //
 // The alarm follows the same rule, and there are exactly TWO places a tick declares
-// a refresh COMPLETE: the no-change branch, and after a successful swap. A tick
+// a refresh COMPLETE: the no-change branch, and after a successful swap. Each
+// failure branch records the alarm ONCE and prints ONE line, in the words that fit
+// that branch — the read's are not the adoption's. A tick
 // that read the tables, found a change and could not adopt it has not completed
 // anything — it is the worst of the three postures — so nothing on that path
 // clears, and the staleness window it opens runs continuously from the first
@@ -604,19 +607,29 @@ func (p *wiringPoll) tick(ctx context.Context) bool {
 	// has. Only the final pointer store is visible to a reader, and it is atomic.
 	if err := p.swap(ctx, set, digest); err != nil {
 		// Last-good, and the digest deliberately does NOT advance — see the doc
-		// comment. The error is reported verbatim because it is already an
+		// comment.
+		//
+		// ONE line, and it is this branch's OWN sentence. The alarm is recorded first
+		// and reported second (alarmf), and the report says what is true HERE: the
+		// re-read succeeded and the ADOPTION did not. Routing this through the generic
+		// alarm would emit a second line claiming the re-read failed, which sends an
+		// operator to check store reachability and schema compatibility when the
+		// remedy is the restart APERTURE_WIRING_RESTART_REQUIRED's fixups name — and a
+		// refused connection-name change never clears by itself, so the wrong line
+		// would print on every tick for the life of the process.
+		//
+		// The error's own text is interpolated verbatim because it is already an
 		// APERTURE_*-coded refusal naming the entry to go and fix (an unconstructable
 		// kind, a connection NAME SET this process cannot adopt, a seed file that has
 		// since been edited into an invalid one).
-		p.report("wiring poll: the deployed wiring CHANGED (%s -> %s) but this instance could not adopt it, so it keeps "+
-			"the wiring it has and goes on deciding: %v", shortDigest(previous), shortDigest(digest), err)
-		// The alarm, and NOTHING has cleared it on the way here. A failed adoption is
-		// the worst posture of the three: the instance read the tables perfectly well,
-		// knows the wiring changed, and is KNOWINGLY running superseded wiring —
-		// strictly worse than not having looked. Without this line it would report on
-		// stderr and read as HEALTHY, which is the one shape of silent staleness no
-		// amount of polling discovers, because every subsequent tick reads fine, fails
-		// to adopt again, and says nothing.
+		//
+		// That it is RECORDED at all is the load-bearing half, and NOTHING has cleared
+		// it on the way here. A failed adoption is the worst posture of the three: the
+		// instance read the tables perfectly well, knows the wiring changed, and is
+		// KNOWINGLY running superseded wiring — strictly worse than not having looked.
+		// Without the record it would report on stderr and read as HEALTHY, which is
+		// the one shape of silent staleness no amount of polling discovers, because
+		// every subsequent tick reads fine, fails to adopt again, and says nothing.
 		//
 		// Which is also why refreshed() is NOT called before this branch. Clearing on
 		// a successful READ and re-arming here would leave the alarm technically
@@ -625,7 +638,8 @@ func (p *wiringPoll) tick(ctx context.Context) bool {
 		// tick, forever — and the age is the half an operator escalates on. Staleness
 		// that began at the first refusal is CONTINUOUS until an adoption succeeds, so
 		// nothing on this path is allowed to reset it.
-		p.alarm(err)
+		p.alarmf(err, "wiring poll: the deployed wiring CHANGED (%s -> %s) but this instance could not adopt it, so it "+
+			"keeps the wiring it has and goes on deciding: %v", shortDigest(previous), shortDigest(digest))
 		return false
 	}
 	p.digest = digest

@@ -30,22 +30,33 @@ import (
 //   - keeps writing the stderr line, because a process whose facade nobody is
 //     polling still has to say something.
 //
-// # One reporter, and the seam the rest of the epic attaches to
+// # One RECORDER, one LINE per condition
 //
-// wiringPoll.alarm is the ONE way a tick reports that a refresh did not
-// complete, and wiringPoll.refreshed the one way it reports that one did. There
-// is deliberately no per-failure-mode variant. The four origins — an unreachable
-// store, a digest that could not be computed, wiring this instance cannot turn
-// into a working registry (a connection name it has no route for, a kind it
-// cannot construct, a statement set a builder refuses), and a rebuild or swap
-// that fails once the hot-rebuild story lands — are four ways of arriving at one
-// fact: this process did not adopt what the tables say and is still deciding
-// from what it had. An operator needs the fact, its age and its code; a taxonomy
-// of which internal step declined would be four alarms to wire, four to
-// document, and three to forget.
+// There is ONE recorder. Every failure origin in a tick records through
+// wiringPoll.alarm / wiringPoll.alarmf, and wiringPoll.refreshed is the one way a
+// tick records that a refresh completed. There is deliberately no
+// per-failure-mode alarm. The origins — an unreachable store, a digest that could
+// not be computed, and a change this instance read perfectly well and could not
+// ADOPT (a connection name set it cannot renegotiate, a kind it cannot construct,
+// a statement set a builder refuses, a seed file edited into an invalid one) — are
+// ways of arriving at one fact: this process did not adopt what the tables say and
+// is still deciding from what it had. An operator needs the fact, its age and its
+// code; a taxonomy of which internal step declined would be several alarms to
+// wire, several to document, and most to forget.
 //
-// So a rebuild's failure path is `p.alarm(err)` and its success path is advancing
-// p.digest and calling `p.refreshed()`. A rebuild that fails must NOT advance
+// The stderr LINE is the other half, and it is NOT one sentence. A recorded fact
+// and a printed remedy are different things: the posture answers "is this instance
+// behind, and for how long", where a line has to tell the operator what to go and
+// do. "Re-reading the shared wiring failed" is exactly true of the read and the
+// digest branches and FALSE of a refused adoption — there the re-read succeeded
+// and the remedy is APERTURE_WIRING_RESTART_REQUIRED's restart, not a check of
+// store reachability — so the adoption branch reports its own sentence through
+// alarmf. What is fixed is that each condition emits EXACTLY ONE line: two lines
+// per tick for one fact is how the wrong one gets read, and a refused
+// connection-name change never clears by itself, so the pair would print forever.
+//
+// So a rebuild's failure path records through alarmf and its success path advances
+// p.digest and calls p.refreshed(). A rebuild that fails must NOT advance
 // p.digest — see service.WiringHealth.Refreshed for why the digest it is handed
 // is the one the instance RUNS and never the one the tables hold — and must not
 // clear the alarm either, because staleness that began at the first refusal is
@@ -89,23 +100,38 @@ func wiringRefreshAlarm(err error) error {
 		"cli: re-reading the shared wiring failed, so this instance keeps the wiring it has", err)
 }
 
-// alarm records and reports a failed refresh. It is the seam described in this
-// file's header: every failure origin in a tick routes through here, and nothing
-// else writes a failure to the health recorder.
-//
-// The order is record-then-report on purpose. The recorder is what an operator
-// reads without logs, and the stderr line is best-effort narration; a panic or a
-// short write in the writer must not be able to lose the alarm.
+// alarm records and reports a refresh that could not even LOOK: the read failed,
+// or the set it returned could not be digested. Its sentence names that condition
+// and no other, which is why an adoption failure does not come through here — see
+// alarmf.
 //
 // It returns nothing, because there is nothing a caller can do differently: a
 // failed refresh always means "keep what we have and carry on", and giving the
 // caller a value to branch on would invite a second policy.
 func (p *wiringPoll) alarm(err error) {
+	p.alarmf(err, "wiring poll: re-reading the shared wiring failed, so this instance keeps the wiring it has: %v")
+}
+
+// alarmf records a failed refresh and then reports it in the CALLER's words. It is
+// the seam described in this file's header: every failure origin in a tick routes
+// through here, and nothing else writes a failure to the health recorder.
+//
+// The order is record-then-report on purpose, and it is why the recording is not
+// left to the caller beside its own p.report: the recorder is what an operator
+// reads without logs, and the stderr line is best-effort narration, so a panic or
+// a short write in the writer must not be able to lose the alarm. A branch that
+// printed first and recorded second would invert that on the one path where it
+// matters most — a refused push is the posture nothing else discovers.
+//
+// format's LAST verb is handed the CLASSIFIED alarm, so a caller cannot report a
+// code the recorder did not record; any earlier verbs take args. Only digests,
+// durations and the coded error's own text may reach the writer — never an object
+// type, an id or a key — the same restriction every other line this poller writes
+// carries.
+func (p *wiringPoll) alarmf(err error, format string, args ...any) {
 	alarm := wiringRefreshAlarm(err)
 	p.health.Failed(alarm)
-	// Only the coded error's own text reaches the writer — no object type, id or
-	// key — the same restriction every other line this poller writes carries.
-	p.report("wiring poll: re-reading the shared wiring failed, so this instance keeps the wiring it has: %v", alarm)
+	p.report(format, append(args, alarm)...)
 }
 
 // refreshed records that a refresh COMPLETED, which clears any standing alarm.
