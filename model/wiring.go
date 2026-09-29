@@ -207,9 +207,16 @@ type WiringAttributeProvider struct {
 // governs shape, and a second typing mechanism is a second place for two
 // declarations to disagree.
 //
-// Nothing enforces a declared set yet; the column and this type carry it because
-// Setup creates and never migrates, so adding either later would be a second hard
-// schema break.
+// A declared set is ENFORCED, and enforced at rule-DEFINITION time only.
+// internal/cli's declaredAttributeKeySets reads these values off the wiring rows,
+// service.WithDeclaredAttributeKeys collapses them per slot onto the two rule
+// roots, and rules.CheckDeclaredAttributeKeys refuses a rule naming a key the
+// wiring does not guarantee (APERTURE_RULE_UNDECLARED_ATTRIBUTE). A wiring swap
+// recomputes the sets, so a push changes what a rule may be SAVED reading without
+// a restart; no stored rule ever decides differently because of this field.
+//
+// Opt-in is the half that must not be lost: a slot whose Declared is false
+// refuses nothing at all, which is why the bit is separate from len(Keys).
 type DeclaredKeys struct {
 	// Declared reports whether a set was declared at all. When it is false, Keys
 	// MUST be empty — Validate refuses the contradiction rather than guessing

@@ -664,9 +664,20 @@ CREATE TABLE IF NOT EXISTS apt_schema.apt_wiring_attribute_providers (
     -- column existed; the second opts IN and permits no keys at all. Do not
     -- collapse them into one value.
     --
-    -- Nothing reads this column yet. It is here NOW because Setup creates and
-    -- never migrates, so adding it later would be a second hard schema break for
-    -- every deployment.
+    -- This column is READ on the rule-DEFINITION path, not on any decision path:
+    -- internal/cli's declaredAttributeKeySets collects the per-slot sets straight
+    -- off these rows, service.WithDeclaredAttributeKeys collapses them onto the
+    -- rule roots, and rules.CheckDeclaredAttributeKeys then refuses a rule that
+    -- names an attribute key the wiring does not guarantee, with
+    -- APERTURE_RULE_UNDECLARED_ATTRIBUTE. A wiring rebuild recomputes the sets, so
+    -- a push changes what a rule definition is allowed to read WITHOUT a restart,
+    -- and never changes how a stored rule decides.
+    --
+    -- Opt-in is the load-bearing half, and it is what '' buys: a slot that
+    -- declares nothing refuses NOTHING, so every rule that validated before this
+    -- column existed still validates. The column landed with the tables rather
+    -- than with that reader because Setup creates and never migrates, so adding it
+    -- later would have been a second hard schema break for every deployment.
     declared_keys  TEXT NOT NULL DEFAULT '',
     created_at     BIGINT NOT NULL DEFAULT 0,
     updated_at     BIGINT NOT NULL DEFAULT 0

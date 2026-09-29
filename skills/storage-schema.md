@@ -360,9 +360,16 @@ Four properties are load-bearing, and three of them are about what is **absent**
   because the value model already governs shape. `''` means *not declared* (the
   slot is opted out and behaves exactly as it did before the column existed);
   `'[]'` means *declared empty* (opted in, permitting no keys). Do not collapse
-  them. The column landed with the tables rather than with its first reader
-  because `Setup` creates and never migrates, so adding it later would be a second
-  hard break.
+  them. It is read on the rule-**definition** path — `internal/cli`'s
+  `declaredAttributeKeySets` collects the per-slot sets off these rows,
+  `service.WithDeclaredAttributeKeys` collapses them onto the rule roots, and
+  `rules.CheckDeclaredAttributeKeys` refuses a rule that names a key the wiring
+  does not guarantee — and a wiring swap recomputes them, so a push changes what a
+  rule may be *saved* reading without a restart and changes no stored rule's
+  verdict. A slot that declares nothing (`''`) refuses nothing, which is the
+  opt-in the column exists to preserve. It landed with the tables rather than with
+  that reader because `Setup` creates and never migrates, so adding it later would
+  have been a second hard break.
 
 `apt_wiring_provider_references` carries no timestamps, for the reason the other
 owned child tables carry none: its history is its provider entry's, and the
