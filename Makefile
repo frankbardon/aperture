@@ -75,8 +75,19 @@ test:
 # all. Run this after touching anything a decision reads concurrently:
 #
 #   make test-race
+#
+# CGO_ENABLED=1 is REQUIRED here and is not a relaxation of this file's CGO=0 rule.
+# The race detector's runtime is linked through cgo — on linux `go test -race` with
+# CGO off refuses outright ("-race requires cgo"), while on darwin it happens to
+# work, so a target without this line passes on a Mac and is a red CI job. It
+# overrides the exported default for THIS command only: `build` is untouched, the
+# shipped binary is still pure Go, and no dependency changes — modernc.org/sqlite and
+# pgx are pure Go either way, so the race run exercises the same code paths the
+# CGO-free build does. This collision with the project's headline constraint is
+# probably why the detector went unwired for so long; the answer is one variable on
+# one test command, not an exception to the build.
 test-race:
-	$(GO) test -race ./...
+	CGO_ENABLED=1 $(GO) test -race ./...
 
 # bench runs the performance benchmark suite in ./bench (INFORMATIONAL): it
 # prints ns/op, allocs/op, and the computed p99 (p99-ns) + sustained throughput

@@ -269,6 +269,13 @@ audit, mcp), each story adds a `skills/<feature>.md` doc and a coverage gate in
   LOCAL attribute bag as a slot's whole answer — while `make test` was green
   throughout, because the detector had never run in this pipeline at all.
   `provider/attribute_race_test.go` fails under `-race` if it returns.
+  The target sets **`CGO_ENABLED=1`** for its own command, which is not an exception
+  to the pure-Go rule: the detector's runtime links through cgo, so on linux
+  `go test -race` with CGO off refuses outright while on darwin it works — a target
+  without it passes on a Mac and is a red CI job. `make build` is untouched and every
+  dependency is pure Go either way, so the race run exercises the same code. That
+  collision with the headline constraint is the likely reason the detector went
+  unwired for so long.
 
 Gated, NOT in `make test` (a loaded runner would flake them):
 
