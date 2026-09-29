@@ -535,11 +535,28 @@ seriously rather than as tuning.
   forever. Staleness is CONTINUOUS from the first refusal until an adoption
   succeeds. `Posture().Digest` moves with the ADOPTION and never with the read, so
   it never names wiring this instance refused.
+- **A step this process's OWN shutdown cancelled is not a failure.** SIGTERM
+  landing while the re-read or the rebuild is in flight returns
+  `context.Canceled`, and recording it would open a staleness window on a cleanly
+  terminating instance — which then drains for up to `shutdownTimeout`, reporting
+  `Stale: true, Reason: "context canceled"` to every sweep taken across an
+  ordinary rolling restart. The poller records nothing there and still writes one
+  stderr line saying the refresh was abandoned. BOTH halves of the test are
+  needed: the loop's own context must be done AND the error must really be a
+  context error, so a store that died at the same moment as the process is still
+  alarmed, with its own code.
 - **On the wire it is `WiringPosture(WiringPostureRequest)`.** It takes an `Actor`
   rather than `Empty` because system-admin authority is resolved in an ACTIVE
   ACCOUNT and only the caller knows which of its accounts that is; the principal on
   the wire is ignored as always. Durations are Go duration text (`"4h0m0s"`) and
   instants RFC3339, because the person reading it has just been paged.
+- **`Digest` is the SHARED wiring's, and only that.** It is `wiringDigest` of the
+  five tables, which is what makes it comparable with what a push produced and with
+  `aperture wiring diff`. It covers no part of an instance's local `--seed` file, and
+  a rebuild re-reads that file — so two instances can report the same digest and hold
+  different inline `objects:` metadata and different inline `attributes:` bags. The
+  read answers "did this instance get the push"; it is not by itself proof that two
+  instances decide identically.
 - **It carries no model data.** Digests, durations, counts and coded errors only —
   never an object type, an id or a key — the same restriction the poll's stderr
   reports carry.

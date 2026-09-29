@@ -310,6 +310,17 @@ The interval vocabulary, how a change is detected, and what a tick costs are all
 `docs/src/cli/global-options.md` ("The wiring is read once, unless you ask for
 more"). They are not restated here.
 
+One property of the loop belongs here because it is about the PROCESS and not the
+interval: **a shutdown's wait on a tick is bounded, and it says so.** Cancelling the
+context stops a loop between ticks at once, but nothing inside a rebuild is
+cancellable — the seed file is re-read and every declared CSV is opened — so
+`wiringPoll.Close` waits `wiringPollCloseWait` (5s, against `shutdownTimeout`'s 10s)
+and then stops waiting, having written a line either way. An unbounded wait there
+held the process open for the rebuild's duration AFTER graceful shutdown had
+returned, silently, past the termination grace an orchestrator sized against
+`shutdownTimeout`. Abandoning costs nothing: a version is installed whole or not at
+all (`TestAShutdownDoesNotWaitForeverOnAWiringRebuild`).
+
 ## What a swap replaces, and what a decision sees
 
 A change that a tick notices is **adopted**, not merely reported. The unit of
@@ -337,6 +348,28 @@ alternative implementation would get wrong:
   delegation and impersonation deciding through the superseded engine while `Check`
   answers through the new one. That is not a torn read inside one decision; it is
   two engines in one process, and no verdict, trace or note reports it.
+
+A fifth property is not a choice the design made so much as a consequence worth
+writing down: **a rebuild RE-READS the local `--seed` file.** It goes through
+`buildWiredStack`, which calls `seedDocument`, which calls `seed.ParseFile` — a
+fresh disk read, on a swap exactly as on a boot. The two LOCAL sections are
+decision-affecting (`objects:` inline metadata, `attributes:` inline bags) and the
+declared attribute-key sets are taken from the same document, so a file rewritten in
+place since the boot is adopted as a side effect of the next shared push. The
+re-read is desirable — it is how a remounted ConfigMap takes effect without a
+restart — but two things follow that a reader must not assume away:
+
+- **`wiringDigest` covers `model.WiringSet` and nothing else.** No local content is
+  in it, so `WiringPosture.Digest` is a statement about the SHARED half. Two
+  instances reporting the same digest can hold different inline metadata and
+  different inline bags and return different verdicts. The digest stays shared-only
+  on purpose: it must remain comparable with what a push produced and with what
+  `aperture wiring diff` reports, so folding a local digest into it would break the
+  one sweep it exists for. If a fleet must be provably identical, the local files
+  have to be shipped identically as well.
+- **The trigger is a SHARED push.** A local edit does not cause a rebuild; it lands
+  on the next one. So "this file changed and nothing happened" and "an unrelated push
+  changed how this instance reads its own file" are both the same mechanism.
 
 A superseded version is never mutated and never `Close`d. Its pools are
 **borrowed** from the boot (`borrowBootPools`), so closing it would close the
@@ -413,6 +446,23 @@ Two things about it are easy to get wrong and are asserted:
 - **The posture's digest is what the instance RUNS.** It advances with the adoption
   and not with the read, so a fleet-wide digest comparison reads a caught-up
   instance as caught up and a refusing one as behind.
+- **A step this process's own SHUTDOWN cancelled is not a failure of any of them.**
+  A tick takes the loop's context, so SIGTERM arriving mid-read (or mid-rebuild)
+  returns `context.Canceled`. Recording it made a cleanly terminating instance
+  report itself stale for the whole of its `Shutdown` drain, which is the false
+  positive that teaches an operator to ignore the channel. `wiringPoll.abandoned`
+  requires BOTH that this loop's context is done AND that the error really is a
+  context error, so a store that went away at the same moment as the process is
+  still alarmed with its own code; nothing is recorded, and one line still says the
+  refresh was abandoned (`TestACleanShutdownDoesNotReportItselfStale`).
+
+Each failure condition emits **exactly one** stderr line, in the words that fit
+that condition. "Re-reading the shared wiring failed" is the read's and the
+digest's sentence; a refused ADOPTION says the wiring CHANGED and could not be
+adopted, because there the re-read succeeded and the remedy is a restart rather
+than a look at store reachability. `wiringPoll.alarmf` records the classified
+alarm and then prints the branch's own sentence — record-then-report, so a broken
+writer cannot lose the one channel an operator can read without logs.
 
 The alarm **passes the underlying code through** (`wiringRefreshAlarm`'s
 pass-through guard) and `APERTURE_WIRING_REFRESH_FAILED` is the classification of

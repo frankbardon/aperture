@@ -146,8 +146,8 @@ process — see
 Unlike `--enumerate-limit`, it is **not** carried by every command that decides:
 it configures a process that outlives a decision, and there is no tick in the life
 of `aperture check` for one to happen on. It is declared on `serve`, and the whole
-account of it — the interval vocabulary, how a change is detected, and what it
-costs — is on that page.
+account of it — the interval vocabulary, how a change is detected, what it costs,
+and what a shutdown does with a refresh still in flight — is on that page.
 
 ### An instance will not start on wiring it cannot construct
 

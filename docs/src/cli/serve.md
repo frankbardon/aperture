@@ -182,6 +182,15 @@ sees all of a push or none of it — never half.
   configuration's [`ttl:`](../concepts/providers.md) — which is the window a
   *revoked* clearance would otherwise keep authorizing for.
 - **The connection *name set* is frozen for the life of the process** — see below.
+- **The local `--seed` file is RE-READ.** A rebuild goes through the same builder the
+  boot did, and that builder parses the file from disk again. So the two *local*
+  sections — inline `objects:` metadata and inline `attributes:` bags — and the
+  declared attribute-key sets taken from them are whatever the file says **now**, not
+  what it said at startup. A file rewritten in place since the boot (a ConfigMap
+  volume remount, a redeploy that only updates a mounted file) therefore takes effect
+  on the next swap instead of needing a restart. That is usually what you want, and it
+  is worth knowing it is not opt-in: the trigger is *any* shared push, so an unrelated
+  push is what makes a local edit live.
 - **A failed rebuild installs nothing.** The instance keeps the wiring it has and
   goes on deciding, the digest does not advance, and the next tick tries again:
 
@@ -192,6 +201,20 @@ could not adopt it, so it keeps the wiring it has and goes on deciding: [...]
 
 The listener, the authenticator and the HTTP server itself are built once and are
 untouched by a swap; only what sits beneath them is replaced.
+
+##### The digest covers the shared set only
+
+`WiringPosture.Digest`, and the two short hashes in the lines above, are digests of
+the **shared** wiring — the five tables — and of nothing else. They are exactly the
+right handle for "did this instance get the push?", and comparable with what
+[`aperture wiring diff`](wiring.md) reports.
+
+They are **not** proof that two instances decide identically. Two instances can
+report the same digest and hold different inline `objects:` metadata, different
+inline `attributes:` bags and different declared key sets, because those come from
+each instance's own `--seed` file and no digest anywhere covers a local file. If a
+fleet must be provably identical, the local files have to be identical too, by
+whatever mechanism ships them; the digest sweep tells you the *shared* half agrees.
 
 #### The connection name set needs a restart
 
@@ -279,6 +302,30 @@ instance that is silently stale while reporting itself healthy:
 The digest ignores the `created_at` / `updated_at` stamps on purpose. A push
 rewrites every row, so an identical re-push — the same pipeline running twice —
 is **not** a change, and is not reported as one.
+
+#### What a shutdown does with a tick in flight
+
+`SIGINT` / `SIGTERM` cancels the reader at once, so a loop waiting for its next
+tick is gone before graceful shutdown even starts. A tick that is already *inside a
+rebuild* is different: a rebuild re-reads the seed file and opens every declared
+CSV, and none of that is interruptible. A rebuild that has not begun declines to
+start; one that has is waited for, **for five seconds**, and then abandoned:
+
+```text
+wiring poll: a wiring refresh is still in flight; waiting up to 5s for it before
+this process exits
+wiring poll: the refresh in flight did not finish within 5s, so this process stops
+without waiting for it; a wiring version is installed whole or not at all, so it
+installed nothing
+```
+
+Five seconds against the ten of graceful shutdown keeps the worst case of the two
+together inside the 30-second termination grace an orchestrator gives by default —
+which is the point: before it was bounded, a rebuild on a stalled mount could hold
+the process open for minutes after the HTTP server had finished draining, and say
+nothing. Abandoning is safe: a version is installed whole or not at all, so the
+abandoned rebuild installed nothing, and the next process to start re-reads the
+wiring from scratch. A shutdown that made no such wait is silent.
 
 Under `serve`, the facade is wired with everything the other surfaces expect: the
 admin gate, delegation and impersonation mutators, the append-only audit trail,

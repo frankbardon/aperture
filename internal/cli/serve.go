@@ -316,7 +316,25 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 	storeDSN, seedPath, errOut := cmd.String("store"), cmd.String("seed"), cmd.ErrWriter
 	live := newLiveWiring(
 		&wiringVersion{stack: stack, svc: svc, handler: server.New(svc), digest: stack.wiringDigest},
-		func(_ context.Context, set model.WiringSet, digest string) (*wiringVersion, error) {
+		func(ctx context.Context, set model.WiringSet, digest string) (*wiringVersion, error) {
+			// The context is HONOURED here and nowhere deeper, which is worth saying out
+			// loud rather than leaving as an underscore. Nothing buildWiredStack does is
+			// interruptible: it re-reads the --seed file, opens every declared CSV, and
+			// constructs the registries from what they hold. So the one thing a rebuild
+			// can do with a context is decline to START on one that is already done —
+			// which is the common case at shutdown, because the poll loop's context is
+			// `serve`'s signal context and a SIGTERM trips it between the tick and the
+			// rebuild. wiringPoll.Close bounds the other case, where the rebuild had
+			// already begun.
+			//
+			// It is a coded refusal rather than a bare ctx.Err() because everything on
+			// this path is, and the sentinel survives the wrap — which is what lets the
+			// tick tell an abandoned refresh from a failed one and record no false
+			// staleness alarm (wiringPoll.abandoned).
+			if err := ctx.Err(); err != nil {
+				return nil, aerr.Wrap(aerr.APERTURE_BOOT,
+					"cli: rebuilding the wiring was abandoned because this process is shutting down", err)
+			}
 			// The pools are BORROWED from the boot, never re-dialled: one pool per
 			// declared connection for the life of the process, however many pushes it
 			// sees. See borrowBootPools.
@@ -364,6 +382,10 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 	// a refresh that fails is readable through the gated WiringPosture read and not
 	// only on stderr.
 	poll := startWiringPoll(ctx, store, pollEvery, stack.wiringDigest, live.swap, cmd.ErrWriter, wiringHealth)
+	// Deferred, so it runs AFTER Shutdown has drained the listener — and BOUNDED, so a
+	// rebuild that is mid-way through reading a seed file on a stalled mount cannot
+	// hold the process open past the termination grace an orchestrator sized against
+	// shutdownTimeout. See wiringPoll.Close.
 	defer func() { _ = poll.Close() }()
 
 	serveErr := make(chan error, 1)

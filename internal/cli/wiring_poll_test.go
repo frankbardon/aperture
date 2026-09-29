@@ -876,16 +876,56 @@ func varyField(v reflect.Value) bool {
 		// owned child table.
 		v.Set(reflect.Append(v, reflect.New(v.Type().Elem()).Elem()))
 		return true
-	case reflect.Struct:
-		for i := 0; i < v.NumField(); i++ {
-			if v.Type().Field(i).IsExported() && varyField(v.Field(i)) {
-				return true
-			}
-		}
-		return false
 	default:
+		// A STRUCT reaches here only if varyPointsOf did not expand it, which is a
+		// defect in this gate rather than a type it may stand in for. It used to vary
+		// the FIRST field it could and return — which for model.DeclaredKeys{Declared
+		// bool, Keys []string} meant `Declared`, so `Keys` was never varied in any
+		// subtest and a digest that dropped it would have left the gate GREEN. A gate
+		// that fails by passing is the one thing this one must not be.
 		return false
 	}
+}
+
+// varyPoint is one leaf of a wiring row: the chain of field indices that reaches it
+// from the row, and the name to report it by.
+type varyPoint struct {
+	name  string
+	index []int
+}
+
+// varyPointsOf enumerates every leaf of t, expanding a STRUCT-valued field into its
+// own fields rather than letting one of them stand in for the rest.
+//
+// The expansion is the correctness of the gate it serves. A column whose type is a
+// struct holds several independent things a push can change — model.DeclaredKeys
+// distinguishes `”` (not declared) from `'[]'` (declared empty) in `Declared` and
+// carries the set in `Keys` — and a walk that varied one field and moved on would
+// assert nothing about the others while reporting a pass for the column.
+//
+// time.Time is a leaf, not a struct to expand: varyField knows how to move an
+// instant, and its unexported fields are not wiring.
+func varyPointsOf(t reflect.Type, name string, index []int) []varyPoint {
+	if t.Kind() != reflect.Struct || t == reflect.TypeOf(time.Time{}) {
+		return []varyPoint{{name: name, index: index}}
+	}
+	var out []varyPoint
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if !f.IsExported() {
+			continue
+		}
+		out = append(out, varyPointsOf(f.Type, name+"."+f.Name, append(append([]int{}, index...), i))...)
+	}
+	return out
+}
+
+// resolveVaryPoint walks a point's index chain from a row to the value it names.
+func resolveVaryPoint(row reflect.Value, p varyPoint) reflect.Value {
+	for _, i := range p.index {
+		row = row.Field(i)
+	}
+	return row
 }
 
 // TestTheDigestCoversEveryContentFieldAndNoStamp is the gate the whole change
@@ -904,65 +944,83 @@ func varyField(v reflect.Value) bool {
 //
 // A field of a type varyField does not know how to change fails the test rather
 // than being skipped. A silent skip here is exactly how the first direction gets
-// shipped.
+// shipped — and a STRUCT-valued column is the shape that skips without looking like
+// one, which is why varyPointsOf expands one into a subtest per leaf rather than
+// letting its first field stand in for the rest.
 func TestTheDigestCoversEveryContentFieldAndNoStamp(t *testing.T) {
 	base := mustDigest(t, digestFixture())
 
-	sections := []string{"Connections", "Providers", "FieldTypes", "AttributeProviders"}
-	for _, section := range sections {
-		elem := reflect.ValueOf(digestFixture()).FieldByName(section).Type().Elem()
-		if elem.Kind() != reflect.Struct {
-			t.Fatalf("section %s is a slice of %s, not of a struct: the gate below cannot walk it", section, elem.Kind())
+	// Every row the digest is taken over, and how to reach it from a fresh fixture.
+	// The owned child table is in the list for the same reason the four sections are:
+	// WiringReference carries no stamps of its own (its history is its provider
+	// entry's), so every field of it is content.
+	rows := []struct {
+		label string
+		row   func(*model.WiringSet) reflect.Value
+	}{
+		{"Connections", func(s *model.WiringSet) reflect.Value {
+			return reflect.ValueOf(s).Elem().FieldByName("Connections").Index(0)
+		}},
+		{"Providers", func(s *model.WiringSet) reflect.Value {
+			return reflect.ValueOf(s).Elem().FieldByName("Providers").Index(0)
+		}},
+		{"FieldTypes", func(s *model.WiringSet) reflect.Value {
+			return reflect.ValueOf(s).Elem().FieldByName("FieldTypes").Index(0)
+		}},
+		{"AttributeProviders", func(s *model.WiringSet) reflect.Value {
+			return reflect.ValueOf(s).Elem().FieldByName("AttributeProviders").Index(0)
+		}},
+		{"WiringReference", func(s *model.WiringSet) reflect.Value {
+			return reflect.ValueOf(s).Elem().FieldByName("Providers").Index(0).FieldByName("References").Index(0)
+		}},
+	}
+
+	for _, r := range rows {
+		fixture := digestFixture()
+		rowType := r.row(&fixture).Type()
+		if rowType.Kind() != reflect.Struct {
+			t.Fatalf("%s is a %s, not a struct: the gate below cannot walk it", r.label, rowType.Kind())
 		}
-		for i := 0; i < elem.NumField(); i++ {
-			field := elem.Field(i)
+		for i := 0; i < rowType.NumField(); i++ {
+			field := rowType.Field(i)
 			if !field.IsExported() {
 				continue
 			}
-			name := section + "." + field.Name
-			t.Run(name, func(t *testing.T) {
-				set := digestFixture()
-				target := reflect.ValueOf(&set).Elem().FieldByName(section).Index(0).Field(i)
-				if !varyField(target) {
-					t.Fatalf("this gate does not know how to vary %s (a %s), so it cannot say whether the "+
-						"digest covers it. Teach varyField the type — do NOT skip the field: a field the "+
-						"digest ignores is a wiring change no instance ever notices", name, field.Type)
-				}
-				got := mustDigest(t, set)
-				stamp := field.Name == "CreatedAt" || field.Name == "UpdatedAt"
-				if stamp && got != base {
-					t.Errorf("changing %s changed the digest. Stamps are OUT: ReplaceWiring re-stamps every "+
-						"row on every push, so a stamp in the digest makes an identical re-push read as a "+
-						"change and costs a needless rebuild", name)
-				}
-				if !stamp && got == base {
-					t.Errorf("changing %s did NOT change the digest, so a push that changes it is a change "+
-						"this instance never sees — a silently stale instance that reports itself healthy", name)
-				}
-			})
-		}
-	}
-
-	// The owned child table too. WiringReference carries no stamps of its own (its
-	// history is its provider entry's), so every field of it is content.
-	refType := reflect.TypeOf(model.WiringReference{})
-	for i := 0; i < refType.NumField(); i++ {
-		field := refType.Field(i)
-		if !field.IsExported() {
-			continue
-		}
-		t.Run("WiringReference."+field.Name, func(t *testing.T) {
-			set := digestFixture()
-			target := reflect.ValueOf(&set).Elem().FieldByName("Providers").Index(0).
-				FieldByName("References").Index(0).Field(i)
-			if !varyField(target) {
-				t.Fatalf("this gate does not know how to vary WiringReference.%s (a %s)", field.Name, field.Type)
+			// A stamp is named at the TOP level of a row, so a nested leaf inherits its
+			// column's answer — which is right: a struct-valued stamp would be out whole.
+			stamp := field.Name == "CreatedAt" || field.Name == "UpdatedAt"
+			points := varyPointsOf(field.Type, field.Name, []int{i})
+			if len(points) == 0 {
+				t.Run(r.label+"."+field.Name, func(t *testing.T) {
+					t.Fatalf("%s.%s (a %s) expands to NO variation points, so this gate asserts nothing about "+
+						"it. Teach varyPointsOf the type — do NOT let it pass silently: a field the digest "+
+						"ignores is a wiring change no instance ever notices", r.label, field.Name, field.Type)
+				})
+				continue
 			}
-			if mustDigest(t, set) == base {
-				t.Errorf("changing WiringReference.%s did not change the digest: a re-pointed declared "+
-					"reference is a wiring change", field.Name)
+			for _, pt := range points {
+				name := r.label + "." + pt.name
+				t.Run(name, func(t *testing.T) {
+					set := digestFixture()
+					target := resolveVaryPoint(r.row(&set), pt)
+					if !varyField(target) {
+						t.Fatalf("this gate does not know how to vary %s (a %s), so it cannot say whether the "+
+							"digest covers it. Teach varyField the type — do NOT skip the field: a field the "+
+							"digest ignores is a wiring change no instance ever notices", name, target.Type())
+					}
+					got := mustDigest(t, set)
+					if stamp && got != base {
+						t.Errorf("changing %s changed the digest. Stamps are OUT: ReplaceWiring re-stamps every "+
+							"row on every push, so a stamp in the digest makes an identical re-push read as a "+
+							"change and costs a needless rebuild", name)
+					}
+					if !stamp && got == base {
+						t.Errorf("changing %s did NOT change the digest, so a push that changes it is a change "+
+							"this instance never sees — a silently stale instance that reports itself healthy", name)
+					}
+				})
 			}
-		})
+		}
 	}
 }
 
@@ -1122,5 +1180,111 @@ func TestPostgresLiveTheDigestAgreesAcrossTheTwoDialects(t *testing.T) {
 		t.Errorf("one wiring set digests to %s out of SQLite and %s out of Postgres; two identically-wired "+
 			"instances would hold different baselines and nothing would report it",
 			shortDigest(fromSQLite), shortDigest(fromPostgres))
+	}
+}
+
+// lockedBuffer is a log writer a test may read while the loop goroutine is still
+// alive. Every other case in this file reads probe.out only after Close has proved
+// the goroutine gone; the bounded-Close case reads it while a rebuild is
+// deliberately still in flight, which is exactly the window a plain bytes.Buffer
+// would race in.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// TestAShutdownDoesNotWaitForeverOnAWiringRebuild is the unbounded, silent exit.
+//
+// Close cancels the loop and waited for the goroutine with no timeout, and nothing
+// inside a rebuild is cancellable — the seed file is read, every declared CSV is
+// opened, the registries are built from what they hold. A SIGTERM landing while a
+// tick rebuilt over a stalled mount therefore let httpServer.Shutdown finish within
+// shutdownTimeout and then parked the process inside Close for the rebuild's
+// duration, with nothing on stderr and no exit until SIGKILL. An orchestrator sizes
+// its termination grace against shutdownTimeout, so that overran it invisibly.
+//
+// Both halves are asserted, and the SILENCE is the half that made it a support
+// ticket rather than a log line: a shutdown that waits on a rebuild has to say so.
+func TestAShutdownDoesNotWaitForeverOnAWiringRebuild(t *testing.T) {
+	log := &lockedBuffer{}
+	entered, release := make(chan struct{}), make(chan struct{})
+	defer close(release)
+
+	var once sync.Once
+	// The store answers every re-read with a set the poller has not adopted, so the
+	// loop reaches the swap; the swapper then blocks, which is the stalled rebuild.
+	poll := startWiringPoll(context.Background(), wiringReadReturns{set: digestFixture()},
+		time.Millisecond, "the-boot-digest",
+		func(context.Context, model.WiringSet, string) error {
+			once.Do(func() { close(entered) })
+			<-release
+			return nil
+		}, log, nil)
+	if poll == nil {
+		t.Fatal("a 1ms interval started no poller")
+	}
+	// The real bound is 5s, which is the right number for a process exiting and the
+	// wrong one for a test to spend. These fields are read by Close on this
+	// goroutine and never by the loop.
+	poll.closeGrace, poll.closeWait = time.Millisecond, 50*time.Millisecond
+
+	<-entered
+
+	start := time.Now()
+	closed := make(chan struct{})
+	go func() {
+		_ = poll.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Close did not return while a rebuild was in flight. Nothing in a rebuild is cancellable, " +
+			"so an unbounded wait here puts the process's exit at the mercy of a file read on a stalled " +
+			"mount — after graceful shutdown has already finished")
+	}
+	if waited := time.Since(start); waited > 5*time.Second {
+		t.Errorf("Close waited %s against a %s bound", waited, poll.closeWait)
+	}
+
+	out := log.String()
+	for _, want := range []string{"still in flight", "did not finish within"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("a shutdown that abandoned a rebuild did not say %q. Silence is the worst part: the "+
+				"symptom is a process that takes minutes to exit and logs nothing. Output:\n%s", want, out)
+		}
+	}
+}
+
+// TestAnOrdinaryShutdownSaysNothingAboutWaiting is the other side of the bound. A
+// line printed on every restart of every deployment is noise, and noise is how the
+// line that matters gets skipped — so the grace exists to keep the ordinary path
+// silent, and a loop parked in its own select returns within microseconds of the
+// cancel.
+func TestAnOrdinaryShutdownSaysNothingAboutWaiting(t *testing.T) {
+	log := &lockedBuffer{}
+	poll := startWiringPoll(context.Background(), wiringReadReturns{set: digestFixture()},
+		time.Hour, "the-boot-digest",
+		func(context.Context, model.WiringSet, string) error { return nil }, log, nil)
+	if poll == nil {
+		t.Fatal("an hourly interval started no poller")
+	}
+	if err := poll.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if out := log.String(); strings.Contains(out, "in flight") {
+		t.Errorf("an ordinary shutdown narrated a wait it did not have to make: %q", out)
 	}
 }

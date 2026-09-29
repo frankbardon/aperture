@@ -644,3 +644,363 @@ func TestAnAdoptionThatFailsIsStaleAndNotHealthy(t *testing.T) {
 			"succeeded again — the refusal is re-detected every tick and must re-arm every time")
 	}
 }
+
+// pollLines is the poller's stderr output as the operator reads it: one entry per
+// line, blanks dropped. Every case below counts them, because the defect this
+// helper exists for was not a wrong line but an EXTRA one.
+func pollLines(out string) []string {
+	var lines []string
+	for _, l := range strings.Split(out, "\n") {
+		if strings.TrimSpace(l) != "" {
+			lines = append(lines, l)
+		}
+	}
+	return lines
+}
+
+// TestEachFailureConditionReportsOneLineInItsOwnWords is the assertion
+// TestAnAdoptionThatFailsIsStaleAndNotHealthy does not make, and the one whose
+// absence let the same defect through twice: it asserts the POSTURE and never the
+// TEXT, so a branch that recorded correctly and printed the wrong sentence — or
+// printed twice — passed everything.
+//
+// Two properties, on every failure branch a tick has:
+//
+//   - EXACTLY ONE line per condition per tick. Two lines for one fact is how the
+//     wrong one gets read, and a refused connection-name change never clears by
+//     itself, so a pair would print on every tick for the life of the process.
+//   - The line says what is TRUE of that branch. "Re-reading the shared wiring
+//     failed" is exactly right for the read and for the digest and FALSE of a
+//     refused adoption, where the re-read succeeded and the remedy is
+//     APERTURE_WIRING_RESTART_REQUIRED's restart rather than a check of store
+//     reachability and schema compatibility. An operator handed the read's sentence
+//     for an adoption failure is an operator sent to look at the wrong subsystem,
+//     forever.
+func TestEachFailureConditionReportsOneLineInItsOwnWords(t *testing.T) {
+	// The sentence that belongs to the READ, and must not appear on the adoption's
+	// line. It is spelled out once here so a case cannot assert a substring of it.
+	const readFailed = "re-reading the shared wiring failed"
+
+	t.Run("a read that failed", func(t *testing.T) {
+		probe := newStalenessProbe(t)
+		probe.poll.store = wiringReadFails{
+			Storage: probe.counting,
+			err:     aerr.New(aerr.APERTURE_STORAGE_SCHEMA_INCOMPATIBLE, "the wiring tables are from an older build"),
+		}
+		probe.out.Reset()
+		probe.poll.tick(probe.ctx)
+
+		lines := pollLines(probe.out.String())
+		if len(lines) != 1 {
+			t.Fatalf("a failed read printed %d lines, want 1:\n%s", len(lines), strings.Join(lines, "\n"))
+		}
+		if !strings.Contains(lines[0], readFailed) {
+			t.Errorf("a failed read did not say the re-read failed: %q", lines[0])
+		}
+		if !strings.Contains(lines[0], string(aerr.APERTURE_STORAGE_SCHEMA_INCOMPATIBLE)) {
+			t.Errorf("a failed read did not name the store's own code: %q", lines[0])
+		}
+	})
+
+	t.Run("an adoption that failed", func(t *testing.T) {
+		probe := newStalenessProbe(t)
+		baseline := probe.poll.digest
+
+		// A push that adds a connection name this instance has no route for: the read
+		// and the digest succeed on every tick, and the adoption fails on every tick,
+		// so this is also the branch whose wrong second line would never stop.
+		set := staleWiringSet(time.Now().UTC())
+		set.Connections = append(set.Connections,
+			model.WiringConnection{Name: "replica", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()})
+		if err := probe.counting.ReplaceWiring(probe.ctx, set); err != nil {
+			t.Fatalf("pushing the wiring: %v", err)
+		}
+
+		probe.out.Reset()
+		if probe.poll.tick(probe.ctx) {
+			t.Fatal("a push this instance cannot adopt was reported as adopted")
+		}
+
+		lines := pollLines(probe.out.String())
+		if len(lines) != 1 {
+			t.Fatalf("a refused adoption printed %d lines, want 1. Two lines for one fact is how the wrong "+
+				"one gets read, and this condition never clears by itself:\n%s", len(lines), strings.Join(lines, "\n"))
+		}
+		line := lines[0]
+		if strings.Contains(line, readFailed) {
+			t.Errorf("a refused ADOPTION claims the re-read failed: %q\nThe re-read succeeded — the adoption "+
+				"did not — and that sentence sends an operator to check store reachability and schema "+
+				"compatibility when the remedy is the restart APERTURE_WIRING_RESTART_REQUIRED's fixups name", line)
+		}
+		for _, want := range []string{"CHANGED", "could not adopt", string(aerr.APERTURE_WIRING_RESTART_REQUIRED)} {
+			if !strings.Contains(line, want) {
+				t.Errorf("the refused adoption's line does not mention %q: %q", want, line)
+			}
+		}
+
+		// And it stays one line per tick. The digest never advances, so the condition
+		// is re-detected forever; a branch that printed twice would print twice
+		// forever.
+		const more = 3
+		probe.out.Reset()
+		for i := 0; i < more; i++ {
+			if probe.poll.tick(probe.ctx) {
+				t.Fatalf("tick %d adopted a push this instance cannot route", i)
+			}
+		}
+		if lines := pollLines(probe.out.String()); len(lines) != more {
+			t.Errorf("%d refused ticks printed %d lines, want %d — one per tick:\n%s",
+				more, len(lines), more, strings.Join(lines, "\n"))
+		}
+		if probe.poll.digest != baseline {
+			t.Error("a refused adoption advanced the digest")
+		}
+	})
+
+	// The digest branch cannot be provoked through a tick: wiringDigest fails only
+	// where encoding/json does, and a model.WiringSet is strings, integers, slices of
+	// the same and time.Time. So its REPORTER is exercised directly — which is the
+	// whole of what that branch contributes, since it shares the read's sentence by
+	// design (neither of them got as far as looking at a change).
+	t.Run("a digest that could not be computed", func(t *testing.T) {
+		probe := newStalenessProbe(t)
+		probe.out.Reset()
+		probe.poll.alarm(aerr.New(aerr.APERTURE_BOOT, "digesting the shared wiring failed"))
+
+		lines := pollLines(probe.out.String())
+		if len(lines) != 1 {
+			t.Fatalf("the read/digest reporter printed %d lines, want 1:\n%s", len(lines), strings.Join(lines, "\n"))
+		}
+		if !strings.Contains(lines[0], readFailed) {
+			t.Errorf("the read/digest reporter did not say the re-read failed: %q", lines[0])
+		}
+		if !probe.health.Posture().Stale {
+			t.Error("the reporter printed without recording: the record is what an operator reads " +
+				"without logs, and the line is best-effort narration")
+		}
+	})
+}
+
+// TestTheAlarmRecordsBeforeItReports is the ORDER wiring_stale.go states and the
+// swap branch used to invert: the recorder is what an operator reads without logs
+// and the writer is best-effort narration, so a panic or a short write in the
+// writer must not be able to lose the alarm.
+//
+// It is asserted with a writer that PANICS, which is the only way to tell the two
+// orders apart — both of them record and both of them print when nothing goes
+// wrong.
+func TestTheAlarmRecordsBeforeItReports(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		raise func(p *wiringPoll, err error)
+	}{
+		{"the read's reporter", func(p *wiringPoll, err error) { p.alarm(err) }},
+		{"the adoption's reporter", func(p *wiringPoll, err error) {
+			p.alarmf(err, "wiring poll: the deployed wiring CHANGED (%s -> %s) but this instance could not adopt it: %v",
+				"aaaaaaaa", "bbbbbbbb")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			probe := newStalenessProbe(t)
+			probe.poll.log = panicWriter{}
+
+			func() {
+				defer func() {
+					if recover() == nil {
+						t.Fatal("the panicking writer did not panic, so this case proves nothing")
+					}
+				}()
+				tc.raise(probe.poll, aerr.New(aerr.APERTURE_STORAGE, "connection refused"))
+			}()
+
+			if p := probe.health.Posture(); !p.Stale || p.Code != string(aerr.APERTURE_STORAGE) {
+				t.Errorf("a writer that panicked lost the alarm: %+v. The record must be made BEFORE the "+
+					"line is written, or the one channel an operator can read without logs is the one a "+
+					"broken writer takes out", p)
+			}
+		})
+	}
+}
+
+// panicWriter is a log writer that fails the way the record-then-report order
+// exists for.
+type panicWriter struct{}
+
+func (panicWriter) Write([]byte) (int, error) { panic("the writer went away") }
+
+// wiringReadReturns answers every re-read with one fixed set and ignores the
+// context, which is what lets a case drive the ADOPTION branch under a cancelled
+// context: a real store honours the context and would fail the read first, so the
+// branch under test would never be reached.
+type wiringReadReturns struct {
+	model.Storage
+	set model.WiringSet
+}
+
+func (w wiringReadReturns) GetWiring(context.Context) (model.WiringSet, error) { return w.set, nil }
+
+// TestACleanShutdownDoesNotReportItselfStale is the false positive that trains an
+// operator to ignore the channel.
+//
+// A tick takes the LOOP's context, so SIGTERM landing while the re-read is in
+// flight returns context.Canceled. Alarming on it opened a staleness window with
+// Reason "context canceled" — and httpServer.Shutdown then drains for up to
+// shutdownTimeout, during which every WiringPosture read answers Stale=true. A
+// fleet sweep taken across an ordinary rolling restart would report every instance
+// being replaced as degraded.
+//
+// The discriminator has to keep the loud half, which is why the controls matter as
+// much as the case: a read that failed for a REAL reason and only then noticed the
+// shutdown is exactly what a store going away during a deploy produces, and it is
+// the one failure that must not be laundered into an orderly exit.
+func TestACleanShutdownDoesNotReportItselfStale(t *testing.T) {
+	// changedWiring is a push the probe has not adopted, so the tick reaches the
+	// adoption branch instead of the no-change one.
+	changedWiring := func() model.WiringSet {
+		set := staleWiringSet(time.Now().UTC())
+		set.FieldTypes = append(set.FieldTypes, model.WiringFieldType{
+			ObjectType: "document", Field: "released_on", DeclaredType: "date",
+			CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+		})
+		return set
+	}
+
+	t.Run("a re-read this loop cancelled", func(t *testing.T) {
+		probe := newStalenessProbe(t)
+		ctx, cancel := context.WithCancel(probe.ctx)
+		cancel()
+
+		// Through readSharedWiring, so the sentinel is reached through the coded wrap a
+		// real read would put on it.
+		probe.poll.store = wiringReadFails{Storage: probe.counting, err: context.Canceled}
+		probe.out.Reset()
+		if probe.poll.tick(ctx) {
+			t.Fatal("an abandoned tick reported a change")
+		}
+
+		if p := probe.health.Posture(); p.Stale {
+			t.Errorf("a cleanly terminating instance recorded staleness: %+v\n"+
+				"Shutdown drains for up to %s after this, and every WiringPosture read in that "+
+				"window would report a healthy instance as degraded", p, shutdownTimeout)
+		}
+		if p := probe.health.Posture(); p.Failures != 0 {
+			t.Errorf("Failures = %d after an abandoned tick, want 0", p.Failures)
+		}
+		// Not silent, though: nothing recorded, one line written.
+		lines := pollLines(probe.out.String())
+		if len(lines) != 1 || !strings.Contains(lines[0], "shutting down") {
+			t.Errorf("an abandoned re-read was silent or said the wrong thing: %q", probe.out.String())
+		}
+	})
+
+	t.Run("an adoption this loop cancelled", func(t *testing.T) {
+		probe := newStalenessProbe(t)
+		ctx, cancel := context.WithCancel(probe.ctx)
+		cancel()
+
+		probe.poll.store = wiringReadReturns{Storage: probe.counting, set: changedWiring()}
+		probe.poll.swap = func(context.Context, model.WiringSet, string) error { return context.Canceled }
+		probe.out.Reset()
+		if probe.poll.tick(ctx) {
+			t.Fatal("an abandoned adoption reported a change")
+		}
+
+		if p := probe.health.Posture(); p.Stale {
+			t.Errorf("a rebuild abandoned by this process's own shutdown recorded staleness: %+v", p)
+		}
+		if lines := pollLines(probe.out.String()); len(lines) != 1 || !strings.Contains(lines[0], "shutting down") {
+			t.Errorf("an abandoned adoption was silent or said the wrong thing: %q", probe.out.String())
+		}
+	})
+
+	t.Run("a real failure noticed at the same moment as the shutdown", func(t *testing.T) {
+		probe := newStalenessProbe(t)
+		ctx, cancel := context.WithCancel(probe.ctx)
+		cancel()
+
+		probe.poll.store = wiringReadFails{
+			Storage: probe.counting,
+			err:     aerr.New(aerr.APERTURE_STORAGE, "connection refused"),
+		}
+		probe.poll.tick(ctx)
+
+		p := probe.health.Posture()
+		if !p.Stale {
+			t.Fatalf("a store that went away as the process was stopping was laundered into an orderly "+
+				"exit: %+v. The discriminator is about WHY the step ended, not about whether the process "+
+				"is stopping", p)
+		}
+		if p.Code != string(aerr.APERTURE_STORAGE) {
+			t.Errorf("the alarm's code = %q, want %q", p.Code, aerr.APERTURE_STORAGE)
+		}
+	})
+
+	t.Run("a context error while this loop is alive", func(t *testing.T) {
+		probe := newStalenessProbe(t)
+		probe.poll.store = wiringReadFails{Storage: probe.counting, err: context.DeadlineExceeded}
+		probe.poll.tick(probe.ctx)
+
+		if p := probe.health.Posture(); !p.Stale {
+			t.Errorf("a context error raised while this loop's context is ALIVE was read as a shutdown: %+v. "+
+				"It is a fault somewhere beneath — a driver's own deadline — and the instance really is "+
+				"running wiring it has not re-read", p)
+		}
+	})
+}
+
+// TestARevertedConnectionChangeStopsBeingReported is the revert path, and it is
+// here rather than in wiring_frozen_test.go because the thing that has to clear
+// lives on the recorder and not on the version holder.
+//
+// The frozen-name-set refusal used to be recorded TWICE: once on
+// service.WiringHealth, which any completed refresh clears, and once as a latch on
+// liveWiring, which only a successful SWAP cleared. A push reverted to exactly the
+// wiring this instance booted on takes tick's NO-CHANGE branch, which never calls
+// swap — so the two records disagreed for the life of the process, with the posture
+// reporting healthy and the latch still naming the connection the withdrawn push
+// had added.
+//
+// The latch is gone and the recorder is the one record. This case is what says so:
+// the operator's remedy does not have to be a forward push.
+func TestARevertedConnectionChangeStopsBeingReported(t *testing.T) {
+	probe := newStalenessProbe(t)
+	baseline := probe.poll.digest
+
+	// The push that cannot be adopted.
+	set := staleWiringSet(time.Now().UTC())
+	set.Connections = append(set.Connections,
+		model.WiringConnection{Name: "replica", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()})
+	if err := probe.counting.ReplaceWiring(probe.ctx, set); err != nil {
+		t.Fatalf("pushing the wiring: %v", err)
+	}
+	if probe.poll.tick(probe.ctx) {
+		t.Fatal("a push this instance cannot route was adopted")
+	}
+	if p := probe.health.Posture(); !p.Stale || p.Code != string(aerr.APERTURE_WIRING_RESTART_REQUIRED) {
+		t.Fatalf("the refused push was not reported: %+v", p)
+	}
+
+	// The operator undoes it, which is the remedy nobody documents and everybody
+	// reaches for. Fresh stamps, exactly as ReplaceWiring writes them — they are out
+	// of the digest, so this is the boot's wiring again and the tick sees NO CHANGE.
+	if err := probe.counting.ReplaceWiring(probe.ctx, staleWiringSet(time.Now().UTC())); err != nil {
+		t.Fatalf("reverting the wiring: %v", err)
+	}
+	if probe.poll.tick(probe.ctx) {
+		t.Fatal("a revert to the boot's own wiring was reported as a change")
+	}
+	if probe.poll.digest != baseline {
+		t.Errorf("the digest moved to %q on a revert to the boot's wiring", probe.poll.digest)
+	}
+
+	p := probe.health.Posture()
+	if p.Stale {
+		t.Errorf("a withdrawn push is still reported as requiring a restart: %+v\n"+
+			"A revert takes the NO-CHANGE branch, which never calls swap — so any record that only a "+
+			"successful swap clears outlives the push that caused it, for the life of the process", p)
+	}
+	if p.Failures != 0 || p.Code != "" {
+		t.Errorf("the revert cleared the boolean and left the numbers: %+v", p)
+	}
+	probe.decides(t, "after the revert")
+}

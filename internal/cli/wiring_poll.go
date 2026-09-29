@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -58,10 +59,11 @@ import (
 //   - E4-S4 (last-good on failure, and the alarm) owns tick's failure branches,
 //     and has landed: a failure records an alarm on a service.WiringHealth and
 //     keeps the wiring it has, and a successful refresh clears it. wiring_stale.go
-//     holds the whole account, and wiringPoll.alarm / wiringPoll.refreshed are the
-//     two calls a rebuild attaches to — a failed rebuild is p.alarm(err) with
-//     p.digest left exactly where it is, and a successful swap advances p.digest
-//     and calls p.refreshed().
+//     holds the whole account. There is ONE recorder and one LINE PER CONDITION:
+//     a failed adoption records through p.alarmf with the adoption's own sentence
+//     and p.digest left exactly where it is, a read or digest failure through
+//     p.alarm with the read's, and a successful swap advances p.digest and calls
+//     p.refreshed().
 //
 // # Why the change check is a digest of a full read
 //
@@ -143,6 +145,44 @@ const (
 // instance is boot-only. This default applies only when polling was asked for
 // without an interval.
 const defaultWiringPollInterval = 30 * time.Second
+
+// wiringPollCloseGrace and wiringPollCloseWait bound how long a stopping process
+// waits for a tick that is still running, and are the answer to a shutdown that
+// used to be unbounded and silent.
+//
+// # What was wrong with waiting forever
+//
+// Close cancels the loop's context and waits for the goroutine, and NOTHING inside
+// a rebuild is cancellable: seedDocument reads the --seed file, csvprovider opens
+// every declared CSV, and the registries are constructed from what they hold. A
+// SIGTERM landing while a tick rebuilds over a large CSV provider on a stalled
+// network mount therefore let httpServer.Shutdown complete within shutdownTimeout
+// and then parked the process inside Close for the rebuild's duration, with nothing
+// on stderr, exiting only on SIGKILL. An orchestrator's termination grace period is
+// sized against shutdownTimeout; that exceeded it and reported nothing.
+//
+// # Why two numbers
+//
+// The GRACE is silence. A loop parked in its own select returns within
+// microseconds of the cancel, which is what happens on essentially every shutdown,
+// and a line printed for that would be noise on every restart of every deployment
+// — and noise is how the line that matters gets skipped.
+//
+// The WAIT is the bound, and 5s against shutdownTimeout's 10s is chosen so the
+// worst case of the two together stays inside the 30s termination grace an
+// orchestrator gives by default. Longer buys the rebuild nothing: it either
+// finishes quickly or it is blocked on I/O that is not coming back. Shorter would
+// abandon rebuilds that were about to finish, for no gain — nothing waits on this
+// but the exit.
+//
+// Abandoning is safe in the direction that counts. A version is installed whole or
+// not at all (wiring_swap.go), so a rebuild interrupted by the process exiting
+// installs nothing; the pools it borrowed belong to the boot, which serve closes
+// once; and whatever it was going to adopt is re-read by the next process to start.
+const (
+	wiringPollCloseGrace = 100 * time.Millisecond
+	wiringPollCloseWait  = 5 * time.Second
+)
 
 // wiringPollFlag is the one declaration of --wiring-poll, constructed fresh per
 // command because a ucli.Flag carries parse state and must not be shared between
@@ -301,6 +341,25 @@ func badWiringPoll(raw, why string) error {
 // mode is merely wasteful. TestTheDigestCoversEveryContentFieldAndNoStamp holds
 // both halves.
 //
+// # What it does NOT cover, and why that stays true
+//
+// It is a digest of model.WiringSet: the five SHARED tables and nothing else. It
+// covers no part of an instance's LOCAL --seed file, and a rebuild re-reads that
+// file (buildWiredStack -> seedDocument -> seed.ParseFile), so the two local
+// sections — inline objects: metadata and inline attributes: bags, plus the declared
+// attribute-key sets taken from them — can differ between two instances reporting
+// the same digest. That is stated in docs/src/cli/serve.md ("The digest covers the
+// shared set only"), skills/shared-wiring.md and
+// docs/src/operations/wiring-refresh.md, because a reader who assumes the digest is
+// a whole-configuration fingerprint will build a fleet sweep on it that answers a
+// question it cannot answer.
+//
+// Folding a local digest INTO this value is the tempting fix and the wrong one: this
+// digest's job is to compare against what a push produced and what `aperture wiring
+// diff` reports, and a value mixed with per-instance content matches neither. A
+// separate local digest on service.WiringPosture is the shape that would work; it is
+// not here because it is a wire-surface change.
+//
 // The snapshot is sorted first. GetWiring already returns canonical order, so this
 // is belt-and-braces for a caller holding a set it assembled itself — but it is
 // what makes the digest a property of the WIRING rather than of the read, so two
@@ -411,10 +470,18 @@ type wiringPoll struct {
 
 	// cancel and done are the shutdown pair Close drives: cancel trips the loop's
 	// context, done is closed by the goroutine as it returns. Close waits on it, so
-	// a returned Close is a proof the goroutine is gone and not a request that it
-	// go.
+	// a returned Close is normally a proof the goroutine is gone rather than a
+	// request that it go — see Close for the one bounded exception.
 	cancel context.CancelFunc
 	done   chan struct{}
+
+	// closeGrace and closeWait are wiringPollCloseGrace / wiringPollCloseWait, held
+	// per poller so a test can assert the BOUND itself without spending the real one.
+	// They are read by Close, on the caller's goroutine, and never by the loop. A
+	// non-positive value falls back to the constant, so a poller built by hand cannot
+	// accidentally have no bound at all.
+	closeGrace time.Duration
+	closeWait  time.Duration
 
 	// ticks and changes are observability for the tests, and the reason they are
 	// atomics is that the loop writes them while a test reads them. They are what
@@ -493,34 +560,81 @@ func startWiringPoll(ctx context.Context, store model.Storage, every time.Durati
 	}
 	loopCtx, cancel := context.WithCancel(ctx)
 	p := &wiringPoll{
-		store:  store,
-		every:  every,
-		swap:   swap,
-		log:    log,
-		health: health,
-		digest: booted,
-		cancel: cancel,
-		done:   make(chan struct{}),
+		store:      store,
+		every:      every,
+		swap:       swap,
+		log:        log,
+		health:     health,
+		digest:     booted,
+		cancel:     cancel,
+		done:       make(chan struct{}),
+		closeGrace: wiringPollCloseGrace,
+		closeWait:  wiringPollCloseWait,
 	}
 	p.report("wiring poll: re-reading the shared wiring every %s; a change will be adopted and reported here", every)
 	go p.run(loopCtx)
 	return p
 }
 
-// Close stops the reader and waits for it to be gone. It is nil-safe and
-// idempotent, so `defer poll.Close()` is unconditional and a caller that stops
-// explicitly on shutdown may also defer it — the same contract decisionStack.Close
-// has, for the same reason.
+// Close stops the reader and waits for it to be gone, for a BOUNDED time. It is
+// nil-safe and idempotent, so `defer poll.Close()` is unconditional and a caller
+// that stops explicitly on shutdown may also defer it — the same contract
+// decisionStack.Close has, for the same reason.
+//
+// The bound is the fix for a shutdown that could hang. Cancelling the context stops
+// the loop between ticks at once, but a tick already inside a REBUILD is not
+// interruptible — see wiringPollCloseWait — so an unbounded wait here put the
+// process's exit at the mercy of a file read on a stalled mount, silently, after
+// httpServer.Shutdown had already returned. Now it waits, says so if the wait is
+// long enough to notice, and stops waiting.
+//
+// Abandoning the goroutine does not break "a version is installed whole or not at
+// all": the rebuild is in a background goroutine of a process that is exiting, it
+// installs nothing it had not already installed, and its pools are borrowed from
+// the boot. What it costs is that a returned Close is a proof the goroutine is gone
+// only when it did not time out — and when it did, it said so on stderr, which is
+// the one thing the old behaviour did not do.
 //
 // It returns an error only to fit the defer-and-ignore shape every other Close in
-// this package has; there is nothing here that can fail.
+// this package has. A timed-out wait is deliberately NOT one: every caller ignores
+// it, an error nobody reads is not a report, and failing a shutdown over a
+// background rebuild would turn a bounded exit into a non-zero one.
 func (p *wiringPoll) Close() error {
 	if p == nil {
 		return nil
 	}
 	p.cancel()
-	<-p.done
-	return nil
+
+	grace, wait := p.closeGrace, p.closeWait
+	if grace <= 0 {
+		grace = wiringPollCloseGrace
+	}
+	if wait <= 0 {
+		wait = wiringPollCloseWait
+	}
+
+	// The silent path, which is every ordinary shutdown: a loop parked in its own
+	// select returns within microseconds of the cancel.
+	select {
+	case <-p.done:
+		return nil
+	case <-time.After(grace):
+	}
+
+	// Past the grace means a tick is in flight, and the only step in one long enough
+	// to be noticed is a rebuild. Whichever way it ends, it is now legible: silence
+	// was the worst part of the old behaviour, because the symptom was a process that
+	// simply took minutes to exit.
+	p.report("wiring poll: a wiring refresh is still in flight; waiting up to %s for it before this process exits", wait)
+	select {
+	case <-p.done:
+		p.report("wiring poll: the refresh in flight finished, and this process is stopping")
+		return nil
+	case <-time.After(wait):
+		p.report("wiring poll: the refresh in flight did not finish within %s, so this process stops without "+
+			"waiting for it; a wiring version is installed whole or not at all, so it installed nothing", wait)
+		return nil
+	}
 }
 
 // run is the loop. It reads nothing before its first tick, because the boot has
@@ -536,10 +650,10 @@ func (p *wiringPoll) run(ctx context.Context) {
 			return
 		case <-t.C:
 			// The tick takes the loop's own context, so a shutdown cancels a read in
-			// flight rather than waiting for it — and a cancelled read is reported as
-			// the failure it is by the branch below, not swallowed, because "the
+			// flight rather than waiting for it. What the tick then does with that
+			// cancellation is the distinction abandonedDuringShutdown draws: "the
 			// database went away" and "we are shutting down" must not become the same
-			// silence.
+			// SILENCE, and they must not become the same ALARM either.
 			p.tick(ctx)
 		}
 	}
@@ -561,7 +675,9 @@ func (p *wiringPoll) run(ctx context.Context) {
 // needs. E4-S4 turns that repetition into an alarm with a staleness duration.
 //
 // The alarm follows the same rule, and there are exactly TWO places a tick declares
-// a refresh COMPLETE: the no-change branch, and after a successful swap. A tick
+// a refresh COMPLETE: the no-change branch, and after a successful swap. Each
+// failure branch records the alarm ONCE and prints ONE line, in the words that fit
+// that branch — the read's are not the adoption's. A tick
 // that read the tables, found a change and could not adopt it has not completed
 // anything — it is the worst of the three postures — so nothing on that path
 // clears, and the staleness window it opens runs continuously from the first
@@ -573,6 +689,9 @@ func (p *wiringPoll) tick(ctx context.Context) bool {
 
 	set, err := readSharedWiring(ctx, p.store)
 	if err != nil {
+		if p.abandoned(ctx, err, "re-reading the shared wiring") {
+			return false
+		}
 		// Last-good, and LOUD. Nothing is swapped, so the instance keeps deciding
 		// with the wiring it has; the digest deliberately does not advance, so the
 		// next successful read still sees a change this one could not confirm; and
@@ -603,20 +722,33 @@ func (p *wiringPoll) tick(ctx context.Context) bool {
 	// decision in flight goes on answering through the version this process already
 	// has. Only the final pointer store is visible to a reader, and it is atomic.
 	if err := p.swap(ctx, set, digest); err != nil {
+		if p.abandoned(ctx, err, "adopting the deployed wiring") {
+			return false
+		}
 		// Last-good, and the digest deliberately does NOT advance — see the doc
-		// comment. The error is reported verbatim because it is already an
+		// comment.
+		//
+		// ONE line, and it is this branch's OWN sentence. The alarm is recorded first
+		// and reported second (alarmf), and the report says what is true HERE: the
+		// re-read succeeded and the ADOPTION did not. Routing this through the generic
+		// alarm would emit a second line claiming the re-read failed, which sends an
+		// operator to check store reachability and schema compatibility when the
+		// remedy is the restart APERTURE_WIRING_RESTART_REQUIRED's fixups name — and a
+		// refused connection-name change never clears by itself, so the wrong line
+		// would print on every tick for the life of the process.
+		//
+		// The error's own text is interpolated verbatim because it is already an
 		// APERTURE_*-coded refusal naming the entry to go and fix (an unconstructable
 		// kind, a connection NAME SET this process cannot adopt, a seed file that has
 		// since been edited into an invalid one).
-		p.report("wiring poll: the deployed wiring CHANGED (%s -> %s) but this instance could not adopt it, so it keeps "+
-			"the wiring it has and goes on deciding: %v", shortDigest(previous), shortDigest(digest), err)
-		// The alarm, and NOTHING has cleared it on the way here. A failed adoption is
-		// the worst posture of the three: the instance read the tables perfectly well,
-		// knows the wiring changed, and is KNOWINGLY running superseded wiring —
-		// strictly worse than not having looked. Without this line it would report on
-		// stderr and read as HEALTHY, which is the one shape of silent staleness no
-		// amount of polling discovers, because every subsequent tick reads fine, fails
-		// to adopt again, and says nothing.
+		//
+		// That it is RECORDED at all is the load-bearing half, and NOTHING has cleared
+		// it on the way here. A failed adoption is the worst posture of the three: the
+		// instance read the tables perfectly well, knows the wiring changed, and is
+		// KNOWINGLY running superseded wiring — strictly worse than not having looked.
+		// Without the record it would report on stderr and read as HEALTHY, which is
+		// the one shape of silent staleness no amount of polling discovers, because
+		// every subsequent tick reads fine, fails to adopt again, and says nothing.
 		//
 		// Which is also why refreshed() is NOT called before this branch. Clearing on
 		// a successful READ and re-arming here would leave the alarm technically
@@ -625,7 +757,8 @@ func (p *wiringPoll) tick(ctx context.Context) bool {
 		// tick, forever — and the age is the half an operator escalates on. Staleness
 		// that began at the first refusal is CONTINUOUS until an adoption succeeds, so
 		// nothing on this path is allowed to reset it.
-		p.alarm(err)
+		p.alarmf(err, "wiring poll: the deployed wiring CHANGED (%s -> %s) but this instance could not adopt it, so it "+
+			"keeps the wiring it has and goes on deciding: %v", shortDigest(previous), shortDigest(digest))
 		return false
 	}
 	p.digest = digest
@@ -637,6 +770,46 @@ func (p *wiringPoll) tick(ctx context.Context) bool {
 	p.refreshed()
 	p.report("wiring poll: the deployed wiring CHANGED (%s -> %s) and this instance ADOPTED it; decisions already in "+
 		"flight finish on the wiring they started with", shortDigest(previous), shortDigest(digest))
+	return true
+}
+
+// abandoned distinguishes a step THIS LOOP cancelled from a step that failed, and
+// says so on stderr without recording an alarm.
+//
+// A tick takes the loop's own context, so SIGTERM landing while readSharedWiring
+// is in flight returns context.Canceled. Alarming on it made a CLEANLY TERMINATING
+// instance report itself stale: service.WiringHealth would open a staleness window
+// with Reason "context canceled", and httpServer.Shutdown then drains for up to
+// shutdownTimeout, during which every WiringPosture read answers Stale=true. A
+// fleet sweep taken across a rolling restart would see every instance being
+// replaced reported as degraded, which is the false positive that trains an
+// operator to stop reading the channel — silent staleness by the longest route
+// there is.
+//
+// BOTH conditions are required, and each rules out a different mistake:
+//
+//   - ctx.Err() != nil, so only OUR OWN cancellation qualifies. A driver that
+//     surfaces a context error for a reason of its own, while this loop's context
+//     is alive, is a fault and is alarmed.
+//   - the error really IS a context error, so a read that failed for a REAL reason
+//     and only then noticed the shutdown is still alarmed. That ordering is the one
+//     a store that is going away at the same moment as the process produces, and
+//     losing it would make "the database died during a deploy" the one failure
+//     nothing anywhere records.
+//
+// It is NOT silent. Nothing is recorded, because there is nothing for an operator
+// to act on and no window to open — the instance is stopping, not deciding from
+// superseded wiring — but the line is written, so a shutdown that abandoned a
+// refresh is legible in the same place the refresh itself would have been.
+func (p *wiringPoll) abandoned(ctx context.Context, err error, what string) bool {
+	if ctx.Err() == nil {
+		return false
+	}
+	if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	p.report("wiring poll: %s was abandoned because this process is shutting down; nothing is stale and no alarm "+
+		"is recorded", what)
 	return true
 }
 

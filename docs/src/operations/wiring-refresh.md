@@ -89,6 +89,20 @@ The two short hashes are digests of the wiring itself, and they are the handle f
 instance names the same new digest. They contain no account, principal or object
 data.
 
+Two things a sweep on those digests does not tell you:
+
+- **A rebuild also re-reads that instance's local `--seed` file.** The two local
+  sections — inline `objects:` metadata and inline `attributes:` bags, plus the
+  declared attribute-key sets taken from them — are read from disk again on every
+  swap. So a file rewritten in place since the instance started (a ConfigMap volume
+  remount, a redeploy that only updates a mounted file) takes effect on the next
+  swap, without a restart, triggered by whatever shared push happened to come along.
+- **Equal digests are not proof that two instances decide the same.** The digest
+  covers the five shared tables only. Two instances can name the same digest and hold
+  different inline metadata, because that comes from each instance's own file and no
+  digest covers it. Use the digest sweep for "did the push land"; for "do these two
+  agree", the local files have to be shipped identically too.
+
 ## What a push cannot change without a restart
 
 **The set of connection names.** The shared tables carry a connection's *name* and
@@ -177,6 +191,35 @@ Four things about the read are worth knowing before you build a sweep on it:
   knowingly running superseded wiring, which is a worse posture than not having
   looked, and it says so.
 
+### Stopping an instance mid-refresh
+
+A `SIGTERM` stops the reader immediately. A refresh that is already rebuilding is
+waited for, for five seconds, and then abandoned with a line saying so — because a
+rebuild re-reads the local seed file and opens every declared CSV, and none of that
+is interruptible. Sizing your termination grace against the ten seconds of graceful
+shutdown is therefore still right, with five seconds of headroom rather than an
+unbounded wait. Nothing is lost: a wiring version is installed whole or not at all,
+so an abandoned rebuild installed nothing, and the replacement instance reads the
+wiring from scratch.
+
+### A shutdown is not a failure
+
+SIGTERM landing while a tick is mid-read — or mid-rebuild — cancels it. That is
+**not** recorded as staleness, and it is deliberate: graceful shutdown then drains
+for up to ten seconds, and an instance that reported `Stale: true` with reason
+`context canceled` for that window would show up as degraded in every sweep taken
+across an ordinary rolling restart. The line is still written, so an abandoned
+refresh is legible:
+
+```text
+wiring poll: re-reading the shared wiring was abandoned because this process is
+shutting down; nothing is stale and no alarm is recorded
+```
+
+A store that genuinely went away at the same moment as the process is a different
+thing and **is** alarmed, with its own code. The distinction is why the step ended,
+not whether the process is stopping.
+
 ### Recovery needs nothing from you
 
 The next **completed** refresh clears the alarm, resets the duration and the failure
@@ -199,11 +242,12 @@ on wiring it cannot build, rather than starting degraded.
 | What you see | Where to look first |
 |---|---|
 | A push had no effect on an instance | Is polling on there at all? A boot-only instance is correct and needs a restart. `WiringPosture.Polling` says. |
-| Some instances answer differently from others | Expected for up to one interval after a push. Compare `WiringPosture.Digest` across the fleet; if they disagree for longer than the interval, at least one is stale. |
+| Some instances answer differently from others | Expected for up to one interval after a push. Compare `WiringPosture.Digest` across the fleet; if they disagree for longer than the interval, at least one is stale. If they AGREE and the answers still differ, the difference is not in the shared wiring — compare the instances' local `--seed` files, which no digest covers. |
 | `APERTURE_WIRING_RESTART_REQUIRED` on every tick | A connection name was added or dropped. Follow the three-step rollout above — and remember nothing else in that push has applied either. |
 | `APERTURE_WIRING_CONNECTION_UNROUTED` at boot | That instance has no route for a name the deployment declares. Supply it, then start. |
 | `APERTURE_WIRING_REFRESH_FAILED` itself | Nothing underneath it carried a code, which is worth reporting. Usually the store is unreachable from that host. |
 | A stale alarm that is minutes old | Ordinary — a restarting database. The number to act on is the duration, not the boolean. |
+| A stale alarm on an instance you just stopped | Not expected: a refresh this process's own shutdown cancelled records nothing. If you see one, the store really did go away first. |
 | A stale alarm that is hours old | The fleet is enforcing policy somebody already retired. Treat it as a drifted deployment, not an outage: decisions are still being made, just from old wiring. |
 
 ## What it costs
