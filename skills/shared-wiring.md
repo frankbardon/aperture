@@ -392,13 +392,34 @@ re-read is desirable — it is how a remounted ConfigMap takes effect without a
 restart — but two things follow that a reader must not assume away:
 
 - **`wiringDigest` covers `model.WiringSet` and nothing else.** No local content is
-  in it, so `WiringPosture.Digest` is a statement about the SHARED half. Two
-  instances reporting the same digest can hold different inline metadata and
-  different inline bags and return different verdicts. The digest stays shared-only
-  on purpose: it must remain comparable with what a push produced and with what
-  `aperture wiring diff` reports, so folding a local digest into it would break the
-  one sweep it exists for. If a fleet must be provably identical, the local files
-  have to be shipped identically as well.
+  in it, so `WiringPosture.Digest` is a statement about the SHARED half. The digest
+  stays shared-only on purpose: it must remain comparable with what a push produced
+  and with what `aperture wiring diff` reports, so folding a local digest into it
+  would break the one sweep it exists for.
+- **The local half is its own value, `WiringPosture.LocalDigest`.**
+  `localWiringDigest` digests the LOCAL document the RUNNING version was built from,
+  and `""` means there is none — every instance wired only from the shared tables.
+  It is what makes a fleet sweep conclusive, because `Digest` alone left two
+  instances able to report the IDENTICAL value and return DIFFERENT verdicts: **same
+  shared digest AND same local digest** means the pair was built from the same
+  configuration. Four things about it are contract:
+  - it tracks the RUNNING version, so a swap that re-read a CHANGED file advances it
+    and a swap that re-read an unchanged one does not. A value captured once at boot
+    would be wrong in exactly the scenario the field exists to expose;
+  - it and `Digest` advance TOGETHER or not at all. They travel as one
+    `service.WiringDigests`, taken from the version a swap INSTALLED, so no call can
+    move one half — a posture naming a fresh shared digest beside a superseded local
+    one is a pair no version was ever built from, which is worse than reporting no
+    local digest at all. A failed adoption moves neither;
+  - it digests the PARSED document, every section of it, by reflection — so a
+    section added to `seed.Document` later is covered without anyone remembering, and
+    a reformatted-but-equivalent file digests the same. Nothing volatile is in it: no
+    path, no mtime, no byte layout. Order WITHIN a section is part of it, unlike the
+    shared digest, which sorts first because a backend may reorder rows where a file
+    has the order its author wrote;
+  - it is a hash and discloses nothing — no path, no account, no principal, no object
+    id, no attribute key or value — and it lives behind the same system-admin gate
+    the rest of the posture does.
 - **The trigger is a SHARED push.** A local edit does not cause a rebuild; it lands
   on the next one. So "this file changed and nothing happened" and "an unrelated push
   changed how this instance reads its own file" are both the same mechanism.
@@ -475,9 +496,11 @@ Two things about it are easy to get wrong and are asserted:
 - **A completed refresh clears it, including one that saw no change.** An alarm that
   needed a *change* to clear would latch forever on a deployment whose wiring is
   stable, which is most of them.
-- **The posture's digest is what the instance RUNS.** It advances with the adoption
-  and not with the read, so a fleet-wide digest comparison reads a caught-up
-  instance as caught up and a refusing one as behind.
+- **The posture's digests are what the instance RUNS.** Both of them — the shared
+  set's and the local document's — advance with the adoption and not with the read,
+  and as ONE pair (`service.WiringDigests`, taken from the installed version), so a
+  fleet-wide comparison reads a caught-up instance as caught up and a refusing one as
+  behind, and never reports a combination no version was built from.
 - **A step this process's own SHUTDOWN cancelled is not a failure of any of them.**
   A tick takes the loop's context, so SIGTERM arriving mid-read (or mid-rebuild)
   returns `context.Canceled`. Recording it made a cleanly terminating instance

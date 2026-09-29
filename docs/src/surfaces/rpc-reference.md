@@ -394,7 +394,13 @@ ignored as always.
 | `stale_for` / `stale_since` | how long the current run of failures has lasted (Go duration) and when it began (RFC3339). **`stale_for` is the field to alert on.** |
 | `failures` | consecutive failures in the current run. |
 | `code` / `reason` | the most recent failure's own `APERTURE_*` code and message — the store's `APERTURE_STORAGE_SCHEMA_INCOMPATIBLE`, `APERTURE_WIRING_CONNECTION_UNROUTED`, and only `APERTURE_WIRING_REFRESH_FAILED` when nothing beneath it was coded. |
-| `digest` / `last_refresh` | the digest of the wiring this instance is DECIDING FROM (the last-good set, when stale), and when a refresh last succeeded (RFC3339). |
+| `digest` / `last_refresh` | the digest of the SHARED wiring this instance is DECIDING FROM (the last-good set, when stale), and when a refresh last succeeded (RFC3339). It covers the five shared tables and nothing else, which is what keeps it comparable with what a push wrote and with what `aperture wiring diff` reports. |
+| `local_digest` | the digest of the LOCAL document the version this instance is deciding through was built from — its own `--seed` file — and **empty when it has none**, which is the state of every instance wired only from the shared tables. It is a separate field and never mixed into `digest`, and it exists because a rebuild re-reads that document: without it two instances could report the identical `digest` and still return different verdicts. It moves with an ADOPTION exactly as `digest` does, so it names the document the RUNNING version was built from and not whatever is on disk now. |
+
+**Sweep both.** Equal `digest` across a fleet means the same push landed; equal
+`digest` *and* equal `local_digest` means the two instances were built from the
+same configuration. Neither field carries a path, an account, a principal or an
+object — both are hashes.
 
 Every field is empty or false on a healthy instance, so "nothing is wrong" needs
 no interpretation. An instance that does not poll — and a server whose facade was

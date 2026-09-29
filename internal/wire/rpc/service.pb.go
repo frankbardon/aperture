@@ -213,9 +213,12 @@ type WiringPostureResponse struct {
 	// It is what makes "stale for 40s" readable as one missed tick rather than
 	// thirteen.
 	PollInterval string `protobuf:"bytes,2,opt,name=poll_interval,json=pollInterval,proto3" json:"poll_interval,omitempty"`
-	// digest: the content digest of the wiring this instance is DECIDING FROM —
-	// the last-good set, when stale. A hash of wiring the operator pushed; it
-	// carries no account, principal or object data.
+	// digest: the content digest of the SHARED wiring this instance is DECIDING
+	// FROM — the last-good set, when stale. A hash of wiring the operator pushed;
+	// it carries no account, principal or object data. It covers the five shared
+	// tables and nothing else, which is what keeps it comparable with what a push
+	// wrote and with what `aperture wiring diff` reports — see local_digest for the
+	// other half.
 	Digest string `protobuf:"bytes,3,opt,name=digest,proto3" json:"digest,omitempty"`
 	// stale: the most recent refresh attempt FAILED, so this instance is still
 	// deciding from the wiring it last succeeded with. It does NOT say the deployed
@@ -244,7 +247,26 @@ type WiringPostureResponse struct {
 	// and never an account, principal or object id.
 	Reason string `protobuf:"bytes,9,opt,name=reason,proto3" json:"reason,omitempty"`
 	// last_refresh: when a refresh last succeeded (RFC3339); empty when none has.
-	LastRefresh   string `protobuf:"bytes,10,opt,name=last_refresh,json=lastRefresh,proto3" json:"last_refresh,omitempty"`
+	LastRefresh string `protobuf:"bytes,10,opt,name=last_refresh,json=lastRefresh,proto3" json:"last_refresh,omitempty"`
+	// local_digest: the content digest of the LOCAL wiring document the version this
+	// instance is deciding through was built from — its own --seed file — and empty
+	// when it has none, which is the state of every instance wired only from the
+	// shared tables.
+	//
+	// It is a SEPARATE field and never mixed into digest, because digest has to stay
+	// a digest of what a push produced. It is here because a rebuild RE-READS that
+	// local document, and the document is decision-affecting (inline objects:
+	// metadata, inline attributes: bags, the declared attribute-key sets taken from
+	// them, and on a file-wired deployment the whole of the wiring) — so two
+	// instances could report the identical digest and return DIFFERENT verdicts.
+	// Sweeping BOTH fields across a fleet is what makes "these two are wired the
+	// same" conclusive; digest alone answers only "did this instance get the push?".
+	//
+	// It moves with an ADOPTION, exactly as digest does: it names the document the
+	// RUNNING version was built from, not whatever is on disk now, and not what the
+	// process booted on. Like digest it is a hash, and carries no path, no account,
+	// no principal and no object data.
+	LocalDigest   string `protobuf:"bytes,11,opt,name=local_digest,json=localDigest,proto3" json:"local_digest,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -345,6 +367,13 @@ func (x *WiringPostureResponse) GetReason() string {
 func (x *WiringPostureResponse) GetLastRefresh() string {
 	if x != nil {
 		return x.LastRefresh
+	}
+	return ""
+}
+
+func (x *WiringPostureResponse) GetLocalDigest() string {
+	if x != nil {
+		return x.LocalDigest
 	}
 	return ""
 }
@@ -3658,7 +3687,7 @@ const file_service_proto_rawDesc = "" +
 	"\x11manage_principals\x18\x02 \x01(\bR\x10managePrincipals\x12-\n" +
 	"\x12manage_memberships\x18\x03 \x01(\bR\x11manageMemberships\"=\n" +
 	"\x14WiringPostureRequest\x12%\n" +
-	"\x05actor\x18\x01 \x01(\v2\x0f.aperture.ActorR\x05actor\"\xad\x02\n" +
+	"\x05actor\x18\x01 \x01(\v2\x0f.aperture.ActorR\x05actor\"\xd0\x02\n" +
 	"\x15WiringPostureResponse\x12\x18\n" +
 	"\apolling\x18\x01 \x01(\bR\apolling\x12#\n" +
 	"\rpoll_interval\x18\x02 \x01(\tR\fpollInterval\x12\x16\n" +
@@ -3671,7 +3700,8 @@ const file_service_proto_rawDesc = "" +
 	"\x04code\x18\b \x01(\tR\x04code\x12\x16\n" +
 	"\x06reason\x18\t \x01(\tR\x06reason\x12!\n" +
 	"\flast_refresh\x18\n" +
-	" \x01(\tR\vlastRefresh\"L\n" +
+	" \x01(\tR\vlastRefresh\x12!\n" +
+	"\flocal_digest\x18\v \x01(\tR\vlocalDigest\"L\n" +
 	"\x0eFieldPredicate\x12\x14\n" +
 	"\x05field\x18\x01 \x01(\tR\x05field\x12\x0e\n" +
 	"\x02op\x18\x02 \x01(\tR\x02op\x12\x14\n" +

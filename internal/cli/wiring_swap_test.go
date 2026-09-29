@@ -215,7 +215,7 @@ func newSwapProbeWiredWith(t *testing.T, ctx context.Context, department, fixtur
 						digest:  digest,
 					}, nil
 				})
-			probe.poll = startWiringPoll(ctx, store, time.Hour, stack.wiringDigest, probe.live.swap, probe.out, nil)
+			probe.poll = startWiringPoll(ctx, store, time.Hour, stack.digests(), probe.live.swap, probe.out, nil)
 			return nil
 		},
 	}
@@ -554,7 +554,7 @@ func TestAFailedRebuildInstallsNothing(t *testing.T) {
 	probe := newSwapProbe(t, ctx, "eng")
 
 	boot := probe.live.current()
-	baseline := probe.poll.digest
+	baseline := probe.poll.digests.Shared
 
 	now := time.Now().UTC()
 	if err := probe.store.ReplaceWiring(ctx, model.WiringSet{
@@ -578,7 +578,7 @@ func TestAFailedRebuildInstallsNothing(t *testing.T) {
 	if verdict(t, ctx, probe.live.current()) {
 		t.Error("the verdict changed although nothing was installed")
 	}
-	if probe.poll.digest != baseline {
+	if probe.poll.digests.Shared != baseline {
 		t.Error("the digest advanced past a rebuild that failed: the change would then be forgotten and " +
 			"the instance stale for the rest of its life with nothing saying so")
 	}
@@ -595,7 +595,7 @@ func TestAFailedRebuildInstallsNothing(t *testing.T) {
 // silently-stale instance this epic exists to close, so the refusal is explicit.
 func TestAHolderWithNoRebuildRefusesASwapRatherThanIgnoringIt(t *testing.T) {
 	live := newLiveWiring(&wiringVersion{digest: "boot"}, nil)
-	err := live.swap(context.Background(), model.WiringSet{}, "next")
+	_, err := live.swap(context.Background(), model.WiringSet{}, "next")
 	if err == nil {
 		t.Fatal("a holder with no rebuild accepted a swap")
 	}
@@ -660,12 +660,12 @@ func TestAPollerStartedWithNoSwapperRefusesLoudlyRatherThanPanicking(t *testing.
 
 	// A second poller over the same store, deliberately given no swapper.
 	out := &strings.Builder{}
-	poll := startWiringPoll(ctx, probe.store, time.Hour, probe.live.current().digest, nil, out, nil)
+	poll := startWiringPoll(ctx, probe.store, time.Hour, probe.live.current().digests(), nil, out, nil)
 	if poll == nil {
 		t.Fatal("a 1h interval started no poller")
 	}
 	t.Cleanup(func() { _ = poll.Close() })
-	baseline := poll.digest
+	baseline := poll.digests.Shared
 
 	if err := probe.store.ReplaceWiring(ctx, declaredReleasedWiring(time.Now().UTC())); err != nil {
 		t.Fatalf("pushing the field type: %v", err)
@@ -673,7 +673,7 @@ func TestAPollerStartedWithNoSwapperRefusesLoudlyRatherThanPanicking(t *testing.
 	if poll.tick(ctx) {
 		t.Fatal("a poller with no swapper reported a change as ADOPTED")
 	}
-	if poll.digest != baseline {
+	if poll.digests.Shared != baseline {
 		t.Error("the digest advanced although nothing could be adopted")
 	}
 	if !strings.Contains(out.String(), "could not adopt") {

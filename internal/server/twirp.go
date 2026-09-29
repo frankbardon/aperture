@@ -141,6 +141,13 @@ func (h *twirpHandler) Capabilities(_ context.Context, _ *rpc.Empty) (*rpc.Capab
 // Durations leave as Go duration text and instants as RFC3339, empty when the
 // field does not apply, so a healthy instance's response needs no interpretation
 // and a stale one's is readable by the person who has just been paged.
+//
+// The two digests are carried side by side and neither is derived here: digest is
+// the SHARED wiring's, comparable with what a push wrote, and local_digest is the
+// LOCAL document the running version was built from. The facade reports them as one
+// pair taken under one lock, and this handler copies them as one — a response
+// carrying a fresh shared digest beside a superseded local one would be a pair no
+// version was ever built from.
 func (h *twirpHandler) WiringPosture(ctx context.Context, req *rpc.WiringPostureRequest) (*rpc.WiringPostureResponse, error) {
 	actor, err := h.actor(ctx, actorAccount(req.GetActor()))
 	if err != nil {
@@ -151,12 +158,20 @@ func (h *twirpHandler) WiringPosture(ctx context.Context, req *rpc.WiringPosture
 		return nil, mapErr(err)
 	}
 	out := &rpc.WiringPostureResponse{
-		Polling:  p.Polling,
-		Digest:   p.Digest,
-		Stale:    p.Stale,
-		Failures: int32(p.Failures),
-		Code:     p.Code,
-		Reason:   p.Reason,
+		Polling: p.Polling,
+		Digest:  p.Digest,
+		// BOTH digests, unconditionally and from the one posture snapshot. They are the
+		// shared half and the local half of what identifies the wiring version this
+		// instance decides through, and an operator sweeping a fleet needs the pair:
+		// equal shared digests alone mean the same push landed, where equal shared AND
+		// equal local digests mean the two instances were built from the same
+		// configuration. An empty local_digest is an ANSWER — this instance has no local
+		// document — and is not suppressed as if it were a missing value.
+		LocalDigest: p.LocalDigest,
+		Stale:       p.Stale,
+		Failures:    int32(p.Failures),
+		Code:        p.Code,
+		Reason:      p.Reason,
 	}
 	if p.Every > 0 {
 		out.PollInterval = p.Every.String()

@@ -52,7 +52,7 @@ func postureServer(t *testing.T, h *service.WiringHealth) *httptest.Server {
 // intelligence. The open Capabilities RPC sits one method away in the same
 // service, so the wrong door is one line of proto from being opened.
 func TestWiringPosture_AnAnonymousCallerIsRefused(t *testing.T) {
-	h := service.NewWiringHealth(30*time.Second, "digest-boot", nil)
+	h := service.NewWiringHealth(30*time.Second, service.WiringDigests{Shared: "digest-boot"}, nil)
 	h.Failed(aerr.New(aerr.APERTURE_WIRING_CONNECTION_UNROUTED, "no route for a connection this wiring names"))
 	srv := postureServer(t, h)
 
@@ -76,7 +76,7 @@ func TestWiringPosture_AnAnonymousCallerIsRefused(t *testing.T) {
 // the handler adds no check of its own, so this asserts the gate reaches the wire
 // rather than re-testing the rule.
 func TestWiringPosture_ANonAdminIsRefused(t *testing.T) {
-	srv := postureServer(t, service.NewWiringHealth(30*time.Second, "digest-boot", nil))
+	srv := postureServer(t, service.NewWiringHealth(30*time.Second, service.WiringDigests{Shared: "digest-boot"}, nil))
 	ctx := asPrincipal(context.Background(), t, "alice")
 
 	if resp, err := client(srv).WiringPosture(ctx, &rpc.WiringPostureRequest{Actor: &rpc.Actor{Account: acct}}); err == nil {
@@ -96,7 +96,7 @@ func TestWiringPosture_ANonAdminIsRefused(t *testing.T) {
 // spells an instant RFC3339 (ImpersonationSession) and a ttl as duration text.
 func TestWiringPosture_TheAdminReadsTheDurationInAReadableForm(t *testing.T) {
 	clk := &serverClock{at: time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)}
-	h := service.NewWiringHealth(30*time.Second, "0123456789abcdef", clk.now)
+	h := service.NewWiringHealth(30*time.Second, service.WiringDigests{Shared: "0123456789abcdef"}, clk.now)
 	srv := postureServer(t, h)
 	ctx := asPrincipal(context.Background(), t, "root")
 
@@ -140,7 +140,7 @@ func TestWiringPosture_TheAdminReadsTheDurationInAReadableForm(t *testing.T) {
 	// Recovery over the wire, because a latching alarm is the bug this half is most
 	// likely to ship with: every fault field empties again.
 	clk.advance(time.Minute)
-	h.Refreshed("0123456789abcdef")
+	h.Refreshed(service.WiringDigests{Shared: "0123456789abcdef"})
 	resp, err = client(srv).WiringPosture(ctx, &rpc.WiringPostureRequest{Actor: &rpc.Actor{Account: acct}})
 	if err != nil {
 		t.Fatalf("admin read after recovery: %v", err)
@@ -170,6 +170,94 @@ func TestWiringPosture_AnInstanceThatDoesNotPollAnswersRatherThanRefusing(t *tes
 	}
 	if resp.Polling || resp.Stale || resp.PollInterval != "" || resp.Digest != "" {
 		t.Errorf("an unwired instance reported %+v, want not polling and not stale", resp)
+	}
+}
+
+// TestWiringPosture_BothDigestsTravelOnTheWire is the end-to-end shape of the local
+// digest, and the reason it is a second FIELD.
+//
+// digest is the SHARED wiring's and has to stay byte-comparable with what a push
+// wrote and with what `aperture wiring diff` reports. local_digest is the document
+// the running version was built from. An operator sweeping a fleet needs both: equal
+// shared digests mean the same push landed, where equal shared AND equal local
+// digests mean the two instances were built from the same configuration.
+//
+// The case asserts BOTH directions of the separation on the wire, because a
+// single-field assertion would pass against a response that copied one value into
+// both.
+func TestWiringPosture_BothDigestsTravelOnTheWire(t *testing.T) {
+	h := service.NewWiringHealth(30*time.Second,
+		service.WiringDigests{Shared: "0123456789abcdef", Local: "fedcba9876543210"}, nil)
+	srv := postureServer(t, h)
+	ctx := asPrincipal(context.Background(), t, "root")
+
+	resp, err := client(srv).WiringPosture(ctx, &rpc.WiringPostureRequest{Actor: &rpc.Actor{Account: acct}})
+	if err != nil {
+		t.Fatalf("admin read: %v", err)
+	}
+	if resp.Digest != "0123456789abcdef" {
+		t.Errorf("digest = %q, want the SHARED wiring's digest verbatim: nothing local may be mixed into it, "+
+			"or it matches neither a push nor `aperture wiring diff`", resp.Digest)
+	}
+	if resp.LocalDigest != "fedcba9876543210" {
+		t.Errorf("local_digest = %q, want the digest of the document this instance's running version was "+
+			"built from. Without it, two instances reporting the same digest can still decide "+
+			"differently and no sweep says so", resp.LocalDigest)
+	}
+
+	// An adoption moves both, together, and the wire reports the new pair.
+	h.Refreshed(service.WiringDigests{Shared: "aaaabbbbccccdddd", Local: "1111222233334444"})
+	resp, err = client(srv).WiringPosture(ctx, &rpc.WiringPostureRequest{Actor: &rpc.Actor{Account: acct}})
+	if err != nil {
+		t.Fatalf("admin read after an adoption: %v", err)
+	}
+	if resp.Digest != "aaaabbbbccccdddd" || resp.LocalDigest != "1111222233334444" {
+		t.Errorf("after an adoption the wire reported %q / %q, want both halves of the installed version's "+
+			"pair", resp.Digest, resp.LocalDigest)
+	}
+}
+
+// TestWiringPosture_AnInstanceWithNoLocalDocumentReportsAnEmptyLocalDigest pins the
+// answer for the deployment shared wiring exists to enable: `aperture serve --store
+// postgres://…` with no --seed has no local document, and "" is the ANSWER rather
+// than a missing value.
+//
+// A sweep across such a fleet compares "" against "" and is right to call them
+// identical, which is why the field is not omitted or invented for that case.
+func TestWiringPosture_AnInstanceWithNoLocalDocumentReportsAnEmptyLocalDigest(t *testing.T) {
+	srv := postureServer(t, service.NewWiringHealth(30*time.Second,
+		service.WiringDigests{Shared: "0123456789abcdef"}, nil))
+	ctx := asPrincipal(context.Background(), t, "root")
+
+	resp, err := client(srv).WiringPosture(ctx, &rpc.WiringPostureRequest{Actor: &rpc.Actor{Account: acct}})
+	if err != nil {
+		t.Fatalf("admin read: %v", err)
+	}
+	if resp.LocalDigest != "" {
+		t.Errorf("local_digest = %q for an instance with no local document, want empty", resp.LocalDigest)
+	}
+	if resp.Digest != "0123456789abcdef" {
+		t.Errorf("digest = %q; an absent local document must not disturb the shared half", resp.Digest)
+	}
+}
+
+// TestWiringPosture_AnAnonymousCallerLearnsNoDigestEither is the disclosure boundary
+// again, for the new field. A refused caller gets a Twirp error and no response at
+// all, so the local digest is as unreachable as the staleness duration — the gate
+// runs before the recorder is consulted, and nothing about this field is exempt.
+func TestWiringPosture_AnAnonymousCallerLearnsNoDigestEither(t *testing.T) {
+	srv := postureServer(t, service.NewWiringHealth(30*time.Second,
+		service.WiringDigests{Shared: "0123456789abcdef", Local: "fedcba9876543210"}, nil))
+
+	resp, err := client(srv).WiringPosture(context.Background(), &rpc.WiringPostureRequest{Actor: &rpc.Actor{Account: acct}})
+	if err == nil {
+		t.Fatal("an anonymous caller read the wiring posture")
+	}
+	if resp != nil {
+		t.Errorf("a refused read returned a response (%+v); the digests must not reach an unauthenticated caller", resp)
+	}
+	if strings.Contains(err.Error(), "fedcba9876543210") || strings.Contains(err.Error(), "0123456789abcdef") {
+		t.Errorf("the refusal carries a digest: %v", err)
 	}
 }
 

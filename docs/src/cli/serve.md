@@ -204,19 +204,41 @@ could not adopt it, so it keeps the wiring it has and goes on deciding: [...]
 The listener, the authenticator and the HTTP server itself are built once and are
 untouched by a swap; only what sits beneath them is replaced.
 
-##### The digest covers the shared set only
+##### Two digests: the shared set, and this instance's own file
 
 `WiringPosture.Digest`, and the two short hashes in the lines above, are digests of
-the **shared** wiring — the five tables — and of nothing else. They are exactly the
+the **shared** wiring — the five tables — and of nothing else. That is exactly the
 right handle for "did this instance get the push?", and comparable with what
-[`aperture wiring diff`](wiring.md) reports.
+[`aperture wiring diff`](wiring.md) reports. Nothing local is folded into it, ever:
+a value mixed with per-instance content would match neither a push nor a wiring
+diff.
 
-They are **not** proof that two instances decide identically. Two instances can
-report the same digest and hold different inline `objects:` metadata, different
-inline `attributes:` bags and different declared key sets, because those come from
-each instance's own `--seed` file and no digest anywhere covers a local file. If a
-fleet must be provably identical, the local files have to be identical too, by
-whatever mechanism ships them; the digest sweep tells you the *shared* half agrees.
+`WiringPosture.LocalDigest` is the other half: a digest of the **local document**
+the version this instance is deciding through was built from — its own `--seed`
+file — and **empty** when it has none, which is every instance wired only from the
+shared tables. It exists because a rebuild *re-reads* that file, and the file
+decides things (inline `objects:` metadata, inline `attributes:` bags, the declared
+key sets taken from them, and on a deployment that has pushed nothing at all the
+whole of the wiring). Without it, two instances could report the identical `Digest`
+and still return **different verdicts**.
+
+So the fleet sweep is on **both**:
+
+| You compare | You learn |
+|---|---|
+| `Digest` | whether the same push has landed on both instances |
+| `Digest` **and** `LocalDigest` | whether the two were built from the same configuration at all |
+
+Two properties of `LocalDigest` are worth knowing before you build a check on it:
+
+- **It tracks the version this instance is RUNNING**, not the file as it is on disk
+  right now and not what the process booted on. A local edit is adopted on the next
+  swap (see above), and the digest moves at that moment — which is what makes it
+  honest: it always names the document the current answers are coming from.
+- **It is a content digest.** A reformatted, re-indented or comment-stripped file
+  that means the same thing digests the same, so a pipeline that regenerates the
+  document does not show up as drift. Both digests are hashes and carry no path, no
+  account, no principal and no object data.
 
 #### The connection name set needs a restart
 

@@ -170,16 +170,28 @@ under `make test` against the in-memory and SQLite backends, and under the gated
 live run against a real PostgreSQL server (see
 [Build, test & lint gates](../contributing/gates.md)).
 
-Operationally, three commands answer the three questions worth asking of a pair:
+Operationally, four questions are worth asking of a pair, and each has one answer:
 
-| Question | Command |
+| Question | Answer |
 |---|---|
 | What wiring is deployed? | `aperture wiring show --store <dsn>` |
 | Does it match the document in the repository? | `aperture wiring diff --store <dsn> --seed model.yaml` |
 | Which attribute slots did *this* instance actually wire, and from where? | `aperture attributes slots --store <dsn> --seed <file>` — the `source` column says `(shared wiring)` for a pushed row and `(--seed file)` for a local one |
+| Are the two really running the same configuration? | The `WiringPosture` read on each instance: **both** `digest` and `local_digest` equal |
 
-Run the last one on **each** instance. It restates what that process resolved,
+Run the last two on **each** instance. They restate what that process resolved,
 which is the one thing a shared store cannot tell you.
+
+The digest pair is the sweep to build a fleet check on, and it takes **both**
+fields. `digest` is the shared wiring's — equal digests mean the same push has
+landed — and `local_digest` is the digest of that instance's own local document,
+which a rebuild re-reads and which carries the two file-local sections (`objects:`
+metadata and `attributes:` bags). Two instances can report the identical `digest`
+and still decide differently if their local documents differ; agreement on both is
+what says they were built from the same configuration. `local_digest` is empty for
+an instance wired only from the shared tables, which is the normal state for the
+second instance of this topology. See [Refreshing wiring on a live
+fleet](wiring-refresh.md) for what each field does after a push.
 
 ## After the pair is up
 

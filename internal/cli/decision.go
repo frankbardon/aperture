@@ -90,6 +90,22 @@ type decisionStack struct {
 	// the one transition that turns a file-wired fleet into a shared-wiring fleet
 	// the single transition nothing noticed.
 	wiringDigest string
+	// localDigest is the content digest of the LOCAL wiring document this stack was
+	// built from — this instance's own --seed file — and "" when it had none.
+	//
+	// It is the OTHER half of what identifies this stack's configuration, and it is
+	// here for the same reason wiringDigest is: the build owns the value, and a later
+	// reader that derived it for itself would be reading the file again and could get
+	// a different answer, because a rebuild re-reads that file on every swap
+	// (seedDocument -> seed.ParseFile). Recording it at the moment the document was
+	// parsed is what makes the reported value belong to the version this stack IS.
+	//
+	// It is reported beside wiringDigest as service.WiringPosture.LocalDigest and
+	// never mixed into it: the shared digest must stay comparable with what a push
+	// produced and with `aperture wiring diff`. Same shared digest AND same local
+	// digest is what makes a fleet sweep conclusive; the shared one alone answers
+	// only "did this instance get the push?". See localWiringDigest.
+	localDigest string
 	// wiringConnections is the CONNECTION NAME SET of the shared wiring this stack
 	// was built from, sorted — the manifest half of a boot-time contract a running
 	// process cannot renegotiate, and therefore the baseline liveWiring.swap
@@ -127,6 +143,18 @@ type decisionStack struct {
 	// `kind: sql` provider entry referencing it. It is the only part of the stack
 	// that holds an OS resource, and Close is what releases it. Always non-nil.
 	conns *seed.Connections
+}
+
+// digests is the PAIR of digests this stack was built from: the SHARED wiring's and
+// the LOCAL document's.
+//
+// It exists so the boot has ONE derivation of the pair to hand both the staleness
+// recorder and the poller. Assembling it twice would be two statements a later edit
+// can update one of, and the half that would be forgotten is the new one — leaving a
+// recorder seeded with a local digest the poller never advances, or the reverse. See
+// service.WiringDigests for why the pair is a value and not two arguments.
+func (s decisionStack) digests() service.WiringDigests {
+	return service.WiringDigests{Shared: s.wiringDigest, Local: s.localDigest}
 }
 
 // Close releases everything the stack holds open. Today that is the seed's
@@ -324,6 +352,16 @@ func buildWiredStack(storeDSN string, store model.Storage, seedPath string, wiri
 	if err != nil {
 		return decisionStack{}, err
 	}
+	// And the digest of the document that read just returned, taken over the LOCAL
+	// document and not over doc: doc may be the projection of the shared set layered
+	// with this file, and mixing the two would make the local half unreadable as a
+	// statement about this host. Computed here, where the parse happened, so the value
+	// belongs to the version being built — a rebuild re-reads the file, so the boot's
+	// answer is not this version's. See localWiringDigest.
+	localSum, err := localWiringDigest(local)
+	if err != nil {
+		return decisionStack{}, err
+	}
 	doc := local
 	// buildOpts is empty on the file-only path, deliberately: a DB-wired boot
 	// builds under seed.StrictProviderCollision() because its document was
@@ -465,6 +503,7 @@ func buildWiredStack(storeDSN string, store model.Storage, seedPath string, wiri
 
 		attributeCollisions: doc.AttributeCollisions(),
 		wiringDigest:        digest,
+		localDigest:         localSum,
 		// From the wiring, never from doc or from conns: see the field's comment for
 		// why the pool set is the wrong baseline.
 		wiringConnections: wiringConnectionNames(wiring),

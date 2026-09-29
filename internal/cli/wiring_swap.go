@@ -168,6 +168,23 @@ type wiringVersion struct {
 	digest  string
 }
 
+// digests is the PAIR this version was built from: the SHARED wiring's digest and
+// the LOCAL document's, read together and reported together.
+//
+// It is an accessor and not two exported fields because a caller must never be able
+// to take one half. The two identify one version between them — the shared tables
+// somebody pushed AND the file on this host — and a posture naming a fresh shared
+// digest beside a superseded local one would describe a configuration no version
+// ever had. See service.WiringDigests.
+//
+// The local half lives on the stack because that is where it is computed, from the
+// document buildWiredStack actually parsed; the shared half is held here for the
+// reason the field's own comment gives. One accessor over both is what keeps them
+// from being read apart.
+func (v *wiringVersion) digests() service.WiringDigests {
+	return service.WiringDigests{Shared: v.digest, Local: v.stack.localDigest}
+}
+
 // wiringRebuild builds the next version from a wiring set that has just been read,
 // and from the digest that was computed over exactly that read.
 //
@@ -263,6 +280,13 @@ func (l *liveWiring) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // through the version it already has. There is no state in which some of a push is
 // installed and some is not.
 //
+// It RETURNS the installed version's digest PAIR — shared and local — so the caller
+// records what this process now decides through rather than assembling the pair
+// itself. The local half is read from disk by the rebuild, so this is the only
+// moment it is knowable; a caller that re-read the file to find it could observe a
+// different one. On every failure path the returned pair is the zero value and must
+// be discarded: nothing was installed, so nothing advances.
+//
 // digest is carried through rather than recomputed so that the value the poller
 // COMPARED, the set the version was BUILT FROM and the digest the version RECORDS
 // are one read. Recomputing here would let a push landing between the two reads be
@@ -285,15 +309,15 @@ func (l *liveWiring) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // no change, which is what a push reverting to this instance's own boot wiring
 // produces. A second record kept here would have to be cleared from the same three
 // places, and the one this file used to keep was not: see the file header.
-func (l *liveWiring) swap(ctx context.Context, set model.WiringSet, digest string) error {
+func (l *liveWiring) swap(ctx context.Context, set model.WiringSet, digest string) (service.WiringDigests, error) {
 	l.swapping.Lock()
 	defer l.swapping.Unlock()
 
 	if err := l.refuseFrozenConnectionNames(set, digest); err != nil {
-		return err
+		return service.WiringDigests{}, err
 	}
 	if l.rebuild == nil {
-		return aerr.New(aerr.APERTURE_BOOT,
+		return service.WiringDigests{}, aerr.New(aerr.APERTURE_BOOT,
 			"cli: this process has no way to rebuild its wiring, so a deployed change cannot be adopted without a restart")
 	}
 	next, err := l.rebuild(ctx, set, digest)
@@ -303,17 +327,21 @@ func (l *liveWiring) swap(ctx context.Context, set model.WiringSet, digest strin
 		// (buildWiredStack routes every one of them through bootError). Re-stamping
 		// here would replace the remedy with "aperture failed to start" on a process
 		// that did not fail to start.
-		return err
+		return service.WiringDigests{}, err
 	}
 	if next == nil {
 		// Unreachable for the rebuilds in this repository, and refused rather than
 		// stored because a nil version installed into the cell would panic the next
 		// request instead of the refresh that produced it.
-		return aerr.New(aerr.APERTURE_BOOT,
+		return service.WiringDigests{}, aerr.New(aerr.APERTURE_BOOT,
 			"cli: rebuilding the wiring produced no version, so this instance keeps the wiring it has")
 	}
 	l.cur.Store(next)
-	return nil
+	// The INSTALLED version's own pair, so what the poller records is what this
+	// process now decides through — never the two values recomposed from what the
+	// caller happened to be holding. The local half in particular is only knowable
+	// here: the rebuild is what read the document off disk.
+	return next.digests(), nil
 }
 
 // refuseFrozenConnectionNames refuses a push whose connection NAME SET differs from

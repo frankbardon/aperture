@@ -30,7 +30,7 @@ dependencies:
 | `WithAudit(r *audit.Recorder)` | The append-only audit trail: mutations synchronously, decision checks sampled + async. |
 | `WithProviders(reg *provider.Registry)` | `ObjectIdentifiers` and `ObjectMetadata` — object enumeration and metadata reads. |
 | `WithAttributes(reg *provider.AttributeRegistry)` | `ListAttributes` and the three attribute-cache invalidations — the gated, system-tier directory reads. It grants nobody anything: the decision path never resolves a bag through this option. |
-| `WithWiringHealth(h *service.WiringHealth)` | `WiringPosture` — the gated, system-tier read of whether this instance's background re-read of the **shared wiring** is failing, and for how long. The recorder is created by whatever starts the refresher and the SAME pointer is handed to both, or the facade answers for a loop that never wrote to it. Unwired, `WiringPosture` reports the zero posture (not polling, not stale), which is the truth for a process with no refresher. |
+| `WithWiringHealth(h *service.WiringHealth)` | `WiringPosture` — the gated, system-tier read of whether this instance's background re-read of the **shared wiring** is failing, and for how long. The recorder is created by whatever starts the refresher and the SAME pointer is handed to both, or the facade answers for a loop that never wrote to it. It is seeded with, and advanced by, the boot's digest PAIR (`service.WiringDigests` — the shared tables' digest and the local document's), which is one value so that no refresh can advance half of it. Unwired, `WiringPosture` reports the zero posture (not polling, not stale), which is the truth for a process with no refresher. |
 | `WithRuleSource(base rules.RuleSource, fetcher rules.MetadataFetcher)` | The what-if preview of an **unsaved** rule via `Simulate`'s `Overlay.Rules`. |
 | `WithDeclaredAttributeKeys(sets map[provider.AttributeSlot]model.DeclaredKeys)` | The wiring's **declared attribute key sets**. Turns on definition-time key enforcement: `ValidateRule`, `PutRule`, `EvaluateRulePreview` and `Import` refuse a rule reading a key a declaring slot does not name, with `APERTURE_RULE_UNDECLARED_ATTRIBUTE`. `Import` refuses the document whole, before the transaction opens. Opt-in per slot — without it, and for a slot that declares nothing, every rule that validated before still validates. It reaches no decision. |
 | `WithClock(now func() time.Time)` | Override the facade clock used to stamp entity timestamps on writes (for deterministic tests). |
@@ -531,9 +531,39 @@ if p.Stale {
 | `StaleFor` / `Since` | how long the current run of failures has lasted, and when it began. **`StaleFor` is the field to alert on**: one missed tick against a restarting database is ordinary, and the same alarm four hours old is a fleet enforcing policy somebody already retired. |
 | `Failures` | consecutive failures in the current run. A long duration with one is a loop that stopped looking; with many, a store that keeps refusing. |
 | `Code` / `Reason` | the most recent failure's own `APERTURE_*` code and message — the store's `APERTURE_STORAGE_SCHEMA_INCOMPATIBLE`, `APERTURE_WIRING_CONNECTION_UNROUTED`, and only `APERTURE_WIRING_REFRESH_FAILED` when nothing beneath it was coded. Following the underlying code's fixups is the remedy. |
-| `Digest` / `LastRefresh` | the digest of the SHARED wiring this process is DECIDING FROM (the last-good set, when stale), and when a refresh last succeeded. It covers the five shared tables and no part of the instance's local `--seed` file, which a rebuild re-reads — so equal digests mean the same push landed, not that two instances decide identically. |
+| `Digest` / `LastRefresh` | the digest of the SHARED wiring this process is DECIDING FROM (the last-good set, when stale), and when a refresh last succeeded. It covers the five shared tables and nothing else, which is what keeps it comparable with what a push wrote and with what `aperture wiring diff` reports. |
+| `LocalDigest` | the digest of the LOCAL document the version this process is deciding through was built from — its own `--seed` file — and **empty when it has none**, the state of every instance wired only from the shared tables. |
 
-Four properties are contract, not implementation:
+### Two digests, and why they are two fields
+
+`Digest` answers "did this instance get the push?" and has to stay comparable with
+what `aperture wiring push` wrote and with what `aperture wiring diff` reports, so
+nothing local may be folded into it. But a rebuild **also re-reads this instance's
+own document**, and that document decides things — inline `objects:` metadata,
+inline `attributes:` bags, the declared attribute-key sets taken from them, and on a
+deployment that has pushed nothing at all the whole of the wiring. So `Digest` alone
+left two instances able to report the identical value and return **different
+verdicts**.
+
+`LocalDigest` is the second value that closes it. **Sweep both:** equal `Digest`
+means the same push landed; equal `Digest` *and* equal `LocalDigest` means the two
+instances were built from the same configuration.
+
+Three things to know about it:
+
+- **It moves with an ADOPTION, exactly as `Digest` does.** It names the document the
+  RUNNING version was built from, not whatever is on disk now and not what the
+  process booted on — a value captured once at boot would be wrong in precisely the
+  case the field exists to expose.
+- **The two advance together or not at all.** They are recorded as one pair
+  (`service.WiringDigests`), taken from the version that was installed, so a posture
+  can never name a combination no version was built from. A failed refresh moves
+  neither.
+- **It is a content digest and carries nothing.** It digests the parsed document, so
+  a reformatted-but-equivalent file digests the same; it is a hash, so it carries no
+  path, no account, no principal, no object id and no attribute key or value.
+
+Five properties are contract, not implementation:
 
 - **It is not part of `Capabilities`, deliberately.** `Capabilities` is an open,
   unauthenticated call because it carries booleans of immutable boot-time

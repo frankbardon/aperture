@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -14,6 +15,7 @@ import (
 
 	aerr "github.com/frankbardon/aperture/errors"
 	"github.com/frankbardon/aperture/model"
+	"github.com/frankbardon/aperture/seed"
 	"github.com/frankbardon/aperture/service"
 
 	ucli "github.com/urfave/cli/v3"
@@ -63,9 +65,9 @@ import (
 //     keeps the wiring it has, and a successful refresh clears it. wiring_stale.go
 //     holds the whole account. There is ONE recorder and one LINE PER CONDITION:
 //     a failed adoption records through p.alarmf with the adoption's own sentence
-//     and p.digest left exactly where it is, a read or digest failure through
-//     p.alarm with the read's, and a successful swap advances p.digest and calls
-//     p.refreshed().
+//     and p.digests left exactly where they are, a read or digest failure through
+//     p.alarm with the read's, and a successful swap advances p.digests — the shared
+//     and local halves as one pair — and calls p.refreshed().
 //
 // # Why the change check is a digest of a full read
 //
@@ -346,21 +348,19 @@ func badWiringPoll(raw, why string) error {
 // # What it does NOT cover, and why that stays true
 //
 // It is a digest of model.WiringSet: the five SHARED tables and nothing else. It
-// covers no part of an instance's LOCAL --seed file, and a rebuild re-reads that
-// file (buildWiredStack -> seedDocument -> seed.ParseFile), so the two local
-// sections — inline objects: metadata and inline attributes: bags, plus the declared
-// attribute-key sets taken from them — can differ between two instances reporting
-// the same digest. That is stated in docs/src/cli/serve.md ("The digest covers the
-// shared set only"), skills/shared-wiring.md and
-// docs/src/operations/wiring-refresh.md, because a reader who assumes the digest is
-// a whole-configuration fingerprint will build a fleet sweep on it that answers a
-// question it cannot answer.
+// covers no part of an instance's LOCAL wiring document, and a rebuild re-reads that
+// document (buildWiredStack -> seedDocument -> seed.ParseFile), so two instances
+// reporting the same value here can still hold different inline objects: metadata,
+// different inline attributes: bags and different declared attribute-key sets.
 //
 // Folding a local digest INTO this value is the tempting fix and the wrong one: this
 // digest's job is to compare against what a push produced and what `aperture wiring
-// diff` reports, and a value mixed with per-instance content matches neither. A
-// separate local digest on service.WiringPosture is the shape that would work; it is
-// not here because it is a wire-surface change.
+// diff` reports, and a value mixed with per-instance content matches neither. So the
+// local half is a SEPARATE value — localWiringDigest, reported beside this one as
+// service.WiringPosture.LocalDigest — and the two travel as one pair
+// (service.WiringDigests) so a posture can never name a combination no version was
+// built from. Same shared digest AND same local digest is the conclusive sweep; this
+// value alone remains the answer to "did this instance get the push?".
 //
 // The snapshot is sorted first. GetWiring already returns canonical order, so this
 // is belt-and-braces for a caller holding a set it assembled itself — but it is
@@ -436,6 +436,116 @@ func wiringWithoutStamps(set model.WiringSet) model.WiringSet {
 	return out
 }
 
+// localWiringDigest is the OTHER half of what identifies a wiring version: a
+// stable content digest of the LOCAL document the version was built from.
+//
+// # Why there is a second digest at all
+//
+// wiringDigest answers "did this instance get the push?" and must stay comparable
+// with what a push wrote, so it covers the five shared tables and nothing else. But
+// a rebuild also re-reads this instance's own document — buildWiredStack ->
+// seedDocument -> seed.ParseFile, a fresh disk read on a swap exactly as on a boot
+// — and that document decides things: inline objects: metadata, inline attributes:
+// bags, the declared attribute-key sets taken from them, and on a deployment that
+// has pushed nothing at all the whole of the wiring. So two instances could report
+// the identical shared digest and return DIFFERENT verdicts, while the operator
+// documentation tells them to sweep that digest across a fleet to establish that
+// two instances are wired the same. This value is what closes that: same shared
+// digest AND same local digest means the pair was built from the same
+// configuration.
+//
+// The two are reported side by side and never mixed — see service.WiringDigests for
+// why they travel as one pair, and service.WiringPosture.LocalDigest for what the
+// field promises a reader.
+//
+// # What it covers
+//
+// The WHOLE document the version was built from, every section of it, by
+// reflection. It is not a projection of the sections a rebuild happens to read
+// today: encoding/json walks every exported field, so a section added to
+// seed.Document later is covered without anyone remembering to come back here —
+// the same argument wiringDigest makes for its content half, and the same failure
+// direction. A field left OUT of a digest is a difference no sweep ever reports,
+// which is the silently-divergent fleet this whole feature exists to expose; a
+// field wrongly left IN costs at worst a sweep that reports a difference that
+// changes no verdict, which an operator can see and dismiss.
+//
+// That deliberately includes the model sections (accounts:, grants:, rules: …).
+// They are not read by the rebuild, but --seed APPLIES them to the shared store at
+// boot, so two instances booting from documents whose model halves differ really do
+// re-assert different models over one database — and the honest statement of this
+// value is "the digest of the document this version was built from", which is the
+// whole of it.
+//
+// # What it does not cover
+//
+// Nothing volatile: not the file's path, not its mtime, not its size, and not its
+// byte layout. It digests the PARSED value, and seed.Parse normalises YAML through
+// encoding/json on the way in, so a reformatted, re-indented or comment-stripped
+// file that means the same thing digests the same. The one residue is a rule's AST,
+// which rides as a json.RawMessage: a YAML document's AST has been through that
+// same normalisation and is canonical, but re-spacing the `ast:` value of a JSON
+// seed file would change this digest without changing the rule.
+//
+// ORDER within a section is part of the digest, and unlike wiringDigest this does
+// not sort first. The reason the shared digest sorts is that a BACKEND may hand the
+// same rows back in a different order; a document has the order its author wrote,
+// two instances given the same file read the same order, and a sorter here would
+// have to be a per-section projection — exactly the shape a section added later
+// escapes. Two instances whose files list the same entries in different orders
+// therefore report different digests, which is the safe direction to be wrong in.
+//
+// # "" means no local content
+//
+// Nil, or a document that declares nothing at all. Those two are not distinguished
+// and the distinction is not cheap to make here: "absent" is seedDocument's rule
+// (no --seed plus a durable --store), and re-deriving that rule in a second place
+// is exactly the drift CLAUDE.md warns about for classifyStore. It is also not a
+// distinction worth paying for — an absent document and an empty one contribute the
+// same nothing to what this instance decides, which is the only question a digest
+// of it asks. The empty answer is the one every `aperture serve --store
+// postgres://…` with no --seed gives, which is the deployment shared wiring exists
+// to enable, so it is a first-class state and not an edge case.
+//
+// # What reaches the hash
+//
+// A hash, and only a hash, ever leaves this function: 64 hex characters, from which
+// nothing is recoverable. The document is host configuration — object ids, attribute
+// keys and their values, a connection's dsn_env VARIABLE NAME — and none of it is
+// reported anywhere. The one field that could ever hold a credential,
+// seed.Connection's forbidden literal dsn:, cannot reach here on any real path:
+// seed.Parse refuses such a document outright (APERTURE_SQL_PROVIDER_DSN_LITERAL),
+// so no parsed document carries one.
+func localWiringDigest(doc *seed.Document) (string, error) {
+	if doc == nil {
+		return "", nil
+	}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		// Unreachable for a parsed document: seed.Parse itself normalises YAML by
+		// marshalling it to JSON, so a document that exists has already survived this
+		// encoding. It is coded rather than swallowed for the reason wiringDigest gives
+		// — a digest that could not be computed must never be papered over with a
+		// constant, because a constant makes every instance in a fleet report the same
+		// value whatever their files hold, which is the silent agreement this value
+		// exists to stop being assumed.
+		return "", aerr.Wrap(aerr.APERTURE_BOOT, "cli: digesting the local wiring document failed", err)
+	}
+	// "Declares nothing" is decided by comparing against the ENCODING of the zero
+	// document rather than by testing sections one by one, so a section added to
+	// seed.Document later is covered here as well: a document carrying only that new
+	// section stops looking empty without anyone editing this function.
+	empty, err := json.Marshal(&seed.Document{})
+	if err != nil {
+		return "", aerr.Wrap(aerr.APERTURE_BOOT, "cli: digesting the local wiring document failed", err)
+	}
+	if bytes.Equal(raw, empty) {
+		return "", nil
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:]), nil
+}
+
 // wiringPoll is the background re-reader: a goroutine, a ticker, and the digest of
 // the wiring the running stack was built from.
 //
@@ -465,10 +575,17 @@ type wiringPoll struct {
 	// Capabilities boolean.
 	health *service.WiringHealth
 
-	// digest is the digest of the wiring THIS PROCESS IS RUNNING. It is owned by
-	// the loop goroutine (and by whichever single goroutine drives tick in a test),
-	// never read from outside, which is what keeps the type free of a mutex.
-	digest string
+	// digests is the PAIR of digests the wiring THIS PROCESS IS RUNNING was built
+	// from: the shared tables' and the local document's. It is owned by the loop
+	// goroutine (and by whichever single goroutine drives tick in a test), never read
+	// from outside, which is what keeps the type free of a mutex.
+	//
+	// It is ONE field of a pair type rather than two strings, and tick assigns it
+	// WHOLE from what the swapper reports, so there is no statement anywhere in this
+	// package that advances one half and leaves the other behind. See
+	// service.WiringDigests for why a torn pair would be worse than reporting no
+	// local digest at all.
+	digests service.WiringDigests
 
 	// cancel and done are the shutdown pair Close drives: cancel trips the loop's
 	// context, done is closed by the goroutine as it returns. Close waits on it, so
@@ -506,14 +623,22 @@ type wiringPoll struct {
 // digest is passed in rather than recomputed so that the value the tick compared,
 // the set the version is built from and the digest the version records are one
 // read of the database.
-type wiringSwapper func(ctx context.Context, set model.WiringSet, digest string) error
+//
+// It RETURNS the pair the installed version was built from, rather than leaving the
+// caller to assemble one. The local half is read from disk inside the rebuild, so
+// the version that was just installed is the only thing that knows it; a poller
+// that derived it for itself would be a second read of a file that can change
+// between the two, and could then report a pair no version was built from. On a
+// failure the pair is meaningless and the caller must not adopt it — which is why
+// nothing installed means nothing advances.
+type wiringSwapper func(ctx context.Context, set model.WiringSet, digest string) (service.WiringDigests, error)
 
 // noWiringSwap is the swapper a poller falls back to when it was started without
 // one. It refuses every change, which keeps the instance deciding through the
-// wiring it has and keeps the digest from advancing, so the condition is reported
+// wiring it has and keeps the digests from advancing, so the condition is reported
 // on every tick rather than becoming a silently stale instance.
-func noWiringSwap(context.Context, model.WiringSet, string) error {
-	return aerr.New(aerr.APERTURE_BOOT,
+func noWiringSwap(context.Context, model.WiringSet, string) (service.WiringDigests, error) {
+	return service.WiringDigests{}, aerr.New(aerr.APERTURE_BOOT,
 		"cli: this process was started with no way to adopt a wiring change; restart it to pick one up")
 }
 
@@ -525,9 +650,9 @@ func noWiringSwap(context.Context, model.WiringSet, string) error {
 // cannot accidentally leave a disabled poller running because there is nothing
 // running. Close is nil-safe, so the caller's defer needs no condition either.
 //
-// booted is the digest of the wiring the stack was built from, and it is taken
-// from the BOOT (decisionStack.wiringDigest) rather than from the loop's own first
-// read. The difference is not cosmetic: a push that lands between the boot read
+// booted is the PAIR of digests the stack was built from — the shared tables' and
+// the local document's — and it is taken from the BOOT (decisionStack.digests)
+// rather than from the loop's own first read. The difference is not cosmetic: a push that lands between the boot read
 // and the first tick would, on a self-baselining loop, become the baseline — the
 // change would never be reported and the instance would be stale for its whole
 // lifetime with nothing anywhere saying so. That is precisely the failure this
@@ -547,7 +672,7 @@ func noWiringSwap(context.Context, model.WiringSet, string) error {
 // a permanently healthy instance no matter what the loop observed — the silent
 // staleness this epic exists to close, reintroduced one layer up. It may be nil,
 // which records nothing and reports only on stderr.
-func startWiringPoll(ctx context.Context, store model.Storage, every time.Duration, booted string, swap wiringSwapper, log io.Writer, health *service.WiringHealth) *wiringPoll {
+func startWiringPoll(ctx context.Context, store model.Storage, every time.Duration, booted service.WiringDigests, swap wiringSwapper, log io.Writer, health *service.WiringHealth) *wiringPoll {
 	if every <= 0 {
 		return nil
 	}
@@ -567,7 +692,7 @@ func startWiringPoll(ctx context.Context, store model.Storage, every time.Durati
 		swap:       swap,
 		log:        log,
 		health:     health,
-		digest:     booted,
+		digests:    booted,
 		cancel:     cancel,
 		done:       make(chan struct{}),
 		closeGrace: wiringPollCloseGrace,
@@ -667,7 +792,8 @@ func (p *wiringPoll) run(ctx context.Context) {
 // It returns the answer as well as reporting it, which is what lets a test assert
 // the adoption synchronously instead of racing a ticker.
 //
-// The digest advances AFTER a successful swap, and only then. That ordering is the
+// The digests advance AFTER a successful swap, and only then, and as ONE pair taken
+// from the version that was installed. That ordering is the
 // whole of last-good: a digest advanced before the rebuild would mean an instance
 // whose rebuild failed forgets there was ever anything to pick up, and it would
 // then sit on its old wiring for the rest of its life reporting nothing — the
@@ -708,7 +834,7 @@ func (p *wiringPoll) tick(ctx context.Context) bool {
 		p.alarm(err)
 		return false
 	}
-	if digest == p.digest {
+	if digest == p.digests.Shared {
 		// The store answered, its wiring digested, and it says this process is running
 		// what the deployment deployed. That is a completed refresh and it clears any
 		// standing alarm — including one raised by a read that failed an hour ago, and
@@ -717,13 +843,14 @@ func (p *wiringPoll) tick(ctx context.Context) bool {
 		p.refreshed()
 		return false
 	}
-	previous := p.digest
+	previous := p.digests.Shared
 	// The rebuild happens HERE, on the poll goroutine, and not on any decision's
 	// path: it reads the seed file, projects the set into a document and constructs
 	// two registries, a rules engine, a decision engine and a facade, while every
 	// decision in flight goes on answering through the version this process already
 	// has. Only the final pointer store is visible to a reader, and it is atomic.
-	if err := p.swap(ctx, set, digest); err != nil {
+	adopted, err := p.swap(ctx, set, digest)
+	if err != nil {
 		if p.abandoned(ctx, err, "adopting the deployed wiring") {
 			return false
 		}
@@ -763,10 +890,14 @@ func (p *wiringPoll) tick(ctx context.Context) bool {
 			"keeps the wiring it has and goes on deciding: %v", shortDigest(previous), shortDigest(digest))
 		return false
 	}
-	p.digest = digest
+	// ONE assignment, of the pair the installed version reports, so the shared and
+	// the local halves advance together or not at all. Reading `digest` back into
+	// p.digests.Shared here instead would be the mistake the pair exists to prevent:
+	// two statements, of which a later edit can keep one.
+	p.digests = adopted
 	p.changes.Add(1)
 	// The adoption succeeded, so this is the completed refresh — and only now is
-	// p.digest the wiring this process runs, which is what refreshed() must be told.
+	// p.digests the wiring this process runs, which is what refreshed() must be told.
 	// Clearing here rather than before the swap is what makes the posture's digest
 	// right from the instant of the adoption instead of one tick later.
 	p.refreshed()
