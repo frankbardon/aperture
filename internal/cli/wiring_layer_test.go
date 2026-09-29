@@ -340,6 +340,60 @@ providers:
 	})
 }
 
+// TestALocalOnlyOverlapStillBootsAfterAnUnrelatedPush is the other half of the
+// strict posture, and the axis it must NOT reach.
+//
+// seed.StrictProviderCollision() is a posture over a whole document, and the
+// assembled document's providers: section holds the shared rows AND this instance's
+// own local entries — so passing it unconditionally refused a second axis nobody
+// decided to refuse: a LOCAL file declaring both a providers: entry and inline
+// objects: for one type. seed's own doc comment calls that shape "a normal migration
+// step, not a fault… a seed that booted yesterday must not refuse to boot today".
+//
+// The symptom was the worst kind: the instance booted fine against empty wiring
+// tables and then failed hard the moment somebody pushed a single unrelated
+// field_types: row naming nothing it declares, with a refusal telling the operator to
+// drop a Go BuildOption no CLI flag exposes. A push that names nothing this instance
+// declares must not change what this instance refuses.
+func TestALocalOnlyOverlapStillBootsAfterAnUnrelatedPush(t *testing.T) {
+	// The pushed set names `document` and the user slot; the local overlap is on
+	// `project`, which the shared wiring never mentions. Disjoint by construction.
+	dsn := "file:" + filepath.Join(t.TempDir(), "local-only-overlap.db")
+	pushWiring(t, dsn, sharedWiringSet(time.Now().UTC()))
+	t.Setenv(connectionDSNEnvVar("main"), unroutedDSN)
+
+	local := bootWiringSeed + `
+providers:
+  - object_type: project
+    kind: csv
+    path: projects.csv
+`
+	seedPath := writeSeed(t, "local-only-overlap.yaml", local)
+	csv := "id,tier\naccount:acme/project:atlas,silver\n"
+	if err := os.WriteFile(filepath.Join(filepath.Dir(seedPath), "projects.csv"), []byte(csv), 0o600); err != nil {
+		t.Fatalf("writing the csv: %v", err)
+	}
+
+	if err := bootStackError(t, dsn, seedPath); err != nil {
+		t.Fatalf("a LOCAL-ONLY providers:/objects: overlap must keep the documented silent "+
+			"discard once unrelated wiring rows exist; refusing it makes an unrelated push on "+
+			"another host break this instance, with a remedy (\"drop seed.StrictProviderCollision()\") "+
+			"that no flag exposes: %v", err)
+	}
+
+	// Discarded, and REPORTED: the boot prints the warning, exactly as it does on an
+	// instance nothing has been pushed to.
+	stack := bootStack(t, dsn, seedPath)
+	if got := stack.collisions; len(got) != 1 || got[0] != "project" {
+		t.Fatalf("collisions = %v, want [project] reported rather than refused — the strict "+
+			"posture is for the SHARED-versus-inline axis only", got)
+	}
+	// Anti-vacuity: the cross-source axis must still refuse, or this test would pass
+	// on a build that had simply stopped passing the posture at all. That refusal is
+	// TestALocalInlineObjectAgainstASharedProviderReusesTheStrictPosture, and the two
+	// move together.
+}
+
 // TestAGoRegistrationCollidesAtTheRegistry is the acceptance criterion with no
 // document in it, and it is why the rule is stated about the REGISTRY.
 //

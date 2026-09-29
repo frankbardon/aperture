@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	aerr "github.com/frankbardon/aperture/errors"
+	"github.com/frankbardon/aperture/identity"
 	"github.com/frankbardon/aperture/model"
 	"github.com/frankbardon/aperture/seed"
 )
@@ -255,13 +256,69 @@ func wiringDocument(set model.WiringSet, local *seed.Document) (*seed.Document, 
 // switching off metadata checked into this instance's seed — which is exactly the
 // additive rule's whole subject, so the strict posture is what states it.
 //
-// It applies to the WHOLE assembled document, which means a local file that
-// declares both a providers: entry and inline objects: for one type is also
-// refused once wiring rows exist. That is one rule applied uniformly to one
-// document rather than a second rule with an exception in it, and the refusal
-// names the type either way.
-func wiringBuildOptions() []seed.BuildOption {
+// # It is passed only when the SHARED section is the one colliding
+//
+// seed.StrictProviderCollision() is a posture over a whole document: it refuses
+// every type declared in both providers: and objects:, and the assembled document's
+// providers: section holds the shared rows AND this instance's own local entries. So
+// passing it unconditionally refused a second, unintended axis — a LOCAL file that
+// declares both a providers: entry and inline objects: for one type, which is the
+// shape seed's own doc comment calls "a normal migration step, not a fault… a seed
+// that booted yesterday must not refuse to boot today".
+//
+// That instance booted fine against empty wiring tables and then failed hard the
+// moment anyone pushed a single unrelated field_types: row, with a refusal telling
+// the operator to drop seed.StrictProviderCollision() — which no CLI flag exposes.
+// A push that names nothing the instance declares must not change what that instance
+// refuses.
+//
+// So the posture is passed only when the SHARED providers: section actually claims a
+// type the local objects: section fills. The cross-source axis keeps its refusal,
+// named by type; the local-vs-local axis keeps the documented silent discard,
+// reported by decisionStack.reportCollisions exactly as it is on an unpushed
+// instance. Narrowing by TYPE is not available — the option takes no arguments and
+// giving it some would put the collision rule in two packages — so the narrowing is
+// the decision to pass it at all, taken here, where both sources are still
+// distinguishable. Once they are merged into one document they are not.
+//
+// set is the shared wiring and local this instance's own document; a nil local has no
+// objects: section and therefore no overlap.
+func wiringBuildOptions(set model.WiringSet, local *seed.Document) []seed.BuildOption {
+	if !sharedProviderClaimsAnInlineType(set.Providers, local) {
+		return nil
+	}
 	return []seed.BuildOption{seed.StrictProviderCollision()}
+}
+
+// sharedProviderClaimsAnInlineType reports whether a SHARED providers: entry serves
+// an object type this instance's own inline objects: section also fills.
+//
+// The type of an inline entry is its identity's TERMINAL SEGMENT, which is how
+// seed.groupObjects derives it; a malformed id is not this function's business and
+// fails the build in its own right, so it is simply not an overlap here. The key is
+// trimmed on both sides for the reason layerProviders gives.
+func sharedProviderClaimsAnInlineType(shared []model.WiringProvider, local *seed.Document) bool {
+	if local == nil || len(local.Objects) == 0 || len(shared) == 0 {
+		return false
+	}
+	declared := make(map[string]struct{}, len(shared))
+	for _, p := range shared {
+		declared[strings.TrimSpace(p.ObjectType)] = struct{}{}
+	}
+	for _, o := range local.Objects {
+		id, err := identity.Parse(strings.TrimSpace(o.ID))
+		if err != nil {
+			continue
+		}
+		segs := id.Segments()
+		if len(segs) == 0 {
+			continue
+		}
+		if _, dup := declared[segs[len(segs)-1].Type]; dup {
+			return true
+		}
+	}
+	return false
 }
 
 // layerProviders projects the shared providers: entries and appends the local
