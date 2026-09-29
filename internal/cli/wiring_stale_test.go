@@ -225,7 +225,7 @@ func TestAFailedRefreshKeepsDecidingAndAlarmsWithItsOwnCode(t *testing.T) {
 	for _, tc := range refreshFailsWith() {
 		t.Run(tc.name, func(t *testing.T) {
 			probe := newStalenessProbe(t)
-			baseline := probe.poll.digest
+			baseline := probe.poll.digests.Shared
 			probe.decides(t, "before the failure")
 
 			probe.poll.store = wiringReadFails{Storage: probe.counting, err: tc.err}
@@ -235,7 +235,7 @@ func TestAFailedRefreshKeepsDecidingAndAlarmsWithItsOwnCode(t *testing.T) {
 
 			// Last-good: nothing was swapped, the digest did not advance, and the
 			// instance still answers the same way.
-			if probe.poll.digest != baseline {
+			if probe.poll.digests.Shared != baseline {
 				t.Error("a failed refresh advanced the digest; the next successful read would " +
 					"then miss the change this one could not confirm")
 			}
@@ -327,7 +327,7 @@ func codedChainDepth(err error) int {
 // which is silent staleness by a longer route.
 func TestTheStoreGoesAwayAndComesBackAndTheAlarmClears(t *testing.T) {
 	probe := newStalenessProbe(t)
-	baseline := probe.poll.digest
+	baseline := probe.poll.digests.Shared
 	probe.decides(t, "healthy")
 	if probe.health.Posture().Stale {
 		t.Fatal("a healthy instance reported stale")
@@ -393,9 +393,9 @@ func TestTheStoreGoesAwayAndComesBackAndTheAlarmClears(t *testing.T) {
 			"adopted the change; it must name the wiring this instance now decides from, or a "+
 			"fleet-wide digest comparison reads a caught-up instance as behind", baseline)
 	}
-	if p.Digest != probe.poll.digest {
+	if p.Digest != probe.poll.digests.Shared {
 		t.Errorf("the posture reports digest %q but the instance is running %q — the two are "+
-			"one fact and must not come apart", p.Digest, probe.poll.digest)
+			"one fact and must not come apart", p.Digest, probe.poll.digests.Shared)
 	}
 	probe.decides(t, "after recovery")
 }
@@ -416,7 +416,7 @@ func TestTheStoreGoesAwayAndComesBackAndTheAlarmClears(t *testing.T) {
 // on Since are clock-free; StaleFor is read against the probe's pinned clock.
 func TestARefusedPushGetsOLDERRatherThanRestartingEveryTick(t *testing.T) {
 	probe := newStalenessProbe(t)
-	baseline := probe.poll.digest
+	baseline := probe.poll.digests.Shared
 
 	// A push that adds a connection name this instance has no route for: the read
 	// and the digest succeed on every tick, and the adoption fails on every tick.
@@ -452,7 +452,7 @@ func TestARefusedPushGetsOLDERRatherThanRestartingEveryTick(t *testing.T) {
 	}
 	// And last-good throughout: the digest never advanced, so the refusal is
 	// re-detected every tick rather than reported once and forgotten.
-	if probe.poll.digest != baseline {
+	if probe.poll.digests.Shared != baseline {
 		t.Error("a refused adoption advanced the digest")
 	}
 	if p.Digest != baseline {
@@ -592,7 +592,7 @@ func TestThePollerAndTheFacadeShareOneRecorder(t *testing.T) {
 // assertions below are about the POSTURE and not about connections.
 func TestAnAdoptionThatFailsIsStaleAndNotHealthy(t *testing.T) {
 	probe := newStalenessProbe(t)
-	baseline := probe.poll.digest
+	baseline := probe.poll.digests.Shared
 	probe.decides(t, "before the refused push")
 
 	// A push that adds a connection name this instance has no route for. The read
@@ -609,7 +609,7 @@ func TestAnAdoptionThatFailsIsStaleAndNotHealthy(t *testing.T) {
 	}
 
 	// Last-good, and still deciding.
-	if probe.poll.digest != baseline {
+	if probe.poll.digests.Shared != baseline {
 		t.Error("a refused adoption advanced the digest, so the next tick would not " +
 			"re-detect the change and the refusal would be reported exactly once")
 	}
@@ -704,7 +704,7 @@ func TestEachFailureConditionReportsOneLineInItsOwnWords(t *testing.T) {
 
 	t.Run("an adoption that failed", func(t *testing.T) {
 		probe := newStalenessProbe(t)
-		baseline := probe.poll.digest
+		baseline := probe.poll.digests.Shared
 
 		// A push that adds a connection name this instance has no route for: the read
 		// and the digest succeed on every tick, and the adoption fails on every tick,
@@ -752,7 +752,7 @@ func TestEachFailureConditionReportsOneLineInItsOwnWords(t *testing.T) {
 			t.Errorf("%d refused ticks printed %d lines, want %d — one per tick:\n%s",
 				more, len(lines), more, strings.Join(lines, "\n"))
 		}
-		if probe.poll.digest != baseline {
+		if probe.poll.digests.Shared != baseline {
 			t.Error("a refused adoption advanced the digest")
 		}
 	})
@@ -899,7 +899,9 @@ func TestACleanShutdownDoesNotReportItselfStale(t *testing.T) {
 		cancel()
 
 		probe.poll.store = wiringReadReturns{Storage: probe.counting, set: changedWiring()}
-		probe.poll.swap = func(context.Context, model.WiringSet, string) error { return context.Canceled }
+		probe.poll.swap = func(context.Context, model.WiringSet, string) (service.WiringDigests, error) {
+			return service.WiringDigests{}, context.Canceled
+		}
 		probe.out.Reset()
 		if probe.poll.tick(ctx) {
 			t.Fatal("an abandoned adoption reported a change")
@@ -964,7 +966,7 @@ func TestACleanShutdownDoesNotReportItselfStale(t *testing.T) {
 // the operator's remedy does not have to be a forward push.
 func TestARevertedConnectionChangeStopsBeingReported(t *testing.T) {
 	probe := newStalenessProbe(t)
-	baseline := probe.poll.digest
+	baseline := probe.poll.digests.Shared
 
 	// The push that cannot be adopted.
 	set := staleWiringSet(time.Now().UTC())
@@ -989,8 +991,8 @@ func TestARevertedConnectionChangeStopsBeingReported(t *testing.T) {
 	if probe.poll.tick(probe.ctx) {
 		t.Fatal("a revert to the boot's own wiring was reported as a change")
 	}
-	if probe.poll.digest != baseline {
-		t.Errorf("the digest moved to %q on a revert to the boot's wiring", probe.poll.digest)
+	if probe.poll.digests.Shared != baseline {
+		t.Errorf("the digest moved to %q on a revert to the boot's wiring", probe.poll.digests.Shared)
 	}
 
 	p := probe.health.Posture()

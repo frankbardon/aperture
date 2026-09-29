@@ -281,7 +281,13 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 	// non-positive interval yields a recorder that reports Polling false and can
 	// never report stale, which is the honest posture for a boot-only instance and
 	// saves every call site below a condition.
-	wiringHealth := service.NewWiringHealth(pollEvery, stack.wiringDigest, nil)
+	//
+	// It is seeded with the boot's digest PAIR — the shared tables' and this
+	// instance's own document's — from stack.digests(), the same derivation the
+	// poller's baseline comes from. A recorder seeded with one half and a poller
+	// baselined on the other is the torn pair service.WiringDigests exists to make
+	// unrepresentable.
+	wiringHealth := service.NewWiringHealth(pollEvery, stack.digests(), nil)
 
 	// Wire the append-only audit trail (E4-S2) through the same store so the
 	// mutation/impersonation/delegation record is durable and the E6-S4 audit
@@ -374,14 +380,14 @@ func runServe(ctx context.Context, cmd *ucli.Command) error {
 	// so a SIGINT stops the reader at once and the deferred Close only waits for it;
 	// both calls are nil-safe, which is why neither needs a condition.
 	//
-	// The baseline is the digest the STACK was built from, never the loop's own first
-	// read — see startWiringPoll for what a self-baselining loop silently loses —
+	// The baseline is the digest PAIR the STACK was built from, never the loop's own
+	// first read — see startWiringPoll for what a self-baselining loop silently loses —
 	// and live.swap is what a detected change is adopted through.
 	//
 	// The recorder handed over here is the SAME pointer the facade above holds, so
 	// a refresh that fails is readable through the gated WiringPosture read and not
 	// only on stderr.
-	poll := startWiringPoll(ctx, store, pollEvery, stack.wiringDigest, live.swap, cmd.ErrWriter, wiringHealth)
+	poll := startWiringPoll(ctx, store, pollEvery, stack.digests(), live.swap, cmd.ErrWriter, wiringHealth)
 	// Deferred, so it runs AFTER Shutdown has drained the listener — and BOUNDED, so a
 	// rebuild that is mid-way through reading a seed file on a stalled mount cannot
 	// hold the process open past the termination grace an orchestrator sized against

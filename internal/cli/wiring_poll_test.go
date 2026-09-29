@@ -175,8 +175,8 @@ func newPollProbe(t *testing.T, ctx context.Context, storeDSN, seedPath string, 
 				probeRebuild(cmd.String("store"), probe.counting, cmd.String("seed"), stack.conns))
 			// The recorder is built and shared exactly as runServe builds and shares
 			// it: one pointer, handed to the facade and to the poller.
-			probe.health = service.NewWiringHealth(every, stack.wiringDigest, probe.now.now)
-			probe.poll = startWiringPoll(ctx, probe.counting, every, stack.wiringDigest, probe.live.swap, probe.out, probe.health)
+			probe.health = service.NewWiringHealth(every, stack.digests(), probe.now.now)
+			probe.poll = startWiringPoll(ctx, probe.counting, every, stack.digests(), probe.live.swap, probe.out, probe.health)
 			return nil
 		},
 	}
@@ -505,7 +505,7 @@ func TestTheLoopStopsOnContextCancellationAndLeaksNoGoroutine(t *testing.T) {
 		t.Fatalf("%d poll loops were already running before this case started one, so the count below "+
 			"proves nothing", n)
 	}
-	poll := startWiringPoll(ctx, probe.counting, 5*time.Millisecond, probe.stack.wiringDigest, probe.live.swap, probe.out, nil)
+	poll := startWiringPoll(ctx, probe.counting, 5*time.Millisecond, probe.stack.digests(), probe.live.swap, probe.out, nil)
 	if poll == nil {
 		t.Fatal("a 5ms interval started no poller")
 	}
@@ -590,10 +590,10 @@ func TestAClosedPollerIsNilSafe(t *testing.T) {
 	if err := p.Close(); err != nil {
 		t.Errorf("(*wiringPoll)(nil).Close() = %v, want nil", err)
 	}
-	if got := startWiringPoll(context.Background(), nil, 0, "", nil, nil, nil); got != nil {
+	if got := startWiringPoll(context.Background(), nil, 0, service.WiringDigests{}, nil, nil, nil); got != nil {
 		t.Errorf("startWiringPoll with a zero interval returned %v, want nil — off means no goroutine", got)
 	}
-	if got := startWiringPoll(context.Background(), nil, -time.Second, "", nil, nil, nil); got != nil {
+	if got := startWiringPoll(context.Background(), nil, -time.Second, service.WiringDigests{}, nil, nil, nil); got != nil {
 		t.Errorf("startWiringPoll with a negative interval returned %v, want nil", got)
 	}
 }
@@ -655,10 +655,10 @@ func TestAWiringChangeIsDetectedOnceAndAdopted(t *testing.T) {
 		t.Error("the BOOT stack's registry field was mutated. A swap installs a new immutable version; " +
 			"mutating the old one is exactly the torn read one-version-per-decision exists to prevent")
 	}
-	if adopted.digest != probe.poll.digest {
+	if adopted.digest != probe.poll.digests.Shared {
 		t.Errorf("the installed version records digest %q but the poller advanced to %q: the digest a "+
 			"tick compared, the set the version was built from and the digest it records must be one read",
-			shortDigest(adopted.digest), shortDigest(probe.poll.digest))
+			shortDigest(adopted.digest), shortDigest(probe.poll.digests.Shared))
 	}
 	report := probe.out.String()
 	for _, want := range []string{"CHANGED", "ADOPTED"} {
@@ -721,7 +721,7 @@ func TestTheFirstEverPushToAnUnwiredDatabaseIsAChange(t *testing.T) {
 	if err := probe.counting.ReplaceWiring(ctx, sharedWiringSet(time.Now().UTC())); err != nil {
 		t.Fatalf("the first push failed: %v", err)
 	}
-	baseline := probe.poll.digest
+	baseline := probe.poll.digests.Shared
 	// tick reports ADOPTION, and this push cannot be adopted — deliberately. The
 	// instance booted on a seed file declaring no connections:, so it opened no pool,
 	// and the pushed set names one. A connection NAME SET is a boot-time contract
@@ -739,7 +739,7 @@ func TestTheFirstEverPushToAnUnwiredDatabaseIsAChange(t *testing.T) {
 	if !strings.Contains(report, "CHANGED") {
 		t.Errorf("the first ever push to an unwired database was not detected. Report:\n%s", report)
 	}
-	if probe.poll.digest != baseline {
+	if probe.poll.digests.Shared != baseline {
 		t.Error("the digest advanced although nothing was adopted: the change would then be forgotten " +
 			"and the instance stale for the rest of its life with nothing saying so")
 	}
@@ -758,7 +758,7 @@ func TestAFailedPollKeepsTheWiringItHasAndDoesNotBuryTheCode(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	probe := newPollProbe(t, ctx, dsn, "", "--wiring-poll", "1h")
-	baseline := probe.poll.digest
+	baseline := probe.poll.digests.Shared
 
 	// The store stops answering, and the wiring changes while it is unreadable.
 	coded := aerr.New(aerr.APERTURE_STORAGE_SCHEMA_INCOMPATIBLE, "the wiring tables are from an older build")
@@ -766,7 +766,7 @@ func TestAFailedPollKeepsTheWiringItHasAndDoesNotBuryTheCode(t *testing.T) {
 	if probe.poll.tick(ctx) {
 		t.Fatal("a failed read reported a change")
 	}
-	if probe.poll.digest != baseline {
+	if probe.poll.digests.Shared != baseline {
 		t.Error("a failed read advanced the digest: the next successful read would then miss the change " +
 			"the failed one could not confirm")
 	}
@@ -1226,11 +1226,11 @@ func TestAShutdownDoesNotWaitForeverOnAWiringRebuild(t *testing.T) {
 	// The store answers every re-read with a set the poller has not adopted, so the
 	// loop reaches the swap; the swapper then blocks, which is the stalled rebuild.
 	poll := startWiringPoll(context.Background(), wiringReadReturns{set: digestFixture()},
-		time.Millisecond, "the-boot-digest",
-		func(context.Context, model.WiringSet, string) error {
+		time.Millisecond, service.WiringDigests{Shared: "the-boot-digest"},
+		func(context.Context, model.WiringSet, string) (service.WiringDigests, error) {
 			once.Do(func() { close(entered) })
 			<-release
-			return nil
+			return service.WiringDigests{}, nil
 		}, log, nil)
 	if poll == nil {
 		t.Fatal("a 1ms interval started no poller")
@@ -1276,8 +1276,10 @@ func TestAShutdownDoesNotWaitForeverOnAWiringRebuild(t *testing.T) {
 func TestAnOrdinaryShutdownSaysNothingAboutWaiting(t *testing.T) {
 	log := &lockedBuffer{}
 	poll := startWiringPoll(context.Background(), wiringReadReturns{set: digestFixture()},
-		time.Hour, "the-boot-digest",
-		func(context.Context, model.WiringSet, string) error { return nil }, log, nil)
+		time.Hour, service.WiringDigests{Shared: "the-boot-digest"},
+		func(context.Context, model.WiringSet, string) (service.WiringDigests, error) {
+			return service.WiringDigests{}, nil
+		}, log, nil)
 	if poll == nil {
 		t.Fatal("an hourly interval started no poller")
 	}

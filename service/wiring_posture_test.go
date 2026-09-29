@@ -46,7 +46,7 @@ func (c *fixedClock) advance(d time.Duration) { c.at = c.at.Add(d) }
 // the worst case this field exists to expose.
 func TestAFailedRefreshOpensAStalenessWindowThatAges(t *testing.T) {
 	clk := newFixedClock()
-	h := NewWiringHealth(30*time.Second, "digest-boot", clk.now)
+	h := NewWiringHealth(30*time.Second, WiringDigests{Shared: "digest-boot"}, clk.now)
 
 	if p := h.Posture(); p.Stale || !p.Healthy() {
 		t.Fatalf("a fresh recorder reported stale: %+v", p)
@@ -103,7 +103,7 @@ func TestAFailedRefreshOpensAStalenessWindowThatAges(t *testing.T) {
 // person to look at it, and trains them to ignore the channel.
 func TestASuccessfulRefreshClearsTheAlarmCompletely(t *testing.T) {
 	clk := newFixedClock()
-	h := NewWiringHealth(time.Second, "digest-boot", clk.now)
+	h := NewWiringHealth(time.Second, WiringDigests{Shared: "digest-boot"}, clk.now)
 
 	h.Failed(aerr.New(aerr.APERTURE_STORAGE, "no route to host"))
 	clk.advance(90 * time.Second)
@@ -112,7 +112,7 @@ func TestASuccessfulRefreshClearsTheAlarmCompletely(t *testing.T) {
 	}
 
 	clk.advance(time.Second)
-	h.Refreshed("digest-boot")
+	h.Refreshed(WiringDigests{Shared: "digest-boot"})
 
 	p := h.Posture()
 	switch {
@@ -148,7 +148,7 @@ func TestASuccessfulRefreshClearsTheAlarmCompletely(t *testing.T) {
 // The nil recorder is the same answer by a different route, which is what lets a
 // facade built without WithWiringHealth answer at all instead of refusing.
 func TestARecorderThatIsNotPollingIsNotStale(t *testing.T) {
-	off := NewWiringHealth(0, "digest-boot", nil)
+	off := NewWiringHealth(0, WiringDigests{Shared: "digest-boot"}, nil)
 	if p := off.Posture(); p.Polling || p.Stale || p.Every != 0 {
 		t.Errorf("a non-polling recorder reported %+v, want not polling and not stale", p)
 	}
@@ -159,14 +159,14 @@ func TestARecorderThatIsNotPollingIsNotStale(t *testing.T) {
 	}
 	// Nil-safe in both writing directions too, so no call site needs a condition.
 	absent.Failed(aerr.New(aerr.APERTURE_BOOT, "x"))
-	absent.Refreshed("y")
+	absent.Refreshed(WiringDigests{Shared: "y"})
 	if p := absent.Posture(); p.Stale {
 		t.Error("the nil recorder recorded something")
 	}
 
 	// A nil error is not a failure. Inventing an alarm for a caller's bug would
 	// hide the bug behind a permanently stale instance.
-	live := NewWiringHealth(time.Second, "d", nil)
+	live := NewWiringHealth(time.Second, WiringDigests{Shared: "d"}, nil)
 	live.Failed(nil)
 	if live.Posture().Stale {
 		t.Error("Failed(nil) raised an alarm")
@@ -184,7 +184,7 @@ func TestARecorderThatIsNotPollingIsNotStale(t *testing.T) {
 func TestTheWiringPostureIsASystemTierRead(t *testing.T) {
 	svc, _, ctx := attributeFixture(t)
 	clk := newFixedClock()
-	h := NewWiringHealth(30*time.Second, "digest-boot", clk.now)
+	h := NewWiringHealth(30*time.Second, WiringDigests{Shared: "digest-boot"}, clk.now)
 	WithWiringHealth(h)(svc)
 
 	h.Failed(aerr.New(aerr.APERTURE_WIRING_CONNECTION_UNROUTED, "connection \"main\" has no route on this host"))
@@ -229,10 +229,10 @@ func TestARefusedPostureReadDisclosesNothingAboutTheStaleness(t *testing.T) {
 	}
 
 	healthy := refusalFor(t, func(svc *Service) {
-		WithWiringHealth(NewWiringHealth(30*time.Second, "digest-boot", nil))(svc)
+		WithWiringHealth(NewWiringHealth(30*time.Second, WiringDigests{Shared: "digest-boot"}, nil))(svc)
 	})
 	stale := refusalFor(t, func(svc *Service) {
-		h := NewWiringHealth(30*time.Second, "digest-boot", nil)
+		h := NewWiringHealth(30*time.Second, WiringDigests{Shared: "digest-boot"}, nil)
 		h.Failed(aerr.New(aerr.APERTURE_WIRING_CONNECTION_UNROUTED, "connection \"main\" has no route"))
 		WithWiringHealth(h)(svc)
 	})
@@ -289,7 +289,7 @@ func TestAnUnwiredRecorderIsAnAnswerAndNotARefusal(t *testing.T) {
 // stale, must report exactly the Capabilities it reported healthy.
 func TestCapabilitiesDidNotAbsorbTheStaleness(t *testing.T) {
 	clk := newFixedClock()
-	h := NewWiringHealth(30*time.Second, "digest-boot", clk.now)
+	h := NewWiringHealth(30*time.Second, WiringDigests{Shared: "digest-boot"}, clk.now)
 	svc := New(nil, WithWiringHealth(h))
 
 	before := svc.Capabilities()

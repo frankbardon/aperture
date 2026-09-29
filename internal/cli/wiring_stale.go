@@ -64,9 +64,9 @@ import (
 // writes a line — abandoning a refresh silently would be the other mistake.
 //
 // So a rebuild's failure path records through alarmf and its success path advances
-// p.digest and calls p.refreshed(). A rebuild that fails must NOT advance
-// p.digest — see service.WiringHealth.Refreshed for why the digest it is handed
-// is the one the instance RUNS and never the one the tables hold — and must not
+// p.digests and calls p.refreshed(). A rebuild that fails must NOT advance
+// p.digests — see service.WiringHealth.Refreshed for why the pair it is handed
+// is the one the instance RUNS and never the one the tables or the disk hold — and must not
 // clear the alarm either, because staleness that began at the first refusal is
 // CONTINUOUS until an adoption succeeds. See refreshed for why "the read
 // succeeded" is not the same event as "a refresh completed".
@@ -144,14 +144,22 @@ func (p *wiringPoll) alarmf(err error, format string, args ...any) {
 
 // refreshed records that a refresh COMPLETED, which clears any standing alarm.
 //
-// It names p.digest — the digest of the wiring this process is DECIDING FROM —
-// and never the digest just read, so the posture cannot claim an adoption that
-// has not happened. tick therefore calls it only where those two are the same
-// value: on the no-change branch, and after a successful swap has assigned
-// p.digest.
+// It names p.digests — the PAIR the wiring this process is DECIDING FROM was built
+// from, shared and local — and never the digest just read, so the posture cannot
+// claim an adoption that has not happened. tick therefore calls it only where those
+// are the same value: on the no-change branch, and after a successful swap has
+// assigned p.digests.
 //
-// p.digest is read without a lock because the loop goroutine owns it (see
-// wiringPoll.digest), and this method is only ever called from the same
+// It hands the pair over WHOLE, which is the single reason the poll holds one field
+// rather than two: this is the only place a refresh writes a digest anywhere, so
+// there is no path that could advance the shared half and leave the local one
+// naming the superseded version's document. A posture reporting a fresh shared
+// digest beside a stale local one is worse than one reporting no local digest at
+// all — it is a pair no version was ever built from, and an operator sweeping it
+// would conclude two instances agree when they do not.
+//
+// p.digests is read without a lock because the loop goroutine owns it (see
+// wiringPoll.digests), and this method is only ever called from the same
 // goroutine that drives tick.
 //
 // # A completed refresh is not the same as a successful read
@@ -170,5 +178,5 @@ func (p *wiringPoll) alarmf(err error, format string, args ...any) {
 // and the count, so a push refused for four hours would report one failure and
 // an age of one tick, forever. The age is the half an operator escalates on.
 func (p *wiringPoll) refreshed() {
-	p.health.Refreshed(p.digest)
+	p.health.Refreshed(p.digests)
 }

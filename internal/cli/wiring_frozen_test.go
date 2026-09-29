@@ -139,7 +139,7 @@ func (p *swapProbe) assertHeldWhole(t *testing.T, ctx context.Context, boot *wir
 		t.Error("the field_types: row pushed alongside the connection change took effect. The rest of a " +
 			"name-set-changing push is HELD, not applied")
 	}
-	if p.poll.digest != baseline {
+	if p.poll.digests.Shared != baseline {
 		t.Error("the digest advanced past a push that was not adopted: the change would then be forgotten " +
 			"and the instance stale for the rest of its life with nothing saying so")
 	}
@@ -199,7 +199,7 @@ func TestAPushThatAddsAConnectionNameIsFlaggedAndNotApplied(t *testing.T) {
 	probe := newSwapProbe(t, ctx, "eng")
 
 	boot := probe.live.current()
-	baseline := probe.poll.digest
+	baseline := probe.poll.digests.Shared
 	if verdict(t, ctx, boot) {
 		t.Fatal("the booted instance already ALLOWS, so this case cannot tell a held push from an adopted one")
 	}
@@ -248,7 +248,7 @@ func TestAPushThatRemovesAConnectionNameIsFlaggedAndNotApplied(t *testing.T) {
 	probe := newSwapProbeWiredWith(t, ctx, "eng", swapSeed, mainOnlyWiring(time.Now().UTC()))
 
 	boot := probe.live.current()
-	baseline := probe.poll.digest
+	baseline := probe.poll.digests.Shared
 	pool, ok := boot.stack.conns.Pool("main")
 	if !ok {
 		t.Fatal("the boot opened no pool for the manifest's only connection, so this case cannot show one " +
@@ -304,7 +304,7 @@ func TestANameSetChangingPushIsHeldWhole(t *testing.T) {
 	probe := newSwapProbeWiredWith(t, ctx, "eng", swapSeed, mainOnlyWiring(time.Now().UTC()))
 
 	boot := probe.live.current()
-	baseline := probe.poll.digest
+	baseline := probe.poll.digests.Shared
 	bootReg, bootAttrs, bootEngine := boot.stack.registry, boot.stack.attributes, boot.stack.eng
 
 	now := time.Now().UTC()
@@ -357,7 +357,7 @@ func TestBothDirectionsOfAConnectionNameChangeAreReportedApart(t *testing.T) {
 	t.Setenv(connectionDSNEnvVar("replica"), unroutedDSN)
 	probe := newSwapProbeWiredWith(t, ctx, "eng", swapSeed, mainOnlyWiring(time.Now().UTC()))
 
-	err := probe.live.swap(ctx, withConnections(time.Now().UTC(), "replica"), "pushed-digest")
+	_, err := probe.live.swap(ctx, withConnections(time.Now().UTC(), "replica"), "pushed-digest")
 	mustRefuse(t, "a push that renames a connection", err,
 		aerr.APERTURE_WIRING_RESTART_REQUIRED,
 		`adds connection name "replica"`, `drops connection name "main"`, "RESTART THIS INSTANCE")
@@ -450,7 +450,7 @@ func TestTheFrozenNameSetIsCheckedBeforeAnythingIsRebuilt(t *testing.T) {
 		})
 
 	now := time.Now().UTC()
-	err := live.swap(ctx, withConnections(now, "main", "replica"), "adds-replica")
+	_, err := live.swap(ctx, withConnections(now, "main", "replica"), "adds-replica")
 	mustRefuse(t, "a push that adds a connection name", err,
 		aerr.APERTURE_WIRING_RESTART_REQUIRED, `"replica"`)
 	if rebuilds != 0 {
@@ -464,7 +464,7 @@ func TestTheFrozenNameSetIsCheckedBeforeAnythingIsRebuilt(t *testing.T) {
 	assertRestartNames(t, err, []string{"replica"}, nil)
 
 	// The operator's remedy: a push that restores the name set. It is adopted.
-	if err := live.swap(ctx, withConnections(now, "main"), "restores-main"); err != nil {
+	if _, err := live.swap(ctx, withConnections(now, "main"), "restores-main"); err != nil {
 		t.Fatalf("a push that restored the frozen name set was refused: %v", err)
 	}
 	if rebuilds != 1 {

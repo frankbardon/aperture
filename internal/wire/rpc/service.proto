@@ -250,9 +250,12 @@ message WiringPostureResponse {
   // It is what makes "stale for 40s" readable as one missed tick rather than
   // thirteen.
   string poll_interval = 2;
-  // digest: the content digest of the wiring this instance is DECIDING FROM —
-  // the last-good set, when stale. A hash of wiring the operator pushed; it
-  // carries no account, principal or object data.
+  // digest: the content digest of the SHARED wiring this instance is DECIDING
+  // FROM — the last-good set, when stale. A hash of wiring the operator pushed;
+  // it carries no account, principal or object data. It covers the five shared
+  // tables and nothing else, which is what keeps it comparable with what a push
+  // wrote and with what `aperture wiring diff` reports — see local_digest for the
+  // other half.
   string digest = 3;
   // stale: the most recent refresh attempt FAILED, so this instance is still
   // deciding from the wiring it last succeeded with. It does NOT say the deployed
@@ -282,6 +285,25 @@ message WiringPostureResponse {
   string reason = 9;
   // last_refresh: when a refresh last succeeded (RFC3339); empty when none has.
   string last_refresh = 10;
+  // local_digest: the content digest of the LOCAL wiring document the version this
+  // instance is deciding through was built from — its own --seed file — and empty
+  // when it has none, which is the state of every instance wired only from the
+  // shared tables.
+  //
+  // It is a SEPARATE field and never mixed into digest, because digest has to stay
+  // a digest of what a push produced. It is here because a rebuild RE-READS that
+  // local document, and the document is decision-affecting (inline objects:
+  // metadata, inline attributes: bags, the declared attribute-key sets taken from
+  // them, and on a file-wired deployment the whole of the wiring) — so two
+  // instances could report the identical digest and return DIFFERENT verdicts.
+  // Sweeping BOTH fields across a fleet is what makes "these two are wired the
+  // same" conclusive; digest alone answers only "did this instance get the push?".
+  //
+  // It moves with an ADOPTION, exactly as digest does: it names the document the
+  // RUNNING version was built from, not whatever is on disk now, and not what the
+  // process booted on. Like digest it is a hash, and carries no path, no account,
+  // no principal and no object data.
+  string local_digest = 11;
 }
 
 // ---- Server-side list filtering ----

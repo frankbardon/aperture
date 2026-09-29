@@ -63,6 +63,30 @@ import (
 // authenticated read on the facade and its Twirp translation; the operator is
 // the party holding credentials, and the anonymous caller is not the operator.
 
+// WiringDigests is the PAIR of digests that together identify the configuration
+// one wiring version was built from: the SHARED half, read out of the wiring
+// tables, and the LOCAL half, read out of this instance's own document.
+//
+// It is one type and not two arguments because the two must never be advanced
+// apart. A refresh adopts ONE version, built from ONE shared read and ONE read of
+// the local document, and a posture that reported a fresh shared digest beside the
+// superseded local one would be worse than reporting no local digest at all: an
+// operator sweeping a fleet would compare a pair that never described any version
+// and conclude two instances agree when they do not. Handing the recorder a single
+// value makes "advance one and not the other" unrepresentable rather than merely
+// discouraged — there is no call that carries one half.
+//
+// Both halves are hashes and carry no account, principal or object data. See
+// WiringPosture.Digest and WiringPosture.LocalDigest for what each covers.
+type WiringDigests struct {
+	// Shared is the digest of the five shared wiring tables — the value a push
+	// produces and `aperture wiring diff` compares against.
+	Shared string
+	// Local is the digest of this instance's own wiring document, or empty when it
+	// has none.
+	Local string
+}
+
 // WiringPosture is what this process will say about the shared wiring it is
 // deciding from: whether it re-reads it at all, whether the last re-read
 // FAILED, and — the half that matters — how long ago that started.
@@ -89,7 +113,53 @@ type WiringPosture struct {
 	// Digest is the content digest of the shared wiring THIS PROCESS IS DECIDING
 	// FROM — the last-good set, when the alarm is raised. It is a hash of wiring
 	// an operator pushed and carries no account, principal or object data.
+	//
+	// It is the SHARED half and only that: the five wiring tables, digested exactly
+	// as a push wrote them, which is what keeps it byte-comparable with what
+	// `aperture wiring push` produced and with what `aperture wiring diff` reports.
+	// Nothing local is mixed into it, deliberately — see LocalDigest.
 	Digest string
+	// LocalDigest is the content digest of the LOCAL wiring document the version
+	// this process is deciding through was built from — the instance's own --seed
+	// file — and empty when it has none.
+	//
+	// It is a SEPARATE field and not part of Digest, because the two answer
+	// different questions and only one of them is comparable with anything outside
+	// this process. Digest must stay a digest of what a push produced; a value mixed
+	// with per-instance content would match neither a push nor a wiring diff, and
+	// the sweep it exists for would be gone.
+	//
+	// # Why it exists at all
+	//
+	// A rebuild RE-READS the local document (buildWiredStack -> seedDocument ->
+	// seed.ParseFile is a fresh disk read on a swap exactly as on a boot), and that
+	// document is decision-affecting: it carries inline objects: metadata, inline
+	// attributes: bags, the declared attribute-key sets taken from them, and — on a
+	// file-wired deployment — the whole of the wiring. So two instances could report
+	// the IDENTICAL Digest and return DIFFERENT verdicts, while the operator
+	// documentation tells them to sweep Digest across a fleet to establish that two
+	// instances are wired the same. This field is what makes that sweep conclusive:
+	// same Digest AND same LocalDigest means the pair really was built from the same
+	// configuration.
+	//
+	// # It tracks the RUNNING version, not the boot
+	//
+	// The value moves with an ADOPTION, exactly as Digest does. A swap that re-read
+	// a changed file reports the new digest from the instant it installed the new
+	// version; a tick that observed no shared change reports the running version's,
+	// which is the document that version was built from and not whatever is on disk
+	// now. A value captured once at boot would be wrong in precisely the case this
+	// field exists to expose.
+	//
+	// # What "" means
+	//
+	// No local content: either there is no document at all — `aperture serve --store
+	// postgres://…` with no --seed, which is the deployment shared wiring exists to
+	// enable — or one that declares nothing. Those two are not distinguished,
+	// because they are the same answer to the question the digest asks: neither
+	// contributes anything to what this instance decides. It is also what an
+	// unwired recorder reports, along with the rest of the zero posture.
+	LocalDigest string
 	// Stale reports that the most recent refresh attempt FAILED and this process
 	// is therefore running the wiring it last succeeded with. It says nothing
 	// about whether the deployed wiring has actually changed: a failed read
@@ -162,7 +232,9 @@ type WiringHealth struct {
 
 	polling bool
 	every   time.Duration
-	digest  string
+	// digests is the PAIR the running version was built from, held as one value so
+	// that no path through this type can replace half of it. See WiringDigests.
+	digests WiringDigests
 
 	// since is the start of the current run of failures, and the single source of
 	// "is it stale". Zero means healthy, which is what makes recovery one
@@ -176,16 +248,22 @@ type WiringHealth struct {
 }
 
 // NewWiringHealth builds the recorder for a process that polls the shared wiring
-// every `every`, having booted on `digest`.
+// every `every`, having booted on `booted`.
 //
 // A non-positive `every` records a process that does NOT poll: Posture reports
 // Polling false and can never report Stale, because nothing will ever attempt a
 // refresh to fail. That makes the "polling is off" configuration expressible
 // without a nil check at the construction site.
 //
+// booted is the PAIR the boot's version was built from, and it is a pair for the
+// same reason Refreshed takes one: a recorder seeded with one half and not the
+// other would report a configuration no version ever had. Either half may be
+// empty — an empty shared set has an ordinary digest of its own, and an instance
+// with no local document has no local digest at all.
+//
 // clock may be nil, which means time.Now. A caller supplies one only to pin
 // StaleFor.
-func NewWiringHealth(every time.Duration, digest string, clock func() time.Time) *WiringHealth {
+func NewWiringHealth(every time.Duration, booted WiringDigests, clock func() time.Time) *WiringHealth {
 	if clock == nil {
 		clock = time.Now
 	}
@@ -193,31 +271,37 @@ func NewWiringHealth(every time.Duration, digest string, clock func() time.Time)
 		now:     clock,
 		polling: every > 0,
 		every:   every,
-		digest:  digest,
+		digests: booted,
 	}
 }
 
 // Refreshed records that a refresh SUCCEEDED and clears the alarm, naming the
-// digest this process is now deciding from.
+// digests this process is now deciding from.
 //
-// runningDigest is what the instance RUNS, never what the tables hold. On a tick
-// that found no change the two are the same value; on a tick that found a change
-// the instance keeps running the old one until the rebuild adopts it, and this
-// method must be told the old one or the posture would claim an adoption that
-// has not happened. That argument is the seam the hot-rebuild story attaches to:
-// it advances the digest and calls this again once the swap has actually
-// succeeded, and calls Failed instead when it has not.
+// running is what the instance RUNS, never what the tables or the disk hold. On a
+// tick that found no change it is the pair the running version was already built
+// from; on a tick that found a change the instance keeps running the old pair
+// until the rebuild adopts it, and this method must be told the old one or the
+// posture would claim an adoption that has not happened. That is why the
+// hot-rebuild path advances the pair and calls this only once the swap has
+// actually succeeded, and calls Failed instead when it has not.
+//
+// It takes BOTH digests as one value, and that is the whole protection against
+// the failure mode this pair exists to avoid: there is no call that advances the
+// shared digest while leaving the local one where it was, so a posture can never
+// report a pair no version was built from. A caller assembles the pair from the
+// version it installed, once, and hands it over whole.
 //
 // Clearing is unconditional. An alarm that survives its own remedy is a
 // different bug from an alarm that never fired, and a worse one — it trains an
 // operator to ignore the channel.
-func (h *WiringHealth) Refreshed(runningDigest string) {
+func (h *WiringHealth) Refreshed(running WiringDigests) {
 	if h == nil {
 		return
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.digest = runningDigest
+	h.digests = running
 	h.lastRefresh = h.now()
 	h.since = time.Time{}
 	h.failures = 0
@@ -272,9 +356,13 @@ func (h *WiringHealth) Posture() WiringPosture {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	p := WiringPosture{
-		Polling:     h.polling,
-		Every:       h.every,
-		Digest:      h.digest,
+		Polling: h.polling,
+		Every:   h.every,
+		// Both halves of the pair, from one read under one lock: a snapshot that
+		// reported a shared digest from before a swap and a local digest from after it
+		// would be the torn pair WiringDigests exists to prevent.
+		Digest:      h.digests.Shared,
+		LocalDigest: h.digests.Local,
 		LastRefresh: h.lastRefresh,
 	}
 	if h.since.IsZero() {

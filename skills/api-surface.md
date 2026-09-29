@@ -95,7 +95,8 @@ Full surface:
   this instance's background re-read of the SHARED WIRING tables is failing — so
   the instance is still deciding from the last wiring it successfully read — and
   **for how long**, plus the failure count, the `APERTURE_*` code of the most
-  recent failure and the digest it is deciding from. It is wired with
+  recent failure and the TWO digests it is deciding from — the SHARED wiring's and
+  the LOCAL document's, separately. It is wired with
   `WithWiringHealth` and gated directly through
   `authz.Gate.RequireSystemAdmin`, like `ListAttributes` and in the same order.
   See [the wiring posture read](#the-wiring-posture-read).
@@ -533,8 +534,9 @@ seriously rather than as tuning.
   firing with worthless NUMBERS — `Refreshed` zeroes the window and the count, so a
   push refused for four hours would report one failure and an age of one tick,
   forever. Staleness is CONTINUOUS from the first refusal until an adoption
-  succeeds. `Posture().Digest` moves with the ADOPTION and never with the read, so
-  it never names wiring this instance refused.
+  succeeds. `Posture().Digest` and `Posture().LocalDigest` both move with the
+  ADOPTION and never with the read, so neither ever names wiring — or a document —
+  this instance refused.
 - **A step this process's OWN shutdown cancelled is not a failure.** SIGTERM
   landing while the re-read or the rebuild is in flight returns
   `context.Canceled`, and recording it would open a staleness window on a cleanly
@@ -552,11 +554,28 @@ seriously rather than as tuning.
   instants RFC3339, because the person reading it has just been paged.
 - **`Digest` is the SHARED wiring's, and only that.** It is `wiringDigest` of the
   five tables, which is what makes it comparable with what a push produced and with
-  `aperture wiring diff`. It covers no part of an instance's local `--seed` file, and
-  a rebuild re-reads that file — so two instances can report the same digest and hold
-  different inline `objects:` metadata and different inline `attributes:` bags. The
-  read answers "did this instance get the push"; it is not by itself proof that two
-  instances decide identically.
+  `aperture wiring diff`. Nothing local is folded into it, ever: a value mixed with
+  per-instance content matches neither a push nor a wiring diff, and the one sweep
+  the field exists for would be gone.
+- **`LocalDigest` is the other half, and it is a SEPARATE field.** It is
+  `localWiringDigest` of the LOCAL document the RUNNING version was built from —
+  this instance's own `--seed` file — and `""` when it has none, which is every
+  instance wired only from the shared tables. It exists because a rebuild RE-READS
+  that document and the document decides things (inline `objects:` metadata, inline
+  `attributes:` bags, the declared key sets taken from them, and on a file-wired
+  deployment the whole of the wiring), so `Digest` alone left two instances able to
+  report the IDENTICAL value and return DIFFERENT verdicts. Same `Digest` AND same
+  `LocalDigest` is the conclusive fleet sweep; `Digest` alone answers only "did this
+  instance get the push?".
+- **The two advance TOGETHER or not at all.** They are recorded as one value
+  (`service.WiringDigests`), taken from the version a swap INSTALLED, so there is no
+  call that advances one and leaves the other. A posture naming a fresh shared digest
+  beside a superseded local one is worse than one naming no local digest at all — it
+  is a pair no version was ever built from, and an operator sweeping it concludes two
+  instances agree when they do not. A failed refresh moves neither, and
+  `LocalDigest` tracks the RUNNING version and never the boot, because a value
+  captured at boot would be wrong in exactly the scenario the field exists to
+  expose.
 - **It carries no model data.** Digests, durations, counts and coded errors only —
   never an object type, an id or a key — the same restriction the poll's stderr
   reports carry.

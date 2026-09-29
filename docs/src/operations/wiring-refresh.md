@@ -89,7 +89,8 @@ The two short hashes are digests of the wiring itself, and they are the handle f
 instance names the same new digest. They contain no account, principal or object
 data.
 
-Two things a sweep on those digests does not tell you:
+One thing a sweep on those digests does not tell you, and one thing that needs the
+second digest:
 
 - **A rebuild also re-reads that instance's local `--seed` file.** The two local
   sections — inline `objects:` metadata and inline `attributes:` bags, plus the
@@ -97,11 +98,22 @@ Two things a sweep on those digests does not tell you:
   swap. So a file rewritten in place since the instance started (a ConfigMap volume
   remount, a redeploy that only updates a mounted file) takes effect on the next
   swap, without a restart, triggered by whatever shared push happened to come along.
-- **Equal digests are not proof that two instances decide the same.** The digest
-  covers the five shared tables only. Two instances can name the same digest and hold
-  different inline metadata, because that comes from each instance's own file and no
-  digest covers it. Use the digest sweep for "did the push land"; for "do these two
-  agree", the local files have to be shipped identically too.
+- **Equal *shared* digests are not by themselves proof that two instances decide the
+  same** — the shared digest covers the five tables only, deliberately, so that it
+  stays comparable with what a push wrote and with what `aperture wiring diff`
+  reports. The local half is reported as its own field,
+  `WiringPosture.LocalDigest`: the digest of the document the *running* version was
+  built from, empty when the instance has none. Sweep **both** —
+
+  | You compare | You learn |
+  |---|---|
+  | `Digest` | the same push has landed on both instances |
+  | `Digest` **and** `LocalDigest` | the two were built from the same configuration at all |
+
+  `LocalDigest` moves with an adoption exactly as `Digest` does, and the two advance
+  together or not at all, so a posture never reports a pair no version was built
+  from. It is a content digest: a regenerated-but-equivalent file digests the same,
+  so a deploy pipeline that reformats the document does not read as drift.
 
 ## What a push cannot change without a restart
 
@@ -242,7 +254,7 @@ on wiring it cannot build, rather than starting degraded.
 | What you see | Where to look first |
 |---|---|
 | A push had no effect on an instance | Is polling on there at all? A boot-only instance is correct and needs a restart. `WiringPosture.Polling` says. |
-| Some instances answer differently from others | Expected for up to one interval after a push. Compare `WiringPosture.Digest` across the fleet; if they disagree for longer than the interval, at least one is stale. If they AGREE and the answers still differ, the difference is not in the shared wiring — compare the instances' local `--seed` files, which no digest covers. |
+| Some instances answer differently from others | Expected for up to one interval after a push. Compare `WiringPosture.Digest` across the fleet; if they disagree for longer than the interval, at least one is stale. If they AGREE and the answers still differ, the difference is not in the shared wiring — compare `WiringPosture.LocalDigest`, which is the digest of each instance's own local document. Two instances agreeing on BOTH were built from the same configuration. |
 | `APERTURE_WIRING_RESTART_REQUIRED` on every tick | A connection name was added or dropped. Follow the three-step rollout above — and remember nothing else in that push has applied either. |
 | `APERTURE_WIRING_CONNECTION_UNROUTED` at boot | That instance has no route for a name the deployment declares. Supply it, then start. |
 | `APERTURE_WIRING_REFRESH_FAILED` itself | Nothing underneath it carried a code, which is worth reporting. Usually the store is unreachable from that host. |
