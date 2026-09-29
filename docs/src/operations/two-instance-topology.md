@@ -176,7 +176,7 @@ Operationally, three commands answer the three questions worth asking of a pair:
 |---|---|
 | What wiring is deployed? | `aperture wiring show --store <dsn>` |
 | Does it match the document in the repository? | `aperture wiring diff --store <dsn> --seed model.yaml` |
-| Which attribute slots did *this* instance actually wire? | `aperture attributes slots --seed <file>` |
+| Which attribute slots did *this* instance actually wire, and from where? | `aperture attributes slots --store <dsn> --seed <file>` — the `source` column says `(shared wiring)` for a pushed row and `(--seed file)` for a local one |
 
 Run the last one on **each** instance. It restates what that process resolved,
 which is the one thing a shared store cannot tell you.

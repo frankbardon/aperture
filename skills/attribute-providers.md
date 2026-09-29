@@ -1069,16 +1069,37 @@ require a human at a shell with the deployment's seed file in hand.
 
 | Command | Gate | What it does |
 |---|---|---|
-| `aperture attributes slots` | none | one row per slot: source (`csv`/`sql`/`inline`/`(host)`/`(unwired)`), `ttl`, `max-size`, `cached` — the source is the **winning** layer for a slot both sections fill |
+| `aperture attributes slots` | none | one row per **layer** of each slot: `layer` (`shared`/`local`), `source` (the kind plus the place — `sql (shared wiring)`, `csv (--seed file)`, `inline (--seed file)`, `(host)`, `(unwired)`), that layer's own `ttl` and `max-size`, and the slot's `cached` count |
 | `aperture attributes query <slot>` | system-admin | a page of the directory as `[{id, attributes}]`, narrowed by `--field` / `--fields-json` |
 | `aperture attributes invalidate <slot> [--id X] [--all]` | system-admin | drop cached bags |
 
-`slots` is ungated because it discloses nothing the caller did not supply: it
-reads the seed file named on the command line plus the cache configuration this
-process built from it. It contacts no provider, names no key, and prints no bag.
-Requiring system-admin authority to read back a file you just passed in would mean
-nobody could diagnose "is the user slot even wired?" without already holding the
-authority the diagnosis exists to explain.
+`slots` is ungated because it discloses nothing the caller did not supply: it reads
+the seed file named on the command line, the shared wiring rows in the `--store`
+named beside it, and the cache configuration this process built from the two. It
+contacts no provider, names no key, and prints no bag. Requiring system-admin
+authority to read back a file you just passed in would mean nobody could diagnose "is
+the user slot even wired?" without already holding the authority the diagnosis exists
+to explain — and the wiring half needs no gate for the reason `aperture wiring show`
+needs none: the `--store` credential already grants full **write** access to those
+rows.
+
+**The listing is per LAYER, and both halves of that are the fix for a wrong answer.**
+It reported one row per slot, with a `source` derived from the LOCAL document alone
+and a `ttl` read through `CacheConfigFor`:
+
+- a slot wired from the **shared wiring** printed `(host)`, the label reserved for a
+  Go registration, on the one command whose job is "is this slot wired, and from
+  where?". The `ttl` beside it was read off the registry and therefore correct, which
+  made the source column the only wrong cell and so the believable one. The origin is
+  now read from the two places wiring comes from, never inferred — the wiring set and
+  `Document.AttributeSlotSources` — with the LAYER order taken from
+  `AttributeRegistry.Layers`, the registry's own precedence.
+- a slot with two layers printed **one** `ttl`, the governing layer's. A layer's ttl
+  is its **own** revocation window (`CacheConfigForLayer`), so a shared directory on
+  five minutes beside an inline block that never expires left every key only the
+  inline block serves cached indefinitely, while the listing told an operator who had
+  just revoked something that the window was five minutes. **Two caches, not one**,
+  and a listing that reports one number per slot is the regression.
 
 `query` and `invalidate` hand the slot string over **unparsed**, because the
 facade gates first and parses second; parsing in the CLI would move the disclosure
@@ -1086,12 +1107,13 @@ that ordering prevents back into the CLI. The `--field` predicate is exactly
 `aperture enumerate`'s: ANDed, absent-never-matches, membership for collections,
 typed equality for everything else (so `"5"` never matches `5`).
 
-The `ttl` column **is the revocation window**; `never` means a fetched bag is
-dropped only by eviction or an explicit invalidate — correct for a fixed inline
-block, dangerous for a live directory. On a slot with two layers it is the
-**governing** (shared) layer's window, because that is the layer a contested key is
-answered from; the `cached` column counts *this* process across both layers, so a
-one-shot invocation reads `0`.
+Each `ttl` column **is that layer's revocation window**; `never` means a fetched bag
+is dropped only by eviction or an explicit invalidate — correct for a fixed inline
+block, dangerous for a live directory. The `cached` column counts *this* process for
+the whole **slot**: the counters are kept per slot and summed across its layers — a
+subject both layers serve is held twice, because it is cached twice — so it is printed
+once, on the slot's first row, and reads `-` on the second layer's. A one-shot
+invocation reads `0`.
 
 `invalidate`'s three forms are mutually exclusive and a conflict is **refused**
 rather than resolved by precedence: "`--all` plus a slot" has two plausible
