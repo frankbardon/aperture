@@ -836,7 +836,20 @@ A push is refused when:
     declare (named in the refusal)
   * anything carries a literal `dsn:` — only `dsn_env:`, a variable NAME, is ever
     accepted, and shared wiring stores neither
+  * the document declares NO wiring at all and --allow-empty was not given
 ```
+
+AN ALL-EMPTY DOCUMENT IS REFUSED, and it is the one refusal about what the push
+would MEAN rather than about what is wrong with it. Because a push replaces, an
+empty set retires every entry the deployment is running: all five tables are
+emptied and every instance goes back to building its wiring from its own --seed
+file — or, if it has none, from NOTHING, which still starts, with every attribute
+slot unregistered. An unregistered slot answers with an empty bag, so a rule that
+EXCLUDED on an attribute stops excluding and the grant WIDENS, with nothing in a
+verdict, a trace or a note to say so. The likeliest causes are the wrong --seed
+path and a mistyped section key (`provider:` for `providers:`), which is not an
+error — it is a section that simply is not there. Pass --allow-empty to retire the
+wiring deliberately.
 
 No actor is required: the store credential is the authority, exactly as it is for
 `aperture import`.
@@ -847,6 +860,7 @@ aperture wiring push [options]
 
 | Name | Aliases | Type | Default | Usage |
 | --- | --- | --- | --- | --- |
+| `--allow-empty` | — | bool | — | push a document that declares NO wiring at all, which RETIRES every entry the deployment is running: all five tables are emptied and every instance goes back to building its wiring from its own --seed file, or from nothing if it has none. Refused without this flag, because the commonest cause is the wrong --seed path or a mistyped section key |
 | `--seed` | — | string | — | path to the JSON/YAML seed document whose four SHARED wiring sections are pushed (required; no model state is applied from it and there is no embedded-example fallback) |
 | `--store` | — | string | — | DSN for the shared store the wiring lives in: a postgres:// or postgresql:// URL for PostgreSQL, any other value as a SQLite path (required — there is nothing to share about an in-memory store). Set APERTURE_POSTGRES_SCHEMA to place Aperture's tables in a named PostgreSQL schema |
 

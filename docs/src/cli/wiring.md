@@ -112,6 +112,32 @@ A push is refused when:
 | `APERTURE_WIRING_OBJECT_TYPE_UNKNOWN` | a provider entry serves an `object_type` the store has no row for. The refusal names the type. |
 | `APERTURE_WIRING_CONNECTION_UNDECLARED` | an entry cites a `connection:` the pushed manifest does not declare. The refusal names it and lists the ones that were. |
 | `APERTURE_SQL_PROVIDER_DSN_LITERAL` | anything carries a literal `dsn:`. Only `dsn_env:`, a variable *name*, is ever accepted — and shared wiring stores neither. |
+| `APERTURE_WIRING_EMPTY_PUSH` | the document declares **no** wiring at all and `--allow-empty` was not given. See below: this is the one refusal about what the push would *mean*. |
+
+### An all-empty document is refused
+
+Because a push replaces, a document with no wiring in it is not "nothing to do" — it
+**retires every entry the deployment is running**. All five tables are emptied and
+every instance goes back to building its wiring from its own `--seed` file; an
+instance with no `--seed` file, which is the shape this whole feature exists to
+enable, then builds **none**. It still starts, with an empty object registry and an
+empty attribute registry. Every attribute slot is unregistered, an unregistered slot
+answers with an empty bag, and a rule that *excluded* on an attribute it can no longer
+see stops excluding — so the grant **widens**, with nothing in a verdict, a trace or a
+note to say so. Under [`--wiring-poll`](serve.md#noticing-a-push-without-a-restart) it
+lands without a restart.
+
+The two documents that produce an empty set are indistinguishable from the store's
+side and both are usually mistakes: the **wrong `--seed` path**, and a file whose
+section key is **mistyped**. `provider:` for `providers:` is not an error — the seed
+reader does not refuse unknown keys, so the section is simply not there.
+
+Retiring a deployment's wiring is a legitimate act, so `--allow-empty` says it
+deliberately; the summary then spells out what was retired, because five zeroes read
+as a summary rather than as a retirement. What the refusal cannot see is a *partial*
+retirement — one mistyped key in a document that still declares other sections — which
+is indistinguishable from deliberately dropping an entry. [`diff`](#diff--compare-the-deployment-against-the-repository)
+is the command for that.
 
 A push is **audited**: one `WiringPush` mutation record against
 `model.AccountWildcard`, carrying the per-section counts and the deployed connection
