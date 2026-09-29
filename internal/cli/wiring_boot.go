@@ -278,6 +278,19 @@ func wiringBuildOptions() []seed.BuildOption {
 // The refusal is the same function the push calls, so there is one vocabulary in
 // one place with two call sites, and it names the OBJECT TYPE, which is the thing
 // an operator can go and look up.
+//
+// # Both sides of the collision key are TRIMMED
+//
+// The shared side is trimmed at the push (wiring_project.go), so only the local
+// side can arrive with surrounding whitespace — and an untrimmed key made
+// `object_type: "document "` collide with NOTHING: not this refusal, and not
+// provider.Registry.Register's own duplicate check, which does not normalise
+// either. The boot then SUCCEEDED and registered the local provider under a type
+// no decision ever asks about, while the operator's whole mental model is that
+// their file serves `document`. Dead wiring that reports itself healthy is the one
+// outcome this layer exists to rule out, so the key is normalised on both sides
+// and the collision becomes visible. layerFieldTypes and layerAttributeProviders
+// normalise for the same reason.
 func layerProviders(shared []model.WiringProvider, local *seed.Document) ([]seed.Provider, error) {
 	out := make([]seed.Provider, 0, len(shared))
 	declared := make(map[string]struct{}, len(shared))
@@ -287,13 +300,13 @@ func layerProviders(shared []model.WiringProvider, local *seed.Document) ([]seed
 			return nil, err
 		}
 		out = append(out, wiringSeedProvider(p))
-		declared[p.ObjectType] = struct{}{}
+		declared[strings.TrimSpace(p.ObjectType)] = struct{}{}
 	}
 	if local != nil {
 		var collided []string
 		for _, p := range local.Providers {
-			if _, dup := declared[p.ObjectType]; dup {
-				collided = append(collided, p.ObjectType)
+			if _, dup := declared[strings.TrimSpace(p.ObjectType)]; dup {
+				collided = append(collided, strings.TrimSpace(p.ObjectType))
 				continue
 			}
 			out = append(out, p)
@@ -319,6 +332,11 @@ func layerProviders(shared []model.WiringProvider, local *seed.Document) ([]seed
 // fieldTypeIndex refuses a type declared twice, so an un-layered append would
 // fail the build with "object_type declared twice" and leave the operator to work
 // out that the other one is in a database.
+//
+// The key is trimmed on both sides, for the reason layerProviders gives: seed's
+// own fieldTypeIndex does not normalise either, so an untrimmed local
+// `object_type:` escaped both checks and declared field types for a type nothing
+// asks about.
 func layerFieldTypes(shared []model.WiringFieldType, local *seed.Document) ([]seed.FieldType, error) {
 	out := wiringSeedFieldTypes(shared)
 	if local == nil || len(local.FieldTypes) == 0 {
@@ -326,12 +344,12 @@ func layerFieldTypes(shared []model.WiringFieldType, local *seed.Document) ([]se
 	}
 	declared := make(map[string]struct{}, len(out))
 	for _, ft := range out {
-		declared[ft.ObjectType] = struct{}{}
+		declared[strings.TrimSpace(ft.ObjectType)] = struct{}{}
 	}
 	var collided []string
 	for _, ft := range local.FieldTypes {
-		if _, dup := declared[ft.ObjectType]; dup {
-			collided = append(collided, ft.ObjectType)
+		if _, dup := declared[strings.TrimSpace(ft.ObjectType)]; dup {
+			collided = append(collided, strings.TrimSpace(ft.ObjectType))
 			continue
 		}
 		out = append(out, ft)

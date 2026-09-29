@@ -214,6 +214,25 @@ func TestEveryCollidingSectionIsRefusedByName(t *testing.T) {
 			names: []string{"project", "field_types:"},
 		},
 		{
+			// WHITESPACE is not a different object type. The shared side is trimmed
+			// at the push, so only a local entry can arrive padded — and an
+			// untrimmed key collided with NEITHER this refusal NOR
+			// provider.Registry.Register's duplicate check, which does not
+			// normalise either. The boot SUCCEEDED and registered the local
+			// provider under a type no decision ever asks about: dead wiring, with
+			// the operator believing their file serves `document`.
+			name:  "a providers: entry whose object type differs only in whitespace",
+			local: &seed.Document{Providers: []seed.Provider{{ObjectType: " document ", Kind: "csv", Path: "d.csv"}}},
+			names: []string{"document", "providers:"},
+		},
+		{
+			name: "a field_types: entry whose object type differs only in whitespace",
+			local: &seed.Document{FieldTypes: []seed.FieldType{
+				{ObjectType: "project\t", Fields: map[string]string{"started_on": "datetime"}},
+			}},
+			names: []string{"project", "field_types:"},
+		},
+		{
 			name: "an attribute_providers: entry for a shared slot",
 			local: &seed.Document{AttributeProviders: []seed.AttributeProvider{
 				{Subject: "user", Kind: "csv", Path: "u.csv"},
