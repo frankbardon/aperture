@@ -124,9 +124,11 @@ and the local file may only ADD**. A local `providers:`, `field_types:`,
 `attribute_providers:` or `attributes:` entry for an object type or slot the
 database never declared is built normally, which is how a `kind: csv` provider (a
 path cannot be shared wiring) and a Go host's hand-written providers survive a
-push. A local entry for one the database **already declares** fails the boot with
-`APERTURE_WIRING_LOCAL_COLLISION` naming it, rather than one side quietly winning.
-See
+push. A local **wiring** entry for one the database **already declares** fails the
+boot with `APERTURE_WIRING_LOCAL_COLLISION` naming it, rather than one side quietly
+winning — with one exception: a local inline `attributes:` block for a slot the
+database declares is **layered** under the pushed row rather than refused, because
+the shared layer wins every key both serve and nothing is dropped. See
 [With both, the database wins and the file may only ADD](global-options.md#with-both-the-database-wins-and-the-file-may-only-add).
 
 ### Noticing a push without a restart

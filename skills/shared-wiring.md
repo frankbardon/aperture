@@ -173,9 +173,18 @@ An instance can have wiring rows *and* a `--seed` file, and most will.
 - The **local file may ADD** an object type or an attribute slot the database never
   declared. It is built exactly as it would be on an instance that has never been
   pushed to, `kind: csv` and all.
-- A local entry for an object type or slot the database **already declares** fails
-  the boot with `APERTURE_WIRING_LOCAL_COLLISION`, naming the entry and both
+- A local WIRING entry for an object type or slot the database **already declares**
+  fails the boot with `APERTURE_WIRING_LOCAL_COLLISION`, naming the entry and both
   sections.
+- The two inline DATA sections are the exception, and they are **not one rule**. A
+  local `objects:` entry for a type the database serves is refused
+  (`seed.StrictProviderCollision()`, `APERTURE_CONFIG_INVALID` naming the type),
+  because the object rule is a type-level **discard** with no winner anybody chose. A
+  local `attributes:` block for a slot the database declares is **layered**, not
+  refused: the pushed row is that slot's shared layer, the inline bags its local one,
+  the shared layer wins every key both serve and nothing is dropped, so a contested
+  key reads the same on every instance in the fleet. It was refused once, and that
+  left no spelling at all for adding a field the shared directory does not carry.
 
 **Additive is what makes the surface usable at all.** A Go host's hand-written object
 providers are code no document can describe — Arc registers `wave` and `metric`

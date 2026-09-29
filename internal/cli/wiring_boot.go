@@ -56,9 +56,14 @@ import (
 // The local file's own four WIRING sections are not discarded. They are layered
 // on top of the projection ADDITIVELY: a local entry for an object type or an
 // attribute slot the shared wiring never declared is carried through and built
-// exactly as it would be on an unpushed instance, and a local entry for one the
-// shared wiring DOES declare fails the boot with
+// exactly as it would be on an unpushed instance, and a local WIRING entry for one
+// the shared wiring DOES declare fails the boot with
 // APERTURE_WIRING_LOCAL_COLLISION naming it.
+//
+// The inline DATA sections are the exception, and they are not one rule: an
+// objects: entry for a shared type is refused and an attributes: block for a shared
+// slot is LAYERED under it. See "Where the collision check lives" below for why the
+// two seams answer differently.
 //
 // Additive is not a convenience. It is the only shape that composes with a Go
 // host: Arc's `wave` and `metric` object providers are hand-written Go registered
@@ -130,21 +135,25 @@ import (
 // happened yet, and one that tried would be a rule that disagrees with the
 // registry the moment a host registers in a different order.
 //
-// The inline-data sections are refused on the same axis, one by each mechanism it
-// already has:
+// The two inline-DATA sections part company here, because the two seams resolve an
+// overlap differently and the refusal follows the resolution rather than the syntax:
 //
-//   - objects: against a shared providers: entry — seed.StrictProviderCollision(),
-//     which is exactly that posture and is passed on this path only (see
-//     wiringBuildOptions). On the file-only path the overlap stays the documented
-//     silent discard, because adding a providers: row while inline entries are
-//     still in the file is an ordinary migration step.
-//   - attributes: against a shared attribute_providers: entry — refused by
-//     layerAttributeProviders, because the attribute builder takes no BuildOption
-//     and the posture has nowhere else to be stated. Note that WITHIN one document
-//     that pairing is not a discard at all but a layering, shared over local (see
-//     layerAttributeProviders and provider.AttributeLayer); what is refused here is
-//     two AUTHORS declaring one slot without either having seen the other's, which
-//     is the same thing every other section on this axis refuses.
+//   - objects: against a shared providers: entry is REFUSED, by
+//     seed.StrictProviderCollision() — exactly that posture, passed on this path and
+//     for the shared types only (see wiringBuildOptions). The object rule is a
+//     type-level DISCARD with no winner anybody chose, so a push on another host
+//     would switch off metadata checked into this instance's file. On the file-only
+//     path, and for a type only the local file declares twice, the overlap stays the
+//     documented silent discard: adding a providers: row while inline entries are
+//     still in ONE author's file is an ordinary migration step.
+//   - attributes: against a shared attribute_providers: entry is LAYERED, not
+//     refused. The attribute rule is not a discard: the shared row is the slot's
+//     SHARED layer, the inline bags its LOCAL one, a fetch reads their merge and the
+//     shared layer wins every key both serve, so nothing is dropped and a contested
+//     key reads the same on every instance in the fleet. There is nothing for a
+//     refusal to protect, and refusing it was the only spelling an instance had left
+//     for adding a field its deployment's shared directory does not carry. See
+//     layerAttributeProviders and provider.AttributeLayer.
 
 // connectionDSNEnvPrefix and connectionDSNEnvSuffix bracket the environment
 // variable a DB-declared connection name is read through when the local seed
@@ -361,30 +370,50 @@ func layerFieldTypes(shared []model.WiringFieldType, local *seed.Document) ([]se
 }
 
 // layerAttributeProviders projects the shared attribute_providers: entries and
-// appends the local document's own, refusing any slot both declare — and refusing
-// a local INLINE attributes: entry for a slot the shared wiring declares, which is
-// the same collision arriving through the data section.
+// appends the local document's own, refusing any slot BOTH SECTIONS declare a
+// PROVIDER for.
 //
-// The inline half has to be refused here rather than by a build option, because
-// BuildAttributeRegistryWithConnections takes none: there is no strict posture to
-// turn on for the attribute seam, so this is the only place the additive rule can be
-// stated for it.
+// # What is refused, and what is layered
 //
-// WHAT THIS IS NOT. It is not the seed document's own precedence rule. Inside ONE
-// document a slot declared in both sections is a LAYERING and not a collision: the
-// attribute_providers: entry is the slot's shared layer, the inline attributes: block
-// is its local one, a fetch reads their merge, the shared layer wins every key both
-// serve, and nothing is dropped (provider.AttributeLayer is the full account). That
-// is why this refusal is about the AUTHORS rather than about the merge: the shared
-// rows were pushed by whoever administers the deployment and the local file belongs
-// to this machine, so a slot named by both is two authors declaring the same wiring
-// without either having seen the other's — which is the merge-authority rule every
-// other section here applies, refused in both directions rather than resolved.
+// Two attribute_providers: entries for one slot — one pushed, one in this
+// instance's file — stay a collision, refused with APERTURE_WIRING_LOCAL_COLLISION
+// naming the slot. They are two candidates for ONE layer: the registry holds at
+// most one provider per (slot, layer), so either resolution silently drops a
+// directory somebody declared, and "last writer wins" over a whole directory is
+// how one deployment's user table quietly shadows another's.
 //
-// Refusing it keeps the boot honest at the cost of being stricter than the registry
-// needs to be: two layers could carry these two sources exactly as they carry one
-// document's. Relaxing it is a deliberate decision about the DB-vs-local axis and
-// not a consequence of the layering, so it is not made here.
+// A local INLINE attributes: block for a slot the shared wiring declares is NOT
+// refused. It is the slot's LOCAL LAYER, exactly as it is inside one seed document:
+// the shared row becomes the slot's SHARED layer, the inline bags become its local
+// one, a fetch reads their merge, the shared layer wins every key both serve, and
+// nothing is dropped (provider.AttributeLayer is the full account). This layer
+// therefore does nothing at all for that pairing — it hands both sections to
+// seed's own buildAttributeRegistry, which already registers the first through
+// Register and the second through RegisterLocal.
+//
+// # Why the inline case is NOT the merge-authority rule
+//
+// It looks like the axis every other section here refuses, and it is not. The
+// merge-authority rule is about two declarations of the SAME THING with no fixed
+// winner; the two attribute layers have a fixed winner, chosen by SECTION rather
+// than by registration order, and it is the deployment-wide one. A contested key
+// therefore reads the same on every instance in the fleet, which is the property
+// refusing a collision exists to protect — so there is nothing left for a refusal
+// to buy.
+//
+// Refusing it cost something real, which is why it is gone. It was the only
+// spelling left: a local attribute_providers: entry for the slot is refused four
+// lines down, so an instance that wanted to add a field its deployment's shared
+// directory does not carry had to abandon the shared directory entirely. That is
+// the mutual exclusivity provider.AttributeLayer was introduced to REVERSE — the
+// external source used to win a slot outright and the inline bags were discarded —
+// and restating it as a refusal is worse than the discard it replaced, because the
+// instance does not start at all.
+//
+// It is not silent. seed reports the pairing (Document.AttributeCollisions) and
+// decisionStack.reportCollisions prints it, naming the SLOTS and never a key, so an
+// operator debugging an unexpected attribute value is told which layer answers a
+// contested one.
 func layerAttributeProviders(shared []model.WiringAttributeProvider, local *seed.Document) ([]seed.AttributeProvider, error) {
 	out := make([]seed.AttributeProvider, 0, len(shared))
 	declared := make(map[string]struct{}, len(shared))
@@ -413,18 +442,14 @@ func layerAttributeProviders(shared []model.WiringAttributeProvider, local *seed
 		if len(collided) > 0 {
 			return nil, localCollision("attribute slot", "attribute_providers:", "attribute_providers:", collided)
 		}
-		// The inline section is NOT dropped when it does not collide: a slot the
-		// shared wiring never declared is served from this instance's own bags,
-		// exactly as it is on an unpushed instance.
-		var inline []string
-		for _, a := range local.Attributes {
-			if _, dup := declared[strings.TrimSpace(a.Subject)]; dup {
-				inline = append(inline, strings.TrimSpace(a.Subject))
-			}
-		}
-		if len(inline) > 0 {
-			return nil, localCollision("attribute slot", "attributes:", "attribute_providers:", inline)
-		}
+		// The inline attributes: section is neither dropped nor refused, whether or
+		// not the shared wiring declares the same slot. wiringDocument carries it
+		// through verbatim and seed's builder registers it as the slot's LOCAL layer
+		// (RegisterLocal) under whatever the shared row registered as the SHARED one.
+		// A slot only the file declares is served from this instance's own bags
+		// exactly as it is on an unpushed instance; a slot both declare is the two
+		// layers, shared winning every key both serve. See the doc comment for why
+		// this is the layering rule rather than the merge-authority one.
 	}
 	if len(out) == 0 {
 		return nil, nil

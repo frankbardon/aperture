@@ -239,21 +239,17 @@ func TestEveryCollidingSectionIsRefusedByName(t *testing.T) {
 			}},
 			names: []string{"user", "attribute_providers:"},
 		},
-		{
-			// The inline DATA section. Within ONE seed document this pairing is a
-			// LAYERING and not a collision — the shared entry wins every key both
-			// serve and the inline bags layer under it — so the refusal here is
-			// about the two AUTHORS, not about the merge: shared rows pushed by
-			// whoever administers the deployment, and a file belonging to this
-			// machine, declaring the same slot without either having seen the
-			// other. Refused in both directions like every other section, rather
-			// than resolved by a precedence nobody chose.
-			name: "an inline attributes: entry for a shared slot",
-			local: &seed.Document{Attributes: []seed.Attribute{
-				{Subject: "user", ID: "alice"},
-			}},
-			names: []string{"user", "attributes:"},
-		},
+		// The inline DATA sections are NOT on this list, and they are not one rule:
+		//
+		//   - `objects:` against a shared `providers:` entry IS refused, by
+		//     seed.StrictProviderCollision() rather than here — see
+		//     TestALocalInlineObjectAgainstASharedProviderReusesTheStrictPosture.
+		//     The object rule is a type-level DISCARD with no winner anybody chose.
+		//   - `attributes:` against a shared `attribute_providers:` entry is
+		//     LAYERED, not refused, because the attribute rule is not a discard: the
+		//     shared row is the slot's shared layer, the inline bags its local one,
+		//     and a contested key reads the same on every instance in the fleet. See
+		//     TestASharedSlotAndALocalInlineBlockAreTheSlotsTwoLayers.
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// This instance has a route for the shared manifest's one connection, so

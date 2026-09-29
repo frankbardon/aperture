@@ -118,10 +118,13 @@ add** an object type or an attribute slot the database never declared — a
 `kind: csv` provider, whose data source is a filesystem path the shared tables have
 no column for, or a provider a Go host registers itself — and it is built exactly as
 it would be on an instance that has never been pushed to. What it may **not** do is
-redeclare something the database already declares: that fails the boot with
-`APERTURE_WIRING_LOCAL_COLLISION`, naming the entry and both sections. The
-collision is refused rather than resolved because either precedence is silent and
-either one changes what a decision reads. See
+redeclare, in a **wiring** section, something the database already declares: that
+fails the boot with `APERTURE_WIRING_LOCAL_COLLISION`, naming the entry and both
+sections. The collision is refused rather than resolved because either precedence is
+silent and either one changes what a decision reads. An inline `attributes:` block
+for a slot the database declares is not that case: it is the slot's **local layer**
+under the pushed row, the shared layer wins every key both serve, and nothing is
+dropped. See
 [With both, the database wins and the file may only ADD](../cli/global-options.md#with-both-the-database-wins-and-the-file-may-only-add).
 
 ## An instance missing a declared provider refuses to boot
