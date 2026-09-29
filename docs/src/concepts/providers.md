@@ -525,35 +525,57 @@ The precedence is fixed and does not depend on registration order. It is the eng
 the winner is stamped last over a fresh map and the floor then stamps over both, so
 the tiers compose in one direction — **floor over shared over local**.
 
-**"Shared wins" is about keys the shared layer *serves*, and absence has two
-consequences worth knowing before you use the local layer.** The merge copies the
-local bag and stamps the shared one over it, so a key the shared bag does not
-carry is answered from the local one — which is the whole point, and also this:
+**"Shared wins" is about keys the shared layer *serves*, and absence used to be the
+hole in it.** The merge copies the local bag and stamps the shared one over it, so a
+key the shared bag does not carry is answered from the local one — which is the whole
+point, and which used to have two consequences nothing could distinguish from it:
 
-- **A shared source that omits a key for one subject falls through to the local
+- **a shared source that omits a key for one subject fell through to the local
   layer, inside its own declared set.** A SQL `NULL` (and a JSON `null`) becomes an
   **absent field**, not a null value, so a directory whose `clearance` is NULL for
-  one person returns a bag with no `clearance` key and the merge reads that
-  person's `clearance` out of the local file. `declared_keys:` does not prevent it:
-  the declaration is what a *rule* is validated against, not a promise that every
-  row is populated. Nothing can detect it either — a bag is opaque host data, and
-  "no opinion" and "explicitly unset" are the same absent key. Fix it in the
-  statement: `COALESCE(u.clearance, 0) AS clearance` makes the directory's "unset"
-  arrive as a value rather than as a hole.
-- **Removing a subject from the shared directory is not a revocation on an
-  instance whose local file still lists it.** A shared layer with no record for a
+  one person returns a bag with no `clearance` key, and the merge read that person's
+  `clearance` out of the local file while the rule validated cleanly.
+- **removing a subject from the shared directory was not a revocation** on an
+  instance whose local file still listed them. A shared layer with no record for a
   key reports `APERTURE_NOT_FOUND`, which a fetch reads as *this layer has no
-  record* — the ordinary case — and answers from the local bag. Deleting a
-  principal from the SQL directory therefore changes nothing on an instance whose
-  seed `attributes:` block still names that principal, and it never times out: an
-  inline layer is registered with a TTL of `0` because inline data cannot change
-  while the process runs, so invalidation has nothing to drop. The remedy is to
-  remove the local entry — or better, to use the local layer for **fields** the
-  directory does not carry, never for **subjects** the directory is the register of.
+  record* — the ordinary case — and answered from the local bag. It never timed out
+  either: an inline layer is registered with a TTL of `0` because inline data cannot
+  change while the process runs, so invalidation had nothing to drop.
 
-Neither is fixed by reversing the precedence: the discard this layering replaced
-made the two sections mutually exclusive, which was worse. They are the price of
-additive layering.
+**A declared key set closes both.** `declared_keys:` on the shared entry —
+`provider.WithDeclaredKeys` in Go — does a second job with the same list: **when a
+layer declares a key set, only that layer may answer the keys in it.** A local value
+for a declared key is dropped, whether the declaring layer returned a different
+value, returned the key **absent**, or returned **no record at all**. The second half
+is a revocation control: deleting a subject from the shared directory removes every
+declared key for them on every instance, whatever a local file still says. See
+[`declared_keys:`](seed.md#declared_keys--the-keys-a-slot-guarantees) for the seed
+spelling and the three states.
+
+Three things it deliberately does not do:
+
+- **It is opt-in.** A layer that declares nothing reserves nothing, so a deployment
+  that has never written a `declared_keys:` merges exactly as it did.
+  `declared_keys: []` is declared **empty** and likewise reserves nothing — a
+  different state with the same effect.
+- **It is not a discard.** Suppression is scoped to the declared set; a key outside
+  it still answers from the local layer, which is what the local layer is for.
+  Reversing the precedence instead would reinstate the mutual exclusivity this
+  layering replaced, and that was worse.
+- **It cannot reach the floor.** `principal.id`, `principal.kind` and `account.id`
+  are stamped last and are never part of a declared set, so naming them is redundant
+  rather than required or refused.
+
+Only the **shared** layer may declare: `RegisterLocal` with a declared set is
+`APERTURE_ATTRIBUTE_PROVIDER_INVALID`, because a local declared set would be one
+machine deciding which keys the deployment's own directory may answer.
+
+**A slot that declares nothing still has both behaviours above**, and nothing can
+infer a set for it — a bag is opaque host data and an absent key is indistinguishable
+from a genuinely unset one. Declaring is the fix. It is still good practice to write
+a shared `get_one` that answers for the keys it promises
+(`COALESCE(u.clearance, 0) AS clearance`), and to use the local layer for **fields**
+the directory does not carry rather than for **subjects** it is the register of.
 
 A second registration **in the same layer** is still **refused**, not replaced: "last
 writer wins" is how one deployment's directory quietly shadows another's during
@@ -572,6 +594,11 @@ shorter one would silently ignore a declaration an operator made. `CacheConfigFo
 reports the governing (shared, when filled) layer's configuration,
 `CacheConfigForLayer` one layer's, and `Stats` sums them — so a key both layers serve
 counts twice, because it really is cached twice.
+
+A declared set is the other revocation control, and the one a TTL cannot give you:
+invalidation and a short TTL close the window on a bag that *changed*, and neither
+closes it on a subject the shared directory no longer has at all, because the local
+layer answering out of its own `ttl: 0` cache has nothing stale to drop.
 
 Staleness is not only a tuning knob here. An object's metadata going stale for a
 TTL is usually tolerable: a document's category is a fact about a thing. An
@@ -692,7 +719,8 @@ slot's cache — neither layer's. `Fetch` still caches its own answer, per layer
 the listing's bags are excluded.
 
 On a slot with two layers, `Enumerate` queries both and merges the records **per key**,
-the shared layer winning exactly as a fetch's merge does, so a listing shows the bag a
+the shared layer winning — and its declared keys reserved to it — exactly as a fetch's
+merge does, so a listing shows the bag a
 fetch of that key would return. `Fields` and the limit are re-enforced on the
 **merged** bag: filtering per layer would drop a record whose merged bag does match,
 and a limit applied per layer would truncate before the merge could finish a record.

@@ -274,6 +274,12 @@ func wiringToDocument(set model.WiringSet) *seed.Document {
 // a slot that permits NO key into one that permits every key, on the next push of a
 // document whose diff looked clean. make([]string, 0) is non-nil where a var
 // declaration is not, and that difference is the entire mechanism.
+//
+// It has two callers and they want the same three states for different reasons:
+// `aperture wiring pull` emits a re-pushable document, and wiringSeedAttributeProvider
+// projects the rows a DB-wired instance BOOTS from, where the set also reserves its
+// keys to the slot's shared layer. One helper, so a pulled document and a booted
+// registry can never disagree about which of the three states a row is in.
 func seedDeclaredKeys(d model.DeclaredKeys) *[]string {
 	if !d.Declared {
 		return nil

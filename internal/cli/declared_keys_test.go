@@ -45,10 +45,10 @@ func TestADeclaredSetIsReadFromTheLocalSeedWhenNoWiringIsPushed(t *testing.T) {
 }
 
 func TestTheWiringRowsWinTheDeclaredSet(t *testing.T) {
-	// The DB-wired boot projects its rows onto a Document that does NOT carry the
-	// declared set (wiringSeedAttributeProvider), so the rows have to be read
-	// directly. A collector that went through the projected document would return
-	// "not declared" here and enforce nothing.
+	// The rows are what this collector reads, and they are authoritative: a local
+	// entry may only ADD a slot the database never declared. A collector that took
+	// the local file's set for a slot the database also declares would let one
+	// machine widen what every instance's rules may name.
 	local := &seed.Document{AttributeProviders: []seed.AttributeProvider{
 		// A slot the database never declared: the local file may ADD one.
 		{Subject: "account", Kind: "csv", DeclaredKeys: keysPtr("plan")},

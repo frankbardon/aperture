@@ -643,16 +643,38 @@ attribute_providers:
     declared_keys: [department, clearance]
 ```
 
-Declaring opts that slot into **key enforcement**: a rule may then read only the
-keys the set names on that slot. Declaring nothing opts out, and a slot with no
-declared set behaves exactly as every slot did before the key existed.
+Declaring does **two jobs with one list**, and each fixes what the other cannot.
 
-That is what makes a local attribute layer safe. A slot holds a shared layer and a
-local one, and the shared layer wins every key both serve, so the keys a local layer
-adds on top are unreachable from any rule the deployment can validate — **inert**,
-rather than a second answer to a deployment-wide grant. The declared set therefore
-lives on the shared entry and nowhere else: a local layer able to narrow or widen it
-would be one machine changing which keys a deployment-wide rule may name.
+**Key enforcement.** A rule may then read only the keys the set names on that slot.
+Declaring nothing opts out, and a slot with no declared set behaves exactly as every
+slot did before the key existed.
+
+**Reservation.** The declaring layer becomes the **only** layer that answers those
+keys. A slot holds a shared layer and a local one, and this section is the shared one,
+so the inline [`attributes:`](#inline-subject-attributes) block contributes nothing to
+a declared key — not when the two disagree, not when this entry's own bag **omits** it
+for one row (a SQL `NULL` is an *absent* field), and not when this entry has **no
+record** for the subject at all. Keys **outside** the set are untouched.
+
+Together they make a local attribute layer safe in both directions. Enforcement covers
+the keys a local layer **adds**: they are unreachable from any rule the deployment can
+validate — **inert**, rather than a second answer to a deployment-wide grant.
+Reservation covers the keys **inside** the set, where the merge used to fall through to
+the local file on an absent value or an absent record. The second half is a
+**revocation control**: deleting a subject from the shared directory removes every
+declared key for them, on every instance, whatever a local file still says — which a
+`ttl:` cannot do, since the inline layer is registered with `ttl: 0` and has nothing
+stale to drop.
+
+The declared set therefore lives on the shared entry and nowhere else: a local layer
+able to narrow or widen it would be one machine changing which keys a deployment-wide
+rule may name, and which keys the deployment's own directory is allowed to answer.
+
+Reservation is **opt-in and is not a discard** — a slot that declares nothing reserves
+nothing, and a key outside a declared set still answers from the local layer. It also
+cannot reach the engine's floor. [The registry, the two layers, and the revocation
+window](providers.md#the-registry-the-two-layers-and-the-revocation-window) is the
+full account.
 
 The set is a **plain list of names, with no per-key type information** — the simplest
 form that round-trips, and the right one, because the [metadata value
@@ -682,6 +704,10 @@ list rather than a sorted paraphrase, and push → pull → push is a fixed poin
 slot that declares a set.
 
 #### What a declaring slot refuses
+
+This is the **first** of the two jobs — the rule gate. Reservation is the second, and
+it is applied by the registry when it merges the two layers, so the two have different
+failure modes and are not the same mechanism.
 
 Enforcement is **definition-time**, in rule validation, and never at decision time: a
 rule reading a key the slot does not declare is refused when it is saved or checked
@@ -790,6 +816,14 @@ the shared layer **wins every key both serve**. So an inline id the external sou
 lacks *is* resolvable — that is what the local layer is for — while an inline value
 for a key the external source does serve is never read, on any instance.
 
+A key the external source **declares** goes further: it is **reserved** to the shared
+layer, so the inline block contributes nothing to it even where the external source
+omits it for one row or has no record for the subject at all. That is what makes
+deleting a subject from the shared directory a revocation on an instance whose own
+file still lists them — see
+[`declared_keys:`](#declared_keys--the-keys-a-slot-guarantees). It is opt-in, and a
+slot that declares nothing merges exactly as it did.
+
 This is deliberately **not** the [`providers:` / `objects:`
 rule](#when-both-sections-claim-a-type) at slot granularity. That one really is a
 discard. These two sections are not two candidates for one slot: a shared directory
@@ -813,9 +847,10 @@ What remains refused is field-level merging with a *configurable* or order-depen
 winner — a rule reading a department one machine's file silently overrode is a support
 ticket nobody can reproduce. A fixed winner that is the deployment-wide source makes a
 contested key read the same on every instance, and
-[`declared_keys:`](#declared_keys--the-keys-a-slot-guarantees) is the other half: the
-keys only a local layer serves are unreachable from any rule the deployment can
-validate.
+[`declared_keys:`](#declared_keys--the-keys-a-slot-guarantees) is the other half, in two
+ways: the keys only a local layer serves are unreachable from any rule the deployment
+can validate, and the keys the shared entry declares are **reserved** to it, so those
+read the same on every instance even where the shared bag is silent.
 
 The layering is **not silent**. `Document.AttributeCollisions()` reports the affected
 slots and the caller surfaces them (`aperture` prints a warning) — for a different

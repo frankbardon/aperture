@@ -612,27 +612,40 @@ func wiringSeedFieldTypes(rows []model.WiringFieldType) []seed.FieldType {
 // wiringSeedAttributeProvider converts one stored attribute-provider entry into
 // its seed form.
 //
-// DeclaredKeys is deliberately NOT projected, and since the seed schema gained a
-// `declared_keys:` key that is now a choice rather than an absence. The reason it
-// stays a choice: this Document exists only to build a registry, and a declared
-// set governs what a RULE may name, which is decided against the stored
-// `model.WiringAttributeProvider` rows and not against anything reconstructed
-// here. Projecting it would put the set on two paths and make the
-// "not declared" versus "declared empty" distinction something two pieces of code
-// have to agree about, for no reader.
+// DeclaredKeys IS projected, and it used not to be. The old reasoning was that
+// this Document exists only to build a registry while a declared set governed only
+// what a RULE may name — which the facade decides against the stored
+// `model.WiringAttributeProvider` rows directly — so carrying it here would put the
+// set on two paths for no reader.
 //
-// If enforcement ever needs the set on this path, carry `*[]string` through —
-// never `[]string`, which collapses declared-empty into not-declared.
+// That premise is gone. A declared set now does a second job that the REGISTRY
+// performs: it reserves its keys to the slot's shared layer, so the inline
+// `attributes:` block stops answering them even where the shared source omits the
+// key or has no record for the subject at all (provider.WithDeclaredKeys). A
+// projection that dropped the set would build a DB-wired instance whose merge
+// suppressed nothing while a file-wired instance with the identical wiring
+// suppressed correctly — the same declaration, two different bags, on the two
+// topologies this whole section exists to keep identical. It is the one difference a
+// verdict, a trace and a note would all report as an ordinary attribute value.
+//
+// seedDeclaredKeys (wiring_project.go) is what renders it, the same helper
+// `aperture wiring pull` emits the section with, so the three states stay three:
+// `*[]string` and never `[]string`, because a plain slice collapses declared-empty
+// into not-declared and silently un-enforces a slot. The rule gate still reads the
+// ROWS rather than this Document (declared_keys.go), which is now a second reader of
+// one fact rather than the only one — both derive from the same stored set, so they
+// cannot disagree about it.
 func wiringSeedAttributeProvider(ap model.WiringAttributeProvider) seed.AttributeProvider {
 	return seed.AttributeProvider{
-		Subject:    ap.Subject,
-		Kind:       ap.Kind,
-		Connection: ap.Connection,
-		GetOne:     ap.GetOne,
-		GetAll:     ap.GetAll,
-		IDColumn:   ap.IDColumn,
-		TTL:        ap.TTL,
-		MaxSize:    ap.MaxSize,
+		Subject:      ap.Subject,
+		Kind:         ap.Kind,
+		Connection:   ap.Connection,
+		GetOne:       ap.GetOne,
+		GetAll:       ap.GetAll,
+		IDColumn:     ap.IDColumn,
+		TTL:          ap.TTL,
+		MaxSize:      ap.MaxSize,
+		DeclaredKeys: seedDeclaredKeys(ap.DeclaredKeys),
 	}
 }
 
