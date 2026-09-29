@@ -21,6 +21,10 @@ import (
 // functions — so an invalid rule is rejected at save with its APERTURE_RULE_* code
 // (shown on the editor canvas), never stored. The stricter model.ValidateRule
 // (JSON-object shape) still runs inside the store as a final structural gate.
+//
+// A rule that reads an attribute key the deployment's wiring does not DECLARE is
+// refused here too, with APERTURE_RULE_UNDECLARED_ATTRIBUTE — see
+// WithDeclaredAttributeKeys. A deployment that declares nothing is unaffected.
 func (s *Service) PutRule(ctx context.Context, actor Actor, r model.Rule) (err error) {
 	if err = s.requireMutator(); err != nil {
 		return err
@@ -29,7 +33,7 @@ func (s *Service) PutRule(ctx context.Context, actor Actor, r model.Rule) (err e
 	if err = s.authorize(ctx, actor, authz.MutationPutRule, ""); err != nil {
 		return err
 	}
-	if err = validateRule(r); err != nil {
+	if err = s.validateRule(r); err != nil {
 		return err
 	}
 	s.stamp(&r.CreatedAt, &r.UpdatedAt)
@@ -42,17 +46,29 @@ func (s *Service) PutRule(ctx context.Context, actor Actor, r model.Rule) (err e
 // a valid rule and the APERTURE_RULE_* coded error otherwise. It touches no
 // storage and requires no admin tier — it is a pure, non-persisting check.
 func (s *Service) ValidateRule(ctx context.Context, r model.Rule) error {
-	return validateRule(r)
+	return s.validateRule(r)
 }
 
 // validateRule is the shared definition-time rule gate: the model's structural
-// check (non-empty name, AST is a JSON object) followed by the rules engine's
-// deep compile-time validation of the AST.
-func validateRule(r model.Rule) error {
+// check (non-empty name, AST is a JSON object), then the rules engine's deep
+// compile-time validation of the AST, then the DECLARED-KEY check against this
+// deployment's wiring.
+//
+// It is a method rather than a free function because the declared key set is
+// per-deployment state the facade holds (WithDeclaredAttributeKeys), and because
+// the gate has to be the same one on both paths: PutRule and ValidateRule must
+// agree, or the editor's "check" button would pass a rule that the save then
+// refuses — or worse, the other way round.
+//
+// Enforcement is definition-time ONLY. Nothing here runs on a decision, so a rule
+// already stored keeps deciding exactly as it did if the wiring's declared set
+// later narrows: an operator's push must not silently change what an existing
+// grant allows.
+func (s *Service) validateRule(r model.Rule) error {
 	if err := model.ValidateRule(r); err != nil {
 		return err
 	}
-	return rules.ValidateAST(r.AST)
+	return rules.ValidateASTDeclaring(r.AST, s.declaredKeys)
 }
 
 // GetRule reads one rule by name. Reads require no admin tier.

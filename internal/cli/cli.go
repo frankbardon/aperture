@@ -40,6 +40,9 @@ func NewApp(version string) *ucli.Command {
 			// Attribute directories: wiring listing, gated bulk read, cache
 			// invalidation.
 			attributesCommand(),
+			// Shared wiring: the four seed sections a deployment keeps in the
+			// database every instance already shares (CLI-only by decision).
+			wiringCommand(),
 			// Server.
 			serveCommand(),
 			// Read-only MCP surface (stdio).

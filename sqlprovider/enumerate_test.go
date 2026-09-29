@@ -565,11 +565,30 @@ func TestEnumeratedObjectsGetFreshNestedContainers(t *testing.T) {
 // The point of the whole story, one layer up: the Registry enumerates through
 // Query, bounds it with the grant's pattern, and caches what comes back — so a
 // following Fetch of an enumerated object needs no second statement.
+//
+// The warm is CONDITIONAL (E3-S6): the Registry asks
+// provider.FetchCompleteLister, and a *Provider answers by comparing the two
+// statements' real column projections. So this fixture has to give the fake a
+// get_one result whose columns are the get_all's columns MINUS the id column,
+// which is what a correctly paired document looks like — and it must run the
+// fetch first, because a projection the provider has not observed yet is one it
+// will not assume anything about. TestAListingWithANarrowerProjectionDoesNotWarm
+// is the other side of the condition.
 func TestRegistryEnumeratesAndCachesThroughQuery(t *testing.T) {
 	s := brandsScript()
+	// The matching get_one: the same fields, one row, no id column (a fetch's
+	// identity is the caller's input, not something the row carries).
+	s.fetchCols = []string{"tier", "seats", "tags"}
+	s.fetchRows = [][]driver.Value{{"gold", int64(5), []byte(`["premium","launch"]`)}}
 	p := newProvider(t, s, Config{})
 	reg := provider.NewRegistry()
 	reg.MustRegister("brand", p)
+
+	// One fetch of an unrelated object, so the provider has seen its own get_one
+	// projection before the enumeration asks whether the two agree.
+	if _, err := reg.Fetch(context.Background(), identity.MustParse("brand:9")); err != nil {
+		t.Fatalf("priming Fetch: %v", err)
+	}
 
 	got, err := reg.List(context.Background(), "brand", identity.MustParsePattern("brand:*"), 10)
 	if err != nil {

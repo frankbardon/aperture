@@ -174,7 +174,7 @@ func effectiveEngineBound(t *testing.T, n int) int {
 		Name:  "probe",
 		Flags: enumerateCommand().Flags,
 		Action: func(ctx context.Context, cmd *ucli.Command) error {
-			stack, err := buildDecisionStack(cmd, store, seedPath,
+			stack, err := buildDecisionStack(ctx, cmd, store, seedPath,
 				engine.WithEnumerateLimit(n),
 				engine.WithLogger(slog.New(slog.NewTextHandler(logs,
 					&slog.HandlerOptions{Level: slog.LevelWarn}))))

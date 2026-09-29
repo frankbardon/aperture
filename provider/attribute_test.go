@@ -237,7 +237,12 @@ func TestAttributeRegistration(t *testing.T) {
 		}
 	})
 
-	t.Run("a duplicate is refused rather than replacing", func(t *testing.T) {
+	// A duplicate WITHIN A LAYER is refused rather than replacing. The second
+	// provider a slot accepts is a different LAYER with a stated winner
+	// (RegisterLocal, and attribute_layer_test.go); a second SHARED one would be
+	// "last writer wins" over a directory, which is the shadowing this refusal
+	// exists for.
+	t.Run("a duplicate in the same layer is refused rather than replacing", func(t *testing.T) {
 		reg := NewAttributeRegistry()
 		if err := reg.Register(AttributeSlotUser, p); err != nil {
 			t.Fatalf("first register: %v", err)
@@ -565,8 +570,15 @@ func TestAttributeEnumerate(t *testing.T) {
 		}
 	})
 
-	t.Run("enumeration warms the slot cache", func(t *testing.T) {
-		counter := &countingAttributes{records: records}
+	// The admin listing does NOT populate the decision path's cache. See
+	// attribute_enumerate_projection_test.go for the whole argument; the
+	// observable half is that a Fetch after an Enumerate still reaches the
+	// provider, because only Fetch's own answer is ever cached.
+	t.Run("enumeration does not write the slot cache", func(t *testing.T) {
+		counter := &countingAttributes{
+			records: records,
+			bags:    map[string]Metadata{"u-2": {"department": "sales"}},
+		}
 		r := NewAttributeRegistry()
 		r.MustRegister(AttributeSlotUser, counter)
 		if _, err := r.Enumerate(ctx, AttributeSlotUser, AttributeFilter{}); err != nil {
@@ -575,8 +587,17 @@ func TestAttributeEnumerate(t *testing.T) {
 		if _, err := r.Fetch(ctx, AttributeSlotUser, "u-2"); err != nil {
 			t.Fatalf("fetch: %v", err)
 		}
-		if n := counter.fetches.Load(); n != 0 {
-			t.Fatalf("provider Fetch called %d times after an enumeration warmed the cache", n)
+		if n := counter.fetches.Load(); n != 1 {
+			t.Fatalf("provider Fetch called %d times, want 1: an enumeration must not "+
+				"answer a later decision — its bag is Query's projection, not Fetch's", n)
+		}
+		// Fetch's own answer is still cached, so the second read is a hit. The
+		// change is confined to which call may write the cache.
+		if _, err := r.Fetch(ctx, AttributeSlotUser, "u-2"); err != nil {
+			t.Fatalf("second fetch: %v", err)
+		}
+		if n := counter.fetches.Load(); n != 1 {
+			t.Fatalf("provider Fetch called %d times, want 1: Fetch still caches its own answer", n)
 		}
 	})
 

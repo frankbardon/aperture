@@ -235,6 +235,98 @@ one threshold in the suite that is **not** a wall clock: it holds a rule-backed
 `Enumerate` at a **raised** bound to a *ratio* against the same enumeration at the
 default bound. See [the raised-bound gate](#the-raised-bound-gate-testchecknfrenumeratebound).
 
+#### The hot-swap cases (E4-S5)
+
+E4 gave a long-lived `serve` an opt-in background re-read of the
+[shared wiring](src/cli/serve.md) tables and a swap that rebuilds every registry a
+decision reads. Both sit **off** the decision path by construction — a request
+resolves its version with one atomic pointer load at entry, and the rebuild happens
+on the poll goroutine — and `bench/wiring_test.go` is where that stops being a claim.
+Two cases, both named so the one invocation above picks them up:
+
+`TestCheckNFRWiringPoll` is the **polling-on arm** of the wall-clock gate: the same
+fixture, the same query, the same audit axis and the same `fullSamples` budget as
+`TestCheckNFR`, with a live loop doing exactly one tick's work — one `GetWiring` plus
+one canonical-JSON SHA-256 digest — underneath it. The arms therefore differ in the
+loop and in nothing else.
+
+The interval is the interesting design decision, and it is **1 ms**: an *upper
+bound* on a deployment rather than a deployment. No deployable value ticks inside a
+benchmark at all — the default is 30s, chosen as the window a fleet is allowed to
+disagree with itself — so a case that polled at the default would measure **zero
+ticks** and assert nothing while looking green. 1 ms is thirty thousand ticks for
+every one the default makes; if a decision cannot feel a tick at that rate it cannot
+feel one at 30s, and the conclusion an operator acts on (choose the interval on
+staleness grounds, never on decision latency) follows from the measurement rather
+than from an argument about it. The case logs its tick count and **fails on zero**,
+so an arm that measured an undisturbed decision path can never be reported as the
+polling-on one.
+
+Measured on an Apple M1 Max over **two** gate runs, with 23 000–24 600 ticks landing
+inside each audit-off measurement. Both runs are given, because one of them would
+have read as "no cost at all" and that is not what two say:
+
+| Arm | p99 cached `Check` | throughput (single goroutine) |
+|---|---|---|
+| polling off, audit off | 0.288 / 0.270 ms | 15 413 / 15 174 checks/sec |
+| polling off, audit on | 0.258 / 0.290 ms | 14 869 / 14 422 checks/sec |
+| polling **on** (1 ms), audit off | 0.286 / 0.320 ms | 13 847 / 12 895 checks/sec |
+| polling **on** (1 ms), audit on | 0.278 / 0.317 ms | 14 659 / 13 935 checks/sec |
+
+Read plainly: at 1 ms the loop's cost is **visible but small**. The p99 sits inside
+the run-to-run spread of the arms without it (one run showed no difference, the other
+about +11 %, against a ceiling it clears by 3×), and throughput is consistently
+5–15 % lower. That residual is the honest answer for a loop being paid **thirty
+thousand times more often than any deployment pays it**, and it is what makes the
+conclusion an operator acts on safe: divided by 30 000, the same work is not a
+number anybody can measure, let alone plan around. Both arms clear both thresholds
+with the headroom every other case in the suite has.
+
+What the case guards is therefore the shape rather than the delta: if the loop ever
+starts costing a decision something that matters, this is the arm that goes red —
+and the *ratio* between the arms, at an interval thirty thousand times the default,
+is a large multiplier on whatever the cause is.
+
+`TestCheckNFRAfterAWiringSwap` measures the other half: a swap installs a version
+whose caches are **empty**, because a rebuilt attribute slot must never answer from
+an entry fetched under the superseded configuration's `ttl:` — the window a *revoked*
+clearance would otherwise keep authorizing for. So there is a cold period after
+every push, which E4-S2 recorded as a known limitation at the cadence of a human
+pushing wiring, and this case is what turns "brief" into a number. It rebuilds the
+rule-backed stack over the same store — the three caches a version carries are the
+parsed-pattern, compiled-rule and per-type metadata ones, and only the rule path
+exercises all three — then times the first hundred decisions one by one against the
+booted version's warm **median**:
+
+| Quantity | Measured (two runs) |
+|---|---:|
+| booted version, warm median `Check` | 52 / 49 µs |
+| first decision on the swapped version | 134 / 129 µs (2.6× both times) |
+| decisions before the window settles within 2× the median | 49 / 86 |
+| **whole** cold period, above steady state | 0.72 / 1.06 ms |
+
+That is about one decision's worth of the 1 ms p99 ceiling, once, per push — a cold
+period of roughly a millisecond, spread over the first fifty to ninety decisions. The
+control is the median and not the p99 deliberately: a handful of cold samples read
+against the *tail* of a thousand comes out "faster than steady state" and reports
+nothing, because the tail is where a descheduled goroutine lands and not where a
+typical decision does.
+
+What the case **asserts** is that a swapped version clears the same two thresholds a
+booted one does. That is the regression worth a gate — a swap that installed a
+permanently colder stack, a registry that never caches or a rules engine that
+recompiles per decision, would show up here and in no other case, since every other
+case measures a stack that booted. The cold figures themselves are only **reported**:
+a wall-clock assertion on a population of one sample is a measurement of the machine,
+and best-of-rounds cannot help there.
+
+One caveat the fixture cannot measure: these numbers are for in-memory providers.
+With `kind: sql` providers the first decision that touches each object type after a
+push pays a real query round trip to fill that type's cache entry, so the cold cost
+there scales with how many object types get touched rather than with microseconds.
+It is still one round trip per type per push, and still nothing that accumulates —
+see `src/operations/wiring-refresh.md`.
+
 ### The allocation guard (E5-S2)
 
 `provider` hands a cached `Metadata` out **by reference** and documents the
@@ -861,7 +953,11 @@ fixture is what finally put both of those caches under measurement, and
 
 `TestCheckNFR` and `TestCheckNFRCollections` are the threshold guards: they fail
 if p99 ever crosses 1 ms or throughput drops below 10 k/s, on the literal path and
-on each rule variant respectively. They are gated (see above) so they never flake
+on each rule variant respectively. `TestCheckNFRWiringPoll` and
+`TestCheckNFRAfterAWiringSwap` apply the same two thresholds to the two states the
+shared-wiring machinery adds — a live poll loop underneath the decision path, and a
+version installed by a swap — so neither can quietly cost the budget the other cases
+measure (see [the hot-swap cases](#the-hot-swap-cases-e4-s5)). They are gated (see above) so they never flake
 the default build, but they are wired and runnable on demand and in a dedicated CI
 job/cron where the runner is known to be unloaded.
 `TestMetadataIsSharedByReference` is the one guard that is **not** gated: it is

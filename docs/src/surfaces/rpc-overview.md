@@ -123,7 +123,7 @@ Twirp error code (and thus an HTTP status) and attaches the canonical code as
 
 | Aperture code (examples) | Twirp code | HTTP |
 |---|---|---|
-| `APERTURE_INVALID_INPUT`, `APERTURE_RULE_INVALID`, `APERTURE_TEMPLATE_PARAM`, … | `invalid_argument` | 400 |
+| `APERTURE_INVALID_INPUT`, `APERTURE_RULE_INVALID`, `APERTURE_RULE_UNDECLARED_ATTRIBUTE`, `APERTURE_TEMPLATE_PARAM`, … | `invalid_argument` | 400 |
 | `APERTURE_UNAUTHENTICATED`, `APERTURE_INVALID_TOKEN` | `unauthenticated` | 401 |
 | `APERTURE_AUTHZ_DENIED`, `APERTURE_DELEGATION_DENIED`, `APERTURE_IMPERSONATION_DENIED`, … | `permission_denied` | 403 |
 | `APERTURE_NOT_FOUND`, `APERTURE_RULE_NOT_FOUND`, `APERTURE_PROVIDER_UNREGISTERED` | `not_found` | 404 |
@@ -132,6 +132,12 @@ Twirp error code (and thus an HTTP status) and attaches the canonical code as
 | anything else | `internal` | 500 |
 
 See [Error Codes](../reference/error-codes.md) for the full registry.
+
+`APERTURE_RULE_UNDECLARED_ATTRIBUTE` sits with the other rule-authoring codes at
+400 rather than in the `internal` default, because the fault is in the **submitted
+rule** — it names an attribute key the deployment's wiring does not declare — so
+no retry of the identical request can succeed, and the rule editor renders it on
+the canvas beside the structural and type errors.
 
 ### Why those two are 412 and not 500
 

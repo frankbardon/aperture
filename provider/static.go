@@ -22,8 +22,12 @@ import (
 // contract trivially true — there is no reload that could edit a map the
 // Registry already cached.
 
-// compile-time assertion: a *Static is a usable ObjectProvider.
-var _ ObjectProvider = (*Static)(nil)
+// compile-time assertion: a *Static is a usable ObjectProvider, and one whose
+// listings may warm the Registry's metadata cache.
+var (
+	_ ObjectProvider      = (*Static)(nil)
+	_ FetchCompleteLister = (*Static)(nil)
+)
 
 // Static is an in-memory ObjectProvider for one object-type, built from a fixed
 // slice of Objects. It is safe for concurrent use because it is immutable after
@@ -132,6 +136,17 @@ func (s *Static) Query(_ context.Context, filter Filter) ([]Object, error) {
 	}
 	return out, nil
 }
+
+// ListedMetadataMatchesFetch is Static's unconditional FetchCompleteLister
+// promise: a listing through it may warm the Registry's per-type metadata cache.
+//
+// It is true by construction rather than by assertion. There is ONE map per
+// object — s.byID[id] — and Fetch, List and Query all hand back that same map by
+// reference. There is no second projection to diverge from the first, no reload
+// that could replace one and not the other, and no filter that edits a bag on the
+// way out (Query selects whole objects, it does not narrow them). A listed bag is
+// therefore not merely equal to the fetched bag, it is the same value.
+func (s *Static) ListedMetadataMatchesFetch() bool { return true }
 
 // Len reports how many objects were declared. It is the cheap way for a caller
 // (a seed loader logging what it wired, a test) to confirm a set landed without

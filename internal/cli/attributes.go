@@ -10,7 +10,9 @@ import (
 
 	"github.com/frankbardon/aperture/authz"
 	aerr "github.com/frankbardon/aperture/errors"
+	"github.com/frankbardon/aperture/model"
 	"github.com/frankbardon/aperture/provider"
+	"github.com/frankbardon/aperture/seed"
 	"github.com/frankbardon/aperture/service"
 
 	ucli "github.com/urfave/cli/v3"
@@ -20,8 +22,9 @@ import (
 //
 // Three subcommands, and they are deliberately not equals:
 //
-//	slots       what this deployment WIRES: which slots have a source, what kind
-//	            it is, and how each slot's cache is tuned. No key, no bag.
+//	slots       what this deployment WIRES: which slots have a source, which LAYER
+//	            each source fills, where it came from, and how each layer's own
+//	            cache is tuned. No key, no bag.
 //	query       a page OF a directory. The system-tier admin read, gated.
 //	invalidate  drop cached bags so the next decision re-reads them. Gated.
 //
@@ -41,29 +44,35 @@ import (
 //
 // `slots` takes no actor and asks nothing of the gate, because it discloses
 // nothing a caller did not already supply. It reads the SEED FILE the operator
-// named on the command line and the cache configuration this process built from
-// it; the answer is a restatement of the operator's own input, and requiring
-// system-admin authority to read back a file you just passed in would only mean
-// nobody could diagnose "is the user slot even wired?" without also holding the
-// authority the diagnosis exists to explain. It never touches a provider, never
-// names a key, and never prints a bag.
+// named on the command line, the SHARED WIRING rows in the --store they named, and
+// the cache configuration this process built from the two; the answer is a
+// restatement of the operator's own input, and requiring system-admin authority to
+// read back a file you just passed in would only mean nobody could diagnose "is the
+// user slot even wired?" without also holding the authority the diagnosis exists to
+// explain. The wiring half needs no gate for the same reason `aperture wiring show`
+// needs none: the --store credential the caller just supplied already grants full
+// WRITE access to those rows. It never touches a provider, never names a key, and
+// never prints a bag.
 
 // attributeStack builds the decision stack the attribute commands read through,
 // plus the cleanup that releases it. It is the SAME builder every other command
 // uses, so the slots a listing reports are the slots a decision resolves through
 // — the CLI cannot describe a wiring it does not itself run.
-func attributeStack(ctx context.Context, cmd *ucli.Command) (decisionStack, func(), error) {
+// It returns the STORE as well as the stack, because `slots` has to say where each
+// layer came from and the shared wiring is a fact only the store holds. A caller with
+// nothing to ask the store ignores it; the cleanup closes both either way.
+func attributeStack(ctx context.Context, cmd *ucli.Command) (decisionStack, model.Storage, func(), error) {
 	store, err := buildStore(ctx, cmd.String("store"), cmd.String("seed"))
 	if err != nil {
-		return decisionStack{}, nil, err
+		return decisionStack{}, nil, nil, err
 	}
-	stack, err := buildDecisionStack(cmd, store, cmd.String("seed"))
+	stack, err := buildDecisionStack(ctx, cmd, store, cmd.String("seed"))
 	if err != nil {
 		_ = store.Close()
-		return decisionStack{}, nil, err
+		return decisionStack{}, nil, nil, err
 	}
 	stack.reportCollisions(cmd.ErrWriter)
-	return stack, func() {
+	return stack, store, func() {
 		_ = stack.Close()
 		_ = store.Close()
 	}, nil
@@ -78,7 +87,7 @@ func attributeStack(ctx context.Context, cmd *ucli.Command) (decisionStack, func
 // degrade to "no gate, so serve it" — so the command supplies the gate, the same
 // authz.NewGate(engine) `serve` mounts, over the same engine.
 func attributeService(ctx context.Context, cmd *ucli.Command) (*service.Service, func(), error) {
-	stack, done, err := attributeStack(ctx, cmd)
+	stack, _, done, err := attributeStack(ctx, cmd)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -123,69 +132,188 @@ func attributesCommand() *ucli.Command {
 func attributesSlotsCommand() *ucli.Command {
 	return &ucli.Command{
 		Name:  "slots",
-		Usage: "List the three attribute slots, the source each is wired to, and its cache settings",
-		Description: "Prints one row per slot — user, machine, account — with the source the seed\n" +
-			"declares for it (csv, sql, or inline), the cache freshness window, the cached-bag\n" +
-			"cap, and how many bags this process currently holds.\n\n" +
-			"THE TTL COLUMN IS THE REVOCATION WINDOW. A slot's cached bag keeps authorizing\n" +
-			"until it expires, so `ttl` is the longest a removed clearance can keep working.\n" +
+		Usage: "List every attribute slot's registration layers, where each one is wired from, and its own cache settings",
+		Description: "Prints one row per LAYER of each of the three slots — user, machine, account —\n" +
+			"with the source that layer is wired from, its cache freshness window, its\n" +
+			"cached-bag cap, and how many bags this process holds for the slot.\n\n" +
+			"A SLOT HAS TWO REGISTRATION LAYERS AND EACH ONE CACHES ON ITS OWN DECLARATION.\n" +
+			"An `attribute_providers:` entry — a pushed wiring row, or one in this instance's\n" +
+			"seed file — is the slot's SHARED layer, and an `attributes:` block is its LOCAL\n" +
+			"one. A fetch reads their merge and the shared layer wins every key both serve, so\n" +
+			"nothing is discarded and the inline bags still contribute the keys the external\n" +
+			"source does not carry. The layers are printed in precedence order, highest first.\n\n" +
+			"THE TTL COLUMN IS THE REVOCATION WINDOW, AND THERE IS ONE PER LAYER. A cached bag\n" +
+			"keeps authorizing until it expires, so `ttl` is the longest a removed clearance\n" +
+			"can keep working — for the keys THAT LAYER answers. Two layers are two caches and\n" +
+			"never an average: a shared directory on a five-minute window beside an inline\n" +
+			"block that never expires leaves the keys only the inline block serves unbounded.\n" +
 			"`never` means a bag, once fetched, is only dropped by eviction or by an explicit\n" +
 			"`aperture attributes invalidate` — correct for a fixed inline block, dangerous\n" +
 			"for a live directory.\n\n" +
-			"The `cached` column counts THIS process's cache. A one-shot invocation starts\n" +
-			"cold, so it reads 0; it is the number that matters in a long-running\n" +
-			"`aperture serve`.\n\n" +
-			"No actor is required: this reports the wiring in the seed file you passed and\n" +
-			"the configuration this process built from it. It contacts no provider and prints\n" +
+			"THE SOURCE COLUMN NAMES THE PLACE, not just the kind. `(shared wiring)` is a row\n" +
+			"in the deployment's database, put there by `aperture wiring push` and read by\n" +
+			"every instance; `(--seed file)` is this instance's own document; `(host)` is a\n" +
+			"provider the binary embedding Aperture registered in Go, which no document\n" +
+			"describes. A slot with no source at all reads `(unwired)`: that is not an empty\n" +
+			"directory, it is a party this deployment declared nothing for, and every fetch\n" +
+			"against it fails — leniently on the decision path, which means the rule sees only\n" +
+			"the floor bag.\n\n" +
+			"The `cached` column counts THIS process's cache for the whole SLOT, summed across\n" +
+			"its layers — a subject both layers serve is held twice, because it is cached\n" +
+			"twice — so it appears once, on the slot's first row, and reads `-` on the second\n" +
+			"layer's. A one-shot invocation starts cold, so it reads 0; it is the number that\n" +
+			"matters in a long-running `aperture serve`.\n\n" +
+			"No actor is required: this reports the wiring this deployment is running — the\n" +
+			"seed file you passed, the shared wiring rows in the --store you named, and the\n" +
+			"configuration this process built from them. It contacts no provider and prints\n" +
 			"no subject key and no attribute value.",
 		Flags:  storeFlags(),
 		Action: runAttributeSlots,
 	}
 }
 
+// runAttributeSlots prints ONE ROW PER LAYER, not one per slot.
+//
+// # Why per layer
+//
+// A slot has two registration layers and each one caches on its OWN declaration
+// (provider.AttributeLayer). A single-row listing read `CacheConfigFor`, which
+// reports the GOVERNING layer's configuration — so a slot whose shared directory is
+// on a five-minute window and whose inline block never expires printed `ttl 5m` with
+// no hint that a second cache existed. An operator who has just revoked something
+// reads 5m and believes the window is closed; for every key only the local layer
+// serves it is unbounded. A slot's ttl: is a REVOCATION WINDOW, so "one number per
+// slot" is not a simplification, it is the wrong number.
+//
+// # Where each layer came from
+//
+// Three origins, and the listing must tell them apart, because on the one command
+// whose job is "is the user slot wired, and from where?" a database-wired slot used
+// to print `(host)` — the label reserved for "a Go host wired this in Go" — which
+// points the operator away from the database that actually wired it. The `ttl` column
+// was read off the registry and therefore right, which made the source column the
+// only wrong cell and so the believable one.
+//
+// The origin is a FACT read from the two places wiring can come from, never inferred:
+// the shared wiring set in the store, and this instance's own document. The document
+// is asked through seed.Document.AttributeSlotSources, so the precedence rule is not
+// re-derived here; the LAYER order comes from provider.AttributeRegistry.Layers,
+// which is the registry's own precedence. A filled layer neither accounts for is a Go
+// registration, and stays `(host)`.
 func runAttributeSlots(ctx context.Context, cmd *ucli.Command) error {
-	// The document is the only source for a slot's SOURCE: providers:, objects:,
-	// attributes: and attribute_providers: are runtime wiring that Apply never
-	// writes to storage, so the file is their source of truth. The precedence
-	// between the two attribute sections is seed's own rule, asked of the
-	// document rather than re-derived here (seed.Document.AttributeSlotSources).
-	doc, err := seedDocument(cmd.String("seed"))
+	// The local document, read before anything is opened so a malformed file is
+	// reported without a store being touched. Its refusals are its own (bootError's
+	// pass-through guard): a literal dsn: here must say to rotate the credential.
+	doc, err := seedDocument(cmd.String("seed"), classifyStore(cmd.String("store")))
 	if err != nil {
 		return err
 	}
 	sources := doc.AttributeSlotSources()
 
-	stack, done, err := attributeStack(ctx, cmd)
+	stack, store, done, err := attributeStack(ctx, cmd)
 	if err != nil {
 		return err
 	}
 	defer done()
 
+	// The SHARED half. Read from the same store the stack was built over, and read
+	// rather than guessed: a slot whose shared layer this document does not declare
+	// was wired either by the database or by Go, and only the rows can say which.
+	wiring, err := readSharedWiring(ctx, store)
+	if err != nil {
+		return err
+	}
+	shared := make(map[string]string, len(wiring.AttributeProviders))
+	for _, ap := range wiring.AttributeProviders {
+		shared[strings.TrimSpace(ap.Subject)] = strings.TrimSpace(ap.Kind)
+	}
+
 	w := tabwriter.NewWriter(cmd.Writer, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "slot\tsource\tttl\tmax-size\tcached")
+	fmt.Fprintln(w, "slot\tlayer\tsource\tttl\tmax-size\tcached")
 	for _, slot := range provider.AttributeSlots() {
-		cfg, wired := stack.attributes.CacheConfigFor(slot)
-		if !wired {
+		layers := stack.attributes.Layers(slot)
+		if len(layers) == 0 {
 			// Unwired is not an error and not an empty directory: it is a
 			// deployment that declared no source for this party. Every fetch
 			// against it is APERTURE_ATTRIBUTE_PROVIDER_UNREGISTERED, which the
 			// decision path treats leniently (the floor bag) and an enumeration
 			// does not.
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", slot, "(unwired)", "-", "-", "-")
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", slot, "-", "(unwired)", "-", "-", "-")
 			continue
 		}
-		source := sources[slot.String()]
-		if source == "" {
-			// A registered slot the document does not account for: a host that
-			// wired this registry in Go rather than from the seed. Reported as
-			// unknown rather than guessed at.
-			source = "(host)"
-		}
+		// The counters are the registry's and they are per SLOT, summed across its
+		// layers — there is no per-layer Stats, and a subject both layers serve is
+		// held twice because it is cached twice. So the number appears ONCE, on the
+		// slot's first row, rather than being printed twice as though each layer
+		// held it.
 		stats, _ := stack.attributes.Stats(slot)
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\n",
-			slot, source, renderTTL(cfg.TTL), renderMaxSize(cfg.MaxSize), stats.Entries)
+		for i, layer := range layers {
+			cfg, _ := stack.attributes.CacheConfigForLayer(slot, layer)
+			cached := "-"
+			if i == 0 {
+				cached = strconv.Itoa(stats.Entries)
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+				slot, layer, attributeLayerSource(layer, slot, sources, shared),
+				renderTTL(cfg.TTL), renderMaxSize(cfg.MaxSize), cached)
+		}
 	}
 	return w.Flush()
+}
+
+// attributeLayerSource names WHERE one filled layer of a slot came from: the kind,
+// and the place that declared it.
+//
+// The three answers are the three places wiring can come from, and the listing exists
+// to tell them apart:
+//
+//	sql (shared wiring)     a row in the deployment's database
+//	csv (--seed file)       an attribute_providers: entry in this instance's own file
+//	inline (--seed file)    the attributes: block in this instance's own file
+//	(host)                  registered in Go, by the binary embedding Aperture
+//
+// local is what this instance's document says (seed.Document.AttributeSlotSources:
+// the external kind: when the document declares one, AttributeSourceInline when only
+// the inline block fills the slot). shared maps a slot to the kind of its pushed row.
+//
+// The SHARED layer is filled by an attribute_providers: entry from either source, so
+// the document is asked first: a local entry is a route nothing pushed and a pushed
+// row is not in the document, and they cannot both exist — the boot refuses that
+// collision by name.
+//
+// The LOCAL layer is filled only by an inline attributes: block, so the document
+// having anything to say about the slot at all is what identifies it. A filled layer
+// with no declaration behind it in either place is a Go registration, reported as
+// `(host)` rather than guessed at.
+func attributeLayerSource(layer provider.AttributeLayer, slot provider.AttributeSlot, local, shared map[string]string) string {
+	const host = "(host)"
+	name := slot.String()
+	switch layer {
+	case provider.AttributeLayerShared:
+		if kind := local[name]; kind != "" && kind != seed.AttributeSourceInline {
+			return kind + " (--seed file)"
+		}
+		if kind, ok := shared[name]; ok {
+			return orUnknownKind(kind) + " (shared wiring)"
+		}
+		return host
+	case provider.AttributeLayerLocal:
+		if local[name] != "" {
+			return seed.AttributeSourceInline + " (--seed file)"
+		}
+		return host
+	}
+	return host
+}
+
+// orUnknownKind spells a stored kind that is somehow empty. A row like that cannot
+// boot — checkWiringKind refuses it — so this is a defence against printing a bare
+// " (shared wiring)" if one ever arrives from a hand-written row.
+func orUnknownKind(kind string) string {
+	if kind == "" {
+		return "(unknown kind)"
+	}
+	return kind
 }
 
 // renderTTL spells a slot's freshness window for the listing. Zero is rendered

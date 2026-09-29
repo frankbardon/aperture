@@ -269,8 +269,10 @@ MCP client uses when it spawns Aperture as a subprocess:
 aperture mcp [--seed <path>] [--store <dsn>]
 ```
 
-- `--seed` — path to a JSON/YAML seed model (defaults to the embedded example).
-- `--store` — sqlite DSN for the backing store (defaults to in-memory).
+- `--seed` — path to a JSON/YAML seed model to apply on startup. Omitting it
+  loads the embedded example for the in-memory store and seeds **nothing** for a
+  `--store` DSN (see [Global options](../cli/global-options.md)).
+- `--store` — DSN for the backing store (defaults to in-memory).
 
 With neither flag it serves the embedded example model over an in-memory store.
 There are no other flags: the surface is read-only by construction, so it needs

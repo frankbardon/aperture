@@ -39,7 +39,7 @@ func mcpCommand() *ucli.Command {
 		Flags: []ucli.Flag{
 			&ucli.StringFlag{
 				Name:  "seed",
-				Usage: "path to a JSON/YAML seed model (defaults to the embedded example)",
+				Usage: "path to a JSON/YAML seed model to apply on startup (when omitted: the embedded example for the in-memory store, and nothing at all for a --store DSN)",
 			},
 			&ucli.StringFlag{
 				Name:  "store",
@@ -73,8 +73,8 @@ func mcpCommand() *ucli.Command {
 // The stack is returned alongside the facade because it OWNS resources — the
 // seed's database pools — and the facade does not: something has to outlive this
 // call to close them. Callers defer stack.Close().
-func mcpService(cmd *ucli.Command, store model.Storage, seedPath string, warnings io.Writer) (*service.Service, decisionStack, error) {
-	stack, err := buildDecisionStack(cmd, store, seedPath)
+func mcpService(ctx context.Context, cmd *ucli.Command, store model.Storage, seedPath string, warnings io.Writer) (*service.Service, decisionStack, error) {
+	stack, err := buildDecisionStack(ctx, cmd, store, seedPath)
 	if err != nil {
 		return nil, decisionStack{}, err
 	}
@@ -92,7 +92,7 @@ func runMCP(ctx context.Context, cmd *ucli.Command) error {
 	}
 	defer func() { _ = store.Close() }()
 
-	svc, stack, err := mcpService(cmd, store, cmd.String("seed"), cmd.ErrWriter)
+	svc, stack, err := mcpService(ctx, cmd, store, cmd.String("seed"), cmd.ErrWriter)
 	if err != nil {
 		return err
 	}

@@ -58,6 +58,14 @@ import (
 // that a duplicate declaration is a detectable error rather than a last-one-wins
 // merge, and so the three wiring sections read alike.
 //
+// It is nonetheless one of the four SHARED wiring sections and objects: is not: a
+// declaration here says how to READ a field, which is the same kind of fact a
+// providers: entry carries and is safe to copy to a second instance, where an
+// objects: entry carries the field's VALUE. `aperture wiring push` writes it to
+// apt_wiring_field_types and `aperture wiring pull` reads it back under this key.
+// Apply still writes nothing for it and an export still reproduces none of it — see
+// skills/shared-wiring.md for why those are three different questions.
+//
 // # What it deliberately is not
 //
 // It is a DATE-TYPE declaration, not a general metadata schema. There is no

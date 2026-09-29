@@ -20,7 +20,7 @@ import (
 // statement splitter and the CREATE TABLE reader are the same code, and
 // schema_naming_fixtures_test.go is the safety net that says so. What was added
 // on the way over is foreign-key reading, because a parser that steps blindly
-// over the nine keys each dialect now declares cannot tell a key it understands
+// over the eleven keys each dialect now declares cannot tell a key it understands
 // from one it merely ignored.
 // ---------------------------------------------------------------------------
 
@@ -411,7 +411,7 @@ func splitTopLevel(toks []token) [][]token {
 // ---------------------------------------------------------------------------
 // Foreign keys
 //
-// Both dialect files declare their nine keys as TABLE constraints, but the
+// Both dialect files declare their eleven keys as TABLE constraints, but the
 // inline column form is legal SQL in both engines and a schema that reached for
 // it must not become a key the gate silently loses. Both forms are read, and
 // both land in the same foreignKey shape.

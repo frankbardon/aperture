@@ -299,12 +299,52 @@
 // already carries, so the earlier of the two wins and a caller can always be
 // stricter than the provider.
 //
+// # Warming the Registry's cache: the two statements must project the same columns
+//
+// provider.Registry caches an object's metadata per type, and every READ of that
+// cache is a Fetch — the decision path's authoritative view of an object, what a
+// rule sees as `object.*`. An enumeration may warm that cache, which is what keeps
+// a rule-backed Enumerate from paying a round trip per candidate, but only when a
+// listed bag is the bag Fetch would have produced. Two independent statements make
+// that a real question rather than a given:
+//
+//	get_one: SELECT tier, seats, renews_on FROM brands WHERE id = $1
+//	get_all: SELECT 'brand:' || b.id AS id, b.tier FROM brands b   -- NARROWER
+//
+// Warming from that listing would cache a one-field bag under an id whose real bag
+// has three, for the whole of the type's TTL. A rule then reads `object.seats` as
+// ABSENT — not wrong, absent — and every predicate over an absent field is false:
+// an inclusive grant denies, and an EXCLUSIVE grant stops excluding and therefore
+// WIDENS. A wider get_all is the mirror image, caching a field Fetch would never
+// produce. Neither leaves anything in a verdict, trace or note, because a bag of
+// any shape is a legal bag.
+//
+// So a *Provider answers provider.FetchCompleteLister, and it answers it from what
+// it has OBSERVED: the column names of each statement's own result
+// (ListedMetadataMatchesFetch). The list statement's columns minus the id column
+// must equal the fetch statement's columns, as a set; until both statements have run
+// once the answer is false and the Registry simply does not warm. There is no
+// Config field and no YAML key for it — an operator's unchecked promise about two
+// statements is exactly the thing this is replacing.
+//
+// Two practical consequences for the developer writing the pair:
+//
+//   - PROJECT THE SAME COLUMNS IN BOTH, and the cache warms as it always did. It
+//     is also the pairing that makes an enumerate-then-decide sequence self
+//     consistent, which is worth more than the round trips.
+//   - A deliberately narrow get_all — a display projection over a wide table — stays
+//     legal and stays correct. It costs one Fetch per candidate per TTL window
+//     instead of one per enumeration, and the cost is silent. If a SQL-backed type's
+//     enumeration is slower than its sibling's, compare the two SELECT lists first.
+//
 // # Concurrency and the read-only contract
 //
-// A *Provider is immutable after New — it holds a Querier and two configured
-// values and mutates nothing — so it is safe for concurrent use, as the
-// ObjectProvider contract requires. Concurrency beneath it is the Querier's
-// business, and *sql.DB is itself concurrency-safe.
+// A *Provider's configuration is immutable after New — a Querier, two statements,
+// an id column and a timeout, none of which ever change. The one thing that does
+// change is the pair of column projections it has observed (above), which is
+// guarded by the Provider's own mutex and written idempotently. So a *Provider is
+// safe for concurrent use, as the ObjectProvider contract requires. Concurrency
+// beneath it is the Querier's business, and *sql.DB is itself concurrency-safe.
 //
 // Per the provider.Metadata contract every returned map is freshly allocated for
 // that one Fetch, with no container shared with another call or retained by the
@@ -317,7 +357,9 @@ package sqlprovider
 import (
 	"context"
 	"database/sql"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	aerr "github.com/frankbardon/aperture/errors"
@@ -325,8 +367,13 @@ import (
 	"github.com/frankbardon/aperture/provider"
 )
 
-// compile-time assertion: a *Provider is a usable ObjectProvider.
-var _ provider.ObjectProvider = (*Provider)(nil)
+// compile-time assertions: a *Provider is a usable ObjectProvider, and it answers
+// the FetchCompleteLister question the Registry asks before warming its metadata
+// cache from an enumeration.
+var (
+	_ provider.ObjectProvider      = (*Provider)(nil)
+	_ provider.FetchCompleteLister = (*Provider)(nil)
+)
 
 // DefaultTimeout bounds one statement when Config.Timeout is zero. Fetch runs
 // under Check, so the default is short on purpose: a provider query that has not
@@ -401,9 +448,12 @@ type Config struct {
 	Timeout time.Duration
 }
 
-// Provider is a SQL-backed ObjectProvider for one object-type. It is immutable
-// after New and therefore safe for concurrent use; the Querier owns whatever
-// pooling happens beneath it.
+// Provider is a SQL-backed ObjectProvider for one object-type. Its configuration
+// is immutable after New; the only thing that changes over its life is the pair of
+// column projections it has observed (see observedProjections), which is guarded
+// by its own mutex. It is therefore safe for concurrent use, as the
+// ObjectProvider contract requires; the Querier owns whatever pooling happens
+// beneath it.
 type Provider struct {
 	q          Querier
 	objectType string
@@ -411,6 +461,14 @@ type Provider struct {
 	listQuery  string
 	idColumn   string
 	timeout    time.Duration
+
+	// The observed column projections of the two statements, which is what
+	// ListedMetadataMatchesFetch answers from. They are the ONLY mutable state on
+	// a Provider; see "Warming the Registry's cache" in the package doc for why
+	// they are observed rather than declared.
+	mu        sync.Mutex
+	fetchCols []string // sorted; nil until the fetch statement has executed once
+	listCols  []string // sorted, id column removed; nil until the list statement has
 }
 
 // New returns a Provider that reads objects through q using cfg's statements.
@@ -492,6 +550,32 @@ func (p *Provider) Fetch(ctx context.Context, id identity.Identity) (provider.Me
 		return nil, queryError(err, id)
 	}
 	defer rows.Close()
+
+	// The fetch statement's projection, recorded before any row is read: a column
+	// list is a property of the STATEMENT, so even a fetch that finds nothing
+	// teaches it. This is one half of what ListedMetadataMatchesFetch compares.
+	//
+	// It is recorded BEFORE validateColumns runs, where the list side deliberately
+	// waits until the projection is known well-formed (see enumerate). The
+	// asymmetry is real and it is safe only because of what validateColumns does:
+	// it REFUSES an unnamed or duplicated column and never rewrites cols, so a
+	// malformed fetch projection is recorded, then fails the very first fetch that
+	// reads a row, and is in any case never set-equal to a list projection that
+	// passed the same check — ["name","name"] and ["name"] are different sets.
+	// ListedMetadataMatchesFetch therefore cannot be made true by a projection
+	// validation would have rejected.
+	//
+	// That stops holding the moment a validation rule DROPS a column instead of
+	// refusing the statement — a tolerated duplicate, a synthetic column filtered
+	// out. Then the recorded list would be the raw projection and the effective one
+	// would be shorter, the two could agree by accident, and the warm would cache
+	// bags Fetch never produces. A rule like that must move this call after the
+	// validation (Fetch reads rows.Columns twice today, once here and once in
+	// scanRow, so there is room to hoist it) — and see the constraint stated on
+	// validateColumns itself.
+	if cols, cerr := rows.Columns(); cerr == nil {
+		p.observeFetchColumns(cols)
+	}
 
 	if !rows.Next() {
 		// rows.Err first: a connection that died mid-statement also reports "no
@@ -591,6 +675,10 @@ func (p *Provider) enumerate(ctx context.Context, filter provider.Filter) ([]pro
 			"sqlprovider: the list statement's result has no id column; select each object's full identity under that name (SELECT 'brand:' || b.id AS id, ...)",
 			map[string]any{"object_type": p.objectType, "id_column": p.idColumn, "columns": strings.Join(cols, ", ")})
 	}
+	// The list statement's METADATA projection — its columns minus the id column,
+	// which is the identity and not a field. Recorded only once the projection is
+	// known to be well-formed, so a statement that is rejected teaches nothing.
+	p.observeListColumns(cols)
 
 	// One scan buffer for the whole result — see scanSlots for why reusing it is
 	// safe — and a non-nil result slice, so an empty enumeration is an empty
@@ -631,6 +719,111 @@ func (p *Provider) enumerate(ctx context.Context, filter provider.Filter) ([]pro
 		return nil, p.listError(err)
 	}
 	return out, nil
+}
+
+// ListedMetadataMatchesFetch answers provider.FetchCompleteLister: whether the
+// bags List and Query return are the bags this provider's own Fetch would return,
+// which is what permits provider.Registry to warm its per-type metadata cache from
+// an enumeration instead of fetching every candidate.
+//
+// It is DERIVED from the two statements' real column projections, never declared.
+// There is no Config field for it and no YAML key, because a promise an operator
+// types is a promise nothing checks — and this one, broken, changes verdicts (see
+// the package doc's "Warming the Registry's cache").
+//
+// The answer is:
+//
+//	false  until BOTH statements have executed once — the projections are not
+//	       known yet, so nothing may be assumed about them;
+//	true   when the list statement's columns MINUS the id column are exactly the
+//	       fetch statement's columns, as a set;
+//	false  otherwise — a narrower get_all, a wider one, or a differently named
+//	       column in either direction.
+//
+// EQUALITY, not containment, and in both directions on purpose. A narrower listing
+// caches a bag with a field missing, and an absent field makes every predicate over
+// it false — which denies under an inclusive grant and stops EXCLUDING under an
+// exclusive one. A wider listing caches a field Fetch would never produce, so a
+// predicate over it is true until the entry expires and false afterwards. Both are
+// verdicts computed from something no statement of the host's actually says.
+//
+// Columns, not values, is what makes this sound cheaply. rows.Columns() is the
+// statement's SELECT list, so it is the same for every row and unaffected by any
+// row's NULLs — where comparing two bags would not be, since a NULL column omits
+// its field and an omitted field is indistinguishable from an unprojected one. The
+// one thing it does not prove is that two statements over the same id return the
+// same DATA, and that gap is a real hazard rather than a formality:
+//
+//	get_one: SELECT b.tier FROM brands b WHERE b.id = $1
+//	get_all: SELECT 'brand:' || b.id AS id, COALESCE(b.tier, plans.tier) AS tier
+//	         FROM brands b LEFT JOIN plans ON plans.id = b.plan_id
+//
+// Both projections are {tier}, so this answers true, the enumeration warms the
+// per-type cache, and every decision reading object.tier for the whole ttl is
+// computed from the PLAN's tier — a value this type's own Fetch never produces —
+// after which the entry expires and the verdict changes with nothing having
+// happened. It is the same class of failure as an unequal projection, reached
+// through the one gap a column comparison cannot close, and it cannot be closed
+// here: closing it means fetching every listed object to compare, which is the work
+// the warm exists to remove. It is therefore a DEVELOPER OBLIGATION — the two
+// statements read the same columns from the same EXPRESSIONS — and it is stated as
+// one in skills/sql-provider.md and docs/src/concepts/providers.md.
+//
+// The practical consequence of the "not known yet" answer is one cold enumeration
+// per process per object-type: the first List cannot warm, its candidates each
+// fetch (which is what teaches the fetch projection), and every later enumeration
+// warms as before. That cost is O(1) in enumerations, not O(1) per candidate, and
+// is the reason the answer is re-read per enumeration rather than settled at
+// registration.
+func (p *Provider) ListedMetadataMatchesFetch() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.fetchCols == nil || p.listCols == nil {
+		return false
+	}
+	return slices.Equal(p.fetchCols, p.listCols)
+}
+
+// observeFetchColumns records the fetch statement's projection, sorted so the
+// comparison is a set comparison rather than a SELECT-list-order one.
+func (p *Provider) observeFetchColumns(cols []string) {
+	sorted := slices.Sorted(slices.Values(cols))
+	p.mu.Lock()
+	p.fetchCols = sorted
+	p.mu.Unlock()
+}
+
+// observeListColumns records the list statement's METADATA projection: its columns
+// with the id column removed, because that column carries the identity and never
+// becomes a field (rowMetadata skips it).
+func (p *Provider) observeListColumns(cols []string) {
+	fields := make([]string, 0, len(cols))
+	for _, c := range cols {
+		if c == p.idColumn {
+			continue
+		}
+		fields = append(fields, c)
+	}
+	slices.Sort(fields)
+	p.mu.Lock()
+	p.listCols = fields
+	p.mu.Unlock()
+}
+
+// observedProjections returns what the provider has learned about its two
+// statements, for a diagnostic or a test. A nil slice means that statement has not
+// run yet. The slices are copies, so a caller cannot reach into the provider's own.
+//
+// Writes here are idempotent after the first one — the same statement has the same
+// columns every time — so the mutex is about publication, not about contention:
+// concurrent callers must not observe a half-assigned slice header, and a Fetch
+// racing a List must not have its record lost. Nothing on the decision path waits
+// on it for longer than a slice copy, and ListedMetadataMatchesFetch is asked once
+// per enumeration rather than once per row.
+func (p *Provider) observedProjections() (fetch, list []string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return slices.Clone(p.fetchCols), slices.Clone(p.listCols)
 }
 
 // rowIdentity turns the id column of the row'th row into an identity of this
@@ -782,6 +975,16 @@ func scanRow(rows *sql.Rows, id string) (provider.Metadata, error) {
 // once per row. where names whatever the caller can say about the context — a
 // fetch's identity, or an enumeration's object-type — and is merged into every
 // diagnostic.
+//
+// It REFUSES, and it must keep refusing rather than repairing. cols is the
+// caller's slice and is never rewritten, so the projection a caller observed
+// (observeFetchColumns / observeListColumns) is always the projection that is
+// actually in force. A rule that DROPPED a column instead of refusing the
+// statement would break that: the fetch side records its projection before this
+// runs (see Fetch), so the recorded list and the effective one would diverge, the
+// two sides could compare equal by accident, and ListedMetadataMatchesFetch would
+// license warming the per-type cache with bags Fetch never produces. Adding a
+// dropping rule therefore means moving that recording after this call.
 func validateColumns(cols []string, where map[string]any) error {
 	seen := make(map[string]bool, len(cols))
 	for i, name := range cols {

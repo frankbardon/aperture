@@ -77,6 +77,30 @@ const (
 // Like the providers: and objects: sections, this is runtime WIRING and not
 // model state: Apply writes nothing for it and an export never reproduces it.
 //
+// # Only the NAME is shared, and the rest is this instance's ROUTE
+//
+// connections: is one of the four SHARED wiring sections, but what `aperture
+// wiring push` writes is a MANIFEST OF NAMES: one row per name in
+// apt_wiring_connections, and nothing else. Every other key below — DSNEnv, the
+// three pool bounds, QueryTimeout — is deliberately absent from the schema, because
+// which server, which credential and how large a pool are per-instance facts, and
+// a row is copied to a second host that resolves its own.
+//
+// So a declaration here does double duty. On the instance that authors the wiring
+// it is both the name and the route; on any instance reading shared wiring it is
+// purely the ROUTE for a name the manifest already declared. There are three ways
+// to supply one, and they are local to each instance: seed.WithConnectionOpener (a
+// Go host builds the pool itself — the documented seam, and the only one a library
+// host needs), a connections: entry under the same name in this instance's own seed
+// file (used verbatim), or the conventional environment variable
+// APERTURE_CONNECTION_<NAME>_DSN (the CLI's route of last resort, not a second
+// mechanism). A shared name no route answers for refuses the BOOT with
+// APERTURE_WIRING_CONNECTION_UNROUTED, naming every unrouted name at once.
+//
+// A pulled document therefore comes back with an empty dsn_env: for every
+// connection — it is re-pushable but not bootable until the routes are filled in,
+// and that asymmetry is the security rule made visible rather than a defect.
+//
 // # Why there is no dsn: key
 //
 // A seed file is a committed artifact. A DSN carries a password, and a password
@@ -237,6 +261,26 @@ func (c *Connections) get(name string) (Pool, bool) {
 		return nil, false
 	}
 	return e.pool, true
+}
+
+// Pool reports the live pool this set opened for name, or false when it holds
+// none. It is the exported half of get, and it exists for exactly one kind of
+// caller: one that has to build a SECOND registry over the pools a FIRST one
+// already opened.
+//
+// A process that re-reads its wiring while it is serving is that caller. It
+// cannot dial a fresh pool per refresh — that would double every deployment's
+// connections on every push, and half of them would be held by a registry nobody
+// has a handle to Close — so it supplies WithConnectionOpener returning what this
+// reports, and the rebuilt registry SHARES the pools instead of duplicating them.
+//
+// The pool stays OWNED by this set. Close is what ends its lifetime, and a
+// borrower must not close it: wrap it in a type whose Close is a no-op, or the
+// second registry's shutdown takes the first one's database access with it.
+//
+// Names only, never a DSN — the same rule Names obeys.
+func (c *Connections) Pool(name string) (Pool, bool) {
+	return c.get(name)
 }
 
 // queryTimeout returns the statement budget resolved for name, or zero when the

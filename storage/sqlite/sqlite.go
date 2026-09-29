@@ -1434,6 +1434,454 @@ func scanRule2(sc scanner) (model.Rule, error) {
 	return r, nil
 }
 
+// ---- Shared wiring (five tables, one all-or-nothing replace) ----
+//
+// The write surface is ReplaceWiring and nothing else, for the reason
+// model.Storage's doc comment gives: wiring is only meaningful whole. What that
+// means HERE is that the four DELETEs and every INSERT run in one transaction, so
+// a foreign-key refusal on the last provider entry leaves the tables exactly as
+// they were rather than half-replaced.
+//
+// THE CASCADE IS NOT REPEATED HERE. apt_wiring_provider_references is emptied by
+// the DELETE on apt_wiring_providers, through the schema's ON DELETE CASCADE, and
+// there is deliberately no DELETE FROM apt_wiring_provider_references anywhere in
+// this file. That is the rule the other three cascading edges follow: when a Go
+// method repeats the cleanup the schema already performs, the two halves cover
+// for each other, breaking either one alone leaves the conformance suite green,
+// and neither is ever proven.
+
+const (
+	wiringConnectionSelect = `SELECT name, created_at, updated_at FROM apt_wiring_connections`
+	wiringProviderSelect   = `SELECT object_type, kind, apt_connection, get_one, get_all, id_column, ttl, max_size, created_at, updated_at FROM apt_wiring_providers`
+	wiringReferenceSelect  = `SELECT object_type, field, target_type FROM apt_wiring_provider_references`
+	wiringFieldTypeSelect  = `SELECT object_type, field, declared_type, created_at, updated_at FROM apt_wiring_field_types`
+	wiringAttributeSelect  = `SELECT subject, kind, apt_connection, get_one, get_all, id_column, ttl, max_size, declared_keys, created_at, updated_at FROM apt_wiring_attribute_providers`
+)
+
+// stampPair is one entity's encoded CreatedAt/UpdatedAt pair.
+type stampPair struct{ created, updated int64 }
+
+// wiringStamps is the whole set's encoded stamps, section by section.
+// ReplaceWiring encodes every one of them BEFORE it opens a transaction, so an
+// unrepresentable instant is refused with APERTURE_INVALID_INPUT and nothing is
+// written — rather than being discovered part-way through the insert loop, where
+// the rollback would still be correct but the error a caller sees would depend on
+// which section happened to be written first.
+type wiringStamps struct {
+	connections []stampPair
+	providers   []stampPair
+	fieldTypes  []stampPair
+	attributes  []stampPair
+}
+
+// encodeWiringStamps encodes the whole set's stamps in section order, mirroring
+// the order ReplaceWiring writes them.
+func encodeWiringStamps(set model.WiringSet) (wiringStamps, error) {
+	var out wiringStamps
+	encode := func(created, updated time.Time) (stampPair, error) {
+		c, u, err := encodeStamps(created, updated)
+		return stampPair{c, u}, err
+	}
+	out.connections = make([]stampPair, len(set.Connections))
+	for i, c := range set.Connections {
+		p, err := encode(c.CreatedAt, c.UpdatedAt)
+		if err != nil {
+			return wiringStamps{}, err
+		}
+		out.connections[i] = p
+	}
+	out.providers = make([]stampPair, len(set.Providers))
+	for i, p := range set.Providers {
+		sp, err := encode(p.CreatedAt, p.UpdatedAt)
+		if err != nil {
+			return wiringStamps{}, err
+		}
+		out.providers[i] = sp
+	}
+	out.fieldTypes = make([]stampPair, len(set.FieldTypes))
+	for i, ft := range set.FieldTypes {
+		p, err := encode(ft.CreatedAt, ft.UpdatedAt)
+		if err != nil {
+			return wiringStamps{}, err
+		}
+		out.fieldTypes[i] = p
+	}
+	out.attributes = make([]stampPair, len(set.AttributeProviders))
+	for i, ap := range set.AttributeProviders {
+		p, err := encode(ap.CreatedAt, ap.UpdatedAt)
+		if err != nil {
+			return wiringStamps{}, err
+		}
+		out.attributes[i] = p
+	}
+	return out, nil
+}
+
+func (s *Store) ReplaceWiring(ctx context.Context, set model.WiringSet) error {
+	if err := model.ValidateWiringSet(set); err != nil {
+		return err
+	}
+	stamps, err := encodeWiringStamps(set)
+	if err != nil {
+		return err
+	}
+	// declared_keys is rendered by model.DeclaredKeys.Encode rather than spelled
+	// out here: "" (not declared) and "[]" (declared empty) are different answers,
+	// and a twin pair of encoders that drifted would not produce a visibly wrong
+	// row — it would produce a slot that silently stopped being enforced.
+	declared := make([]string, len(set.AttributeProviders))
+	for i, ap := range set.AttributeProviders {
+		raw, err := ap.DeclaredKeys.Encode()
+		if err != nil {
+			return err
+		}
+		declared[i] = raw
+	}
+	return s.inTx(ctx, "replace wiring", func(tx sqlExec) error {
+		// The DELETE on apt_wiring_providers takes the reference rows with it
+		// through ON DELETE CASCADE. Do not add a fifth DELETE for them.
+		for _, table := range []string{
+			"apt_wiring_connections",
+			"apt_wiring_providers",
+			"apt_wiring_field_types",
+			"apt_wiring_attribute_providers",
+		} {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM `+table); err != nil {
+				return err
+			}
+		}
+		for i, c := range set.Connections {
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO apt_wiring_connections (name, created_at, updated_at)
+				VALUES (?, ?, ?)`,
+				c.Name, stamps.connections[i].created, stamps.connections[i].updated); err != nil {
+				return err
+			}
+		}
+		for i, p := range set.Providers {
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO apt_wiring_providers
+					(object_type, kind, apt_connection, get_one, get_all, id_column, ttl, max_size, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				p.ObjectType, p.Kind, p.Connection, p.GetOne, p.GetAll, p.IDColumn, p.TTL, p.MaxSize,
+				stamps.providers[i].created, stamps.providers[i].updated); err != nil {
+				return err
+			}
+			for _, r := range p.References {
+				if _, err := tx.ExecContext(ctx, `
+					INSERT INTO apt_wiring_provider_references (object_type, field, target_type)
+					VALUES (?, ?, ?)`,
+					p.ObjectType, r.Field, r.TargetType); err != nil {
+					return err
+				}
+			}
+		}
+		for i, ft := range set.FieldTypes {
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO apt_wiring_field_types (object_type, field, declared_type, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?)`,
+				ft.ObjectType, ft.Field, ft.DeclaredType,
+				stamps.fieldTypes[i].created, stamps.fieldTypes[i].updated); err != nil {
+				return err
+			}
+		}
+		for i, ap := range set.AttributeProviders {
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO apt_wiring_attribute_providers
+					(subject, kind, apt_connection, get_one, get_all, id_column, ttl, max_size, declared_keys, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				ap.Subject, ap.Kind, ap.Connection, ap.GetOne, ap.GetAll, ap.IDColumn, ap.TTL, ap.MaxSize,
+				declared[i], stamps.attributes[i].created, stamps.attributes[i].updated); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// GetWiring reads the four sections inside ONE transaction. Without it a boot
+// could read a provider list from before a push and a field-type list from after
+// it, and build a registry that never existed in the database at any instant.
+func (s *Store) GetWiring(ctx context.Context) (model.WiringSet, error) {
+	var set model.WiringSet
+	err := s.inTx(ctx, "get wiring", func(tx sqlExec) error {
+		var err error
+		if set.Connections, err = listWiringConnections(ctx, tx); err != nil {
+			return err
+		}
+		if set.Providers, err = listWiringProviders(ctx, tx); err != nil {
+			return err
+		}
+		if set.FieldTypes, err = listWiringFieldTypes(ctx, tx); err != nil {
+			return err
+		}
+		if set.AttributeProviders, err = listWiringAttributeProviders(ctx, tx); err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return model.WiringSet{}, err
+	}
+	return set, nil
+}
+
+func (s *Store) ListWiringConnections(ctx context.Context) ([]model.WiringConnection, error) {
+	return listWiringConnections(ctx, s.exec)
+}
+
+// listWiringConnections takes the exec explicitly so GetWiring can run it inside
+// its own transaction while the List* method runs it against the pool. Every
+// wiring read below follows the same shape for the same reason.
+func listWiringConnections(ctx context.Context, exec sqlExec) ([]model.WiringConnection, error) {
+	rows, err := exec.QueryContext(ctx, wiringConnectionSelect+` ORDER BY name`)
+	if err != nil {
+		return nil, wrapStorage("list wiring connections", err)
+	}
+	defer rows.Close()
+	out := make([]model.WiringConnection, 0)
+	for rows.Next() {
+		c, err := scanWiringConnection(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, wrapStorage("scan wiring connections", err)
+	}
+	return out, nil
+}
+
+func (s *Store) GetWiringConnection(ctx context.Context, name string) (model.WiringConnection, error) {
+	row := s.exec.QueryRowContext(ctx, wiringConnectionSelect+` WHERE name = ?`, name)
+	c, err := scanWiringConnection(row)
+	if isNoRows(err) {
+		return model.WiringConnection{}, notFound("wiring connection", name)
+	}
+	return c, err
+}
+
+func scanWiringConnection(sc scanner) (model.WiringConnection, error) {
+	var (
+		c                model.WiringConnection
+		created, updated int64
+	)
+	if err := sc.Scan(&c.Name, &created, &updated); err != nil {
+		if isNoRows(err) {
+			return model.WiringConnection{}, err
+		}
+		return model.WiringConnection{}, wrapStorage("scan wiring connection", err)
+	}
+	c.CreatedAt, c.UpdatedAt = decodeStamps(created, updated)
+	return c, nil
+}
+
+func (s *Store) ListWiringProviders(ctx context.Context) ([]model.WiringProvider, error) {
+	return listWiringProviders(ctx, s.exec)
+}
+
+// listWiringProviders reads the entries and their reference rows with TWO
+// queries, not one per entry: the references are grouped in Go by owner. A
+// per-entry query would be a round trip per object type on a boot path whose
+// whole job is to read everything once.
+func listWiringProviders(ctx context.Context, exec sqlExec) ([]model.WiringProvider, error) {
+	refs, err := wiringReferencesByOwner(ctx, exec, "")
+	if err != nil {
+		return nil, err
+	}
+	rows, err := exec.QueryContext(ctx, wiringProviderSelect+` ORDER BY object_type`)
+	if err != nil {
+		return nil, wrapStorage("list wiring providers", err)
+	}
+	defer rows.Close()
+	out := make([]model.WiringProvider, 0)
+	for rows.Next() {
+		p, err := scanWiringProvider(rows)
+		if err != nil {
+			return nil, err
+		}
+		p.References = refs[p.ObjectType]
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, wrapStorage("scan wiring providers", err)
+	}
+	return out, nil
+}
+
+func (s *Store) GetWiringProvider(ctx context.Context, objectType string) (model.WiringProvider, error) {
+	row := s.exec.QueryRowContext(ctx, wiringProviderSelect+` WHERE object_type = ?`, objectType)
+	p, err := scanWiringProvider(row)
+	if isNoRows(err) {
+		return model.WiringProvider{}, notFound("wiring provider", objectType)
+	}
+	if err != nil {
+		return model.WiringProvider{}, err
+	}
+	refs, err := wiringReferencesByOwner(ctx, s.exec, objectType)
+	if err != nil {
+		return model.WiringProvider{}, err
+	}
+	p.References = refs[objectType]
+	return p, nil
+}
+
+func scanWiringProvider(sc scanner) (model.WiringProvider, error) {
+	var (
+		p                model.WiringProvider
+		created, updated int64
+	)
+	if err := sc.Scan(&p.ObjectType, &p.Kind, &p.Connection, &p.GetOne, &p.GetAll,
+		&p.IDColumn, &p.TTL, &p.MaxSize, &created, &updated); err != nil {
+		if isNoRows(err) {
+			return model.WiringProvider{}, err
+		}
+		return model.WiringProvider{}, wrapStorage("scan wiring provider", err)
+	}
+	p.CreatedAt, p.UpdatedAt = decodeStamps(created, updated)
+	return p, nil
+}
+
+// wiringReferencesByOwner groups the reference rows by owning object type. An
+// empty objectType reads them all. The ORDER BY is what makes a read back
+// byte-stable: a references: map has no order of its own, so field order IS the
+// canonical one.
+func wiringReferencesByOwner(ctx context.Context, exec sqlExec, objectType string) (map[string][]model.WiringReference, error) {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if objectType == "" {
+		rows, err = exec.QueryContext(ctx, wiringReferenceSelect+` ORDER BY object_type, field`)
+	} else {
+		rows, err = exec.QueryContext(ctx, wiringReferenceSelect+` WHERE object_type = ? ORDER BY field`, objectType)
+	}
+	if err != nil {
+		return nil, wrapStorage("list wiring provider references", err)
+	}
+	defer rows.Close()
+	out := make(map[string][]model.WiringReference)
+	for rows.Next() {
+		var owner string
+		var r model.WiringReference
+		if err := rows.Scan(&owner, &r.Field, &r.TargetType); err != nil {
+			return nil, wrapStorage("scan wiring provider reference", err)
+		}
+		out[owner] = append(out[owner], r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, wrapStorage("scan wiring provider references", err)
+	}
+	return out, nil
+}
+
+func (s *Store) ListWiringFieldTypes(ctx context.Context) ([]model.WiringFieldType, error) {
+	return listWiringFieldTypes(ctx, s.exec)
+}
+
+func listWiringFieldTypes(ctx context.Context, exec sqlExec) ([]model.WiringFieldType, error) {
+	rows, err := exec.QueryContext(ctx, wiringFieldTypeSelect+` ORDER BY object_type, field`)
+	if err != nil {
+		return nil, wrapStorage("list wiring field types", err)
+	}
+	defer rows.Close()
+	out := make([]model.WiringFieldType, 0)
+	for rows.Next() {
+		ft, err := scanWiringFieldType(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, ft)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, wrapStorage("scan wiring field types", err)
+	}
+	return out, nil
+}
+
+func (s *Store) GetWiringFieldType(ctx context.Context, objectType, field string) (model.WiringFieldType, error) {
+	row := s.exec.QueryRowContext(ctx,
+		wiringFieldTypeSelect+` WHERE object_type = ? AND field = ?`, objectType, field)
+	ft, err := scanWiringFieldType(row)
+	if isNoRows(err) {
+		return model.WiringFieldType{}, notFound("wiring field type", objectType+"."+field)
+	}
+	return ft, err
+}
+
+func scanWiringFieldType(sc scanner) (model.WiringFieldType, error) {
+	var (
+		ft               model.WiringFieldType
+		created, updated int64
+	)
+	if err := sc.Scan(&ft.ObjectType, &ft.Field, &ft.DeclaredType, &created, &updated); err != nil {
+		if isNoRows(err) {
+			return model.WiringFieldType{}, err
+		}
+		return model.WiringFieldType{}, wrapStorage("scan wiring field type", err)
+	}
+	ft.CreatedAt, ft.UpdatedAt = decodeStamps(created, updated)
+	return ft, nil
+}
+
+func (s *Store) ListWiringAttributeProviders(ctx context.Context) ([]model.WiringAttributeProvider, error) {
+	return listWiringAttributeProviders(ctx, s.exec)
+}
+
+func listWiringAttributeProviders(ctx context.Context, exec sqlExec) ([]model.WiringAttributeProvider, error) {
+	rows, err := exec.QueryContext(ctx, wiringAttributeSelect+` ORDER BY subject`)
+	if err != nil {
+		return nil, wrapStorage("list wiring attribute providers", err)
+	}
+	defer rows.Close()
+	out := make([]model.WiringAttributeProvider, 0)
+	for rows.Next() {
+		ap, err := scanWiringAttributeProvider(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, ap)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, wrapStorage("scan wiring attribute providers", err)
+	}
+	return out, nil
+}
+
+func (s *Store) GetWiringAttributeProvider(ctx context.Context, subject string) (model.WiringAttributeProvider, error) {
+	row := s.exec.QueryRowContext(ctx, wiringAttributeSelect+` WHERE subject = ?`, subject)
+	ap, err := scanWiringAttributeProvider(row)
+	if isNoRows(err) {
+		return model.WiringAttributeProvider{}, notFound("wiring attribute provider", subject)
+	}
+	return ap, err
+}
+
+func scanWiringAttributeProvider(sc scanner) (model.WiringAttributeProvider, error) {
+	var (
+		ap               model.WiringAttributeProvider
+		declared         string
+		created, updated int64
+	)
+	if err := sc.Scan(&ap.Subject, &ap.Kind, &ap.Connection, &ap.GetOne, &ap.GetAll,
+		&ap.IDColumn, &ap.TTL, &ap.MaxSize, &declared, &created, &updated); err != nil {
+		if isNoRows(err) {
+			return model.WiringAttributeProvider{}, err
+		}
+		return model.WiringAttributeProvider{}, wrapStorage("scan wiring attribute provider", err)
+	}
+	keys, err := model.ParseDeclaredKeys(declared)
+	if err != nil {
+		// Already Aperture-coded by the model, so wrapping it here would re-stamp
+		// APERTURE_INVALID_INPUT as APERTURE_STORAGE and bury its fixups.
+		return model.WiringAttributeProvider{}, err
+	}
+	ap.DeclaredKeys = keys
+	ap.CreatedAt, ap.UpdatedAt = decodeStamps(created, updated)
+	return ap, nil
+}
+
 // ---- Audit trail (append-only) ----
 
 const auditColumns = `id, occurred_at, event_type, apt_action, actor, effective_subject, impersonation_mode, account, target, outcome, reason, details`

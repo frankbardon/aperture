@@ -1,6 +1,6 @@
 ---
 name: attribute-providers
-description: The attribute seam — the three slots (user, machine, account) a decision resolves `principal.*` and `account.*` from, the shared value model, the floor bags {id, kind} and {id} that are stamped last and cannot be shadowed, the leniency contract and the exclusive-grant widening it leaves, the kind-dependence hazard that `principal.kind` exists to state, the account-neutrality obligation on globally-visible principal bags, the account wildcard short-circuiting to the floor, impersonation reading the effective subject, the per-decision memo, the cache TTL as a revocation window, the containment guarantee that attribute enumeration can never be scope resolution, the `attributes:` / `attribute_providers:` seed schemas and their slot-level precedence, the silent `get_all` bare-id trap, and the system-tier admin read behind `service.ListAttributes` and `aperture attributes`.
+description: The attribute seam — the three slots (user, machine, account) a decision resolves `principal.*` and `account.*` from, the shared value model, the floor bags {id, kind} and {id} that are stamped last and cannot be shadowed, the two registration layers a slot holds and the shared layer winning every key both serve, `declared_keys:` reserving the keys it names to the declaring layer so a deletion from a shared directory is a fleet-wide revocation, the leniency contract and the exclusive-grant widening it leaves, the kind-dependence hazard that `principal.kind` exists to state, the account-neutrality obligation on globally-visible principal bags, the account wildcard short-circuiting to the floor, impersonation reading the effective subject, the per-decision memo, the per-layer cache TTL as a revocation window, the containment guarantee that attribute enumeration can never be scope resolution, the `attributes:` / `attribute_providers:` seed schemas and the layering between them, the silent `get_all` bare-id trap, and the system-tier admin read behind `service.ListAttributes` and `aperture attributes`.
 applies_to: [library, cli]
 ---
 
@@ -136,6 +136,12 @@ trustworthy for the same reason — it is the branch key a rule author uses to
 state kind-dependence (below). A floor that can be shadowed is not a floor.
 Pinned by `rules.TestTheFloorIsNotShadowedByTheProviderBag`.
 
+The floor stamps over **whatever a resolver returned**, and a resolver's answer may
+itself be a merge of a slot's two registration layers. The three tiers compose in
+one direction — **floor over shared over local** — so nothing below the floor can
+reach `id` or `kind` whichever layer served the rest of the bag. See
+[Precedence: two layers, and the shared layer wins](#precedence-two-layers-and-the-shared-layer-wins).
+
 `principal.kind` is published **even when empty**. An empty kind is a value a
 rule can compare against (`""` matches neither `"user"` nor `"machine"`); an
 *absent* key would make "unknown" and "not published by this build" the same
@@ -174,6 +180,17 @@ provider therefore returns `APERTURE_NOT_FOUND` for a key it does not know, and
 the registry passes an already-coded error through unwrapped (`Wrap` **re-stamps**
 — a wrapped `APERTURE_NOT_FOUND` would read to every caller as an operational
 failure).
+
+**Leniency is asked of the SLOT, not of a layer**, and neither two layers nor a
+declared set widens it — the two codes are the two they were. Inside a fetch, one
+layer's `APERTURE_NOT_FOUND` means only "this layer has no record for this key" and the
+other layer's bag is the answer, minus any key the SHARED layer declared (that is
+reservation, not a new code — see
+[What a declared set closes](#what-a-declared-set-closes-and-the-one-hole-left-open)); every **other** error surfaces
+verbatim from whichever layer raised it, so an unreachable shared directory is never
+quietly answered out of the local file. That is the distinction the layering had to
+preserve: an outage must not read as "this principal has no attributes", and it must
+not read as "this principal has the local machine's attributes" either.
 
 A key that can **never** name one subject is a third thing and is refused rather
 than collapsed: an empty key, or the account wildcard `"*"`, is
@@ -372,6 +389,21 @@ the three have genuinely different change rates and cardinalities. Defaults are
 slot overrides them; inline seed bags are registered with a TTL of `0` (never
 expires), which is correct only because nothing can change them.
 
+More precisely, each **layer** of a slot gets its own cache, and that is a design
+choice rather than an implementation detail. A layer's `ttl:` is **its own
+revocation window**, declared by whoever declared that layer, and one pooled cache
+per slot could honour at most one of two declarations — both ways of choosing being
+wrong. Taking the longer window silently **lengthens** the time a revoked shared
+attribute keeps authorizing; taking the shorter one silently ignores a declaration
+an operator made. The inline `attributes:` block registers with `ttl: 0`, so a slot
+with an external source beside it is exactly the case where pooling would have turned
+the directory's five minutes into forever. `CacheConfigFor(slot)` reports the
+**governing** layer's configuration — the shared one when it is filled, otherwise the
+local one, because that is the layer a contested key is answered from — and
+`CacheConfigForLayer(slot, layer)` the finer fact. `Stats(slot)` sums the slot's
+layers, so a key both serve counts twice: it really is cached twice, and two `ttl`s
+will expire it.
+
 An object's metadata going stale for a TTL is usually tolerable: a document's
 category is a fact about a thing. **An attribute bag is the asker's standing** —
 the clearance, the department, the plan — so until a cached bag expires, every
@@ -390,16 +422,62 @@ window explicitly when you cannot wait:
   instrument exactly once: an operator who knows a directory changed but not which
   subjects.
 
+All three clear **every layer** of every slot they name, unconditionally. Dropping
+one layer and leaving the other would leave the revoked clearance gone from one
+cache and still being read out of the other, which is worse than not invalidating at
+all: the operator has been told the window is closed and half of it is open.
+`Invalidate`'s bool is therefore the OR of the layers' deletes, computed without
+short-circuiting — a layer whose `Delete` is never called is a layer that keeps
+serving.
+
 `Invalidate` validates the key through the **same guard** `Fetch` uses, so the
 empty string and `"*"` are refused here too. Neither could ever have been cached,
 so the refusal costs nothing and answers "why did invalidating `*` report
 nothing?" with the reason instead of a `false`.
+
+**A declared set is the other revocation control, and it is the one a `ttl:` cannot
+give you.** Invalidation and a short `ttl:` close the window on a bag that CHANGED;
+neither closes it on a subject the shared directory no longer has at all, because a
+local layer answering out of its own `ttl: 0` cache has nothing stale to drop. A
+shared entry that declares the keys it answers for makes that delete a revocation —
+see [What a declared set closes](#what-a-declared-set-closes-and-the-one-hole-left-open).
 
 **Invalidation is process-local.** It clears the caches of the process that runs
 it. That makes `aperture attributes invalidate` exact for a host embedding
 Aperture, and self-contained for a one-shot CLI invocation (which starts cold and
 exits cold) — but it **cannot reach a running `aperture serve`**. The controls
 that reach that process's cache are the slot's `ttl:` and a restart.
+
+### Only SUCCESSES are cached, and layering doubles what that costs
+
+`fetchAttributeLayer` caches what a provider **returned**; a layer's
+`APERTURE_NOT_FOUND` is not cached. So a key a layer does not know is re-asked of
+that layer on **every decision**, for the life of the process, with no TTL and
+nothing to invalidate.
+
+On a single-layer slot that is the ordinary cost of a key nobody has. Layering
+doubles the number of layers that can not-know a key, and the common shape makes it
+concrete: a **shared** SQL directory beside a **local** three-entry `attributes:`
+block means every decision for one of those three principals issues a fresh
+`get_one` against the shared directory first — the local bag is cached and the
+shared miss is not. The same holds in reverse for a subject the directory carries
+and the file does not, except that a `StaticAttributes` miss is a map lookup and
+costs nothing. It is the **SQL and CSV** layers where the misses are round trips.
+
+Nothing in the benchmark suite sees this: `bench.TestCheckNFRAttributes` measures
+warm-cache hits, which is exactly the case a negative lookup is not.
+
+This is **not** fixed by caching negatives, and that is a deliberate refusal rather
+than a gap. A cached negative is a **staleness window on an addition**: a subject
+added to the directory — a clearance just granted, a machine just enrolled — would
+stay invisible for the whole `ttl:`, which is the mirror image of the revocation
+window this section is about, and is a security tradeoff an operator would be paying
+without having been asked. If the misses are hot enough to matter, the answers are
+in the wiring rather than in the registry: carry the subject in the layer that
+already has it, or give the shared layer the subject rather than leaning on the local
+one — and note that leaning on the local one for a subject the shared layer declares
+keys for now answers nothing at all (see
+[What a declared set closes](#what-a-declared-set-closes-and-the-one-hole-left-open)).
 
 ## Containment: enumeration is never scope resolution
 
@@ -440,16 +518,109 @@ wired to what they look like.
 
 `Fields` and `Limit` are re-enforced by the registry on whatever a provider
 returns (`MatchFields`, plus the limit), so a provider that ignores them is still
-correct, only less efficient. The limit is **honoured, not clamped down**: a
-positive `Limit` is passed through verbatim and enforced at that value, and
-`provider.DefaultListLimit` (= 1000) is only what a non-positive `Limit` means.
-`Enumerate` is deliberately **uncapped** — it is the system-tier admin read of a
-directory, and an operator asking "who is in the user slot?" may legitimately need
-all of it; a page size chosen inside the registry would only make the honest
-answer arrive in pieces. What keeps the read safe is the authority required to
-reach it (`service.requireAttributeAdmin`), not a number in `provider`.
-`Enumerate` opportunistically warms the slot's cache with each returned bag, since
-the provider call already paid to produce it.
+correct, only less efficient.
+
+There is **no ceiling, but there is a default, and it truncates silently.** The
+limit is **honoured, not clamped down**: a positive `Limit` is passed through
+verbatim and enforced at that value, above `provider.DefaultListLimit` included,
+because this is the system-tier admin read of a directory and an operator asking
+"who is in the user slot?" may legitimately need all of it — a page size chosen
+inside the registry would only make the honest answer arrive in pieces. What keeps
+the read safe is the authority required to reach it
+(`service.requireAttributeAdmin`), not a number in `provider`.
+
+A caller that names **no** limit is a different case, and it is not unbounded: a
+non-positive `Limit` means `provider.DefaultListLimit` (= 1000), the same
+substitution `Registry.List` makes. Nothing in the result says so. A 5000-record
+slot read with no limit returns exactly 1000 records with no error, no flag and no
+count, and that answer is **indistinguishable from a complete directory of 1000**.
+So an operator who needs the whole of a slot must name a limit larger than it
+(`aperture attributes query user --limit 6000`), and one who needs to know whether
+an answer is complete must ask for one more record than they expect and see
+whether they get it. The CLI's `--limit` flag says the same thing from the other
+side: `<=0` means the default, and the registry applies it regardless.
+### `Enumerate` never writes the slot's cache
+
+A slot's caches are **`Fetch`'s** caches — the decision path's view of a subject —
+and `Enumerate` is forbidden from writing **either layer's**. `Fetch` still caches
+its own answer, per layer; only the listing's bags are excluded.
+
+`Enumerate` on a layered slot queries both layers and merges the records **per key**,
+with the shared layer's bag winning exactly as `Fetch`'s merge does, so a listing
+shows the bag a `Fetch` of that key would return. `Fields` and the limit are then
+re-enforced on the **merged** bag, by the one function both the single-layer and the
+merged path go through: filtering per layer would drop a record whose merged bag
+does match the predicate, and a limit applied per layer would truncate before the
+merge could complete a record.
+
+**A declared set suppresses here too**, through the same `mergeAttributeBags`, and
+that is a decision rather than a side effect. The subjects reservation matters most
+for are exactly the ones the shared directory no longer has a record for, and this
+listing is how an operator checks that a delete landed — so a listing that still
+displayed the local value would be the one surface reporting the revoked attribute.
+`Fields` then runs on the suppressed bag, so "who still has clearance 9?" cannot
+name a subject whose clearance was revoked. A record whose every key was suppressed
+stays in the listing with an **empty** bag, because that is what a `Fetch` of it
+returns. It costs nothing and changes nothing else: suppression only ever removes
+keys, and this path still writes no cache.
+
+The reason is that `Fetch` and `Query` answer different questions and nothing in
+`AttributeProvider` makes their bags equal. The SQL loader makes the inequality
+explicit and legal: `AttributeConfig.ListQuery` is **optional** and is only
+required to select a bare id, so
+
+```yaml
+get_one: SELECT department, clearance, to_jsonb(teams) AS teams FROM users WHERE id = $1
+get_all: SELECT u.id AS id, u.department FROM users u
+```
+
+is a correct pair in which `Query`'s bag is a strict **subset** of `Fetch`'s.
+Warming the fetch cache from it substituted the display projection for the
+authoritative bag, for the whole of the slot's `ttl`, for every subject the
+listing returned.
+
+That is an access-control change, not a stale read. An absent key is not a wrong
+key: every predicate over it goes false, so an inclusive grant **denies** and an
+**exclusive** grant stops excluding and therefore **widens** — one operator
+running `aperture attributes query user` silently reopens access until the `ttl`
+expires, and no verdict, trace or note says why. It is
+["The hazard leniency leaves"](#the-hazard-leniency-leaves-an-exclusive-grant-widens)
+reached from the other direction: a bag that is present but shorter.
+
+Aperture cannot make the warm safe by **inspecting** it. It cannot compare the two
+projections — an attribute bag is opaque host data, an absent key is
+indistinguishable from a key whose value is genuinely unset (`sqlprovider` maps a
+`NULL` to an **omitted** field on purpose), and a provider may legitimately answer
+`Query` from a search index and `Fetch` from the system of record. Only the
+implementation knows.
+
+### The object registry had the same bug, and is fixed differently
+
+`provider.Registry.List` and `Registry.Identifiers` warmed the per-type **object**
+metadata cache the same unconditional way, from the same kind of legal statement
+pair — and with the same consequence, since a rule reading `object.<dropped_field>`
+is false for reasons no trace explains.
+
+The two are fixed differently because the calls are not the same kind of call:
+
+| | attribute `Enumerate` | object `List` / `Identifiers` |
+|---|---|---|
+| What it is | a system-tier admin listing | a **decision-path** call: how a rule-backed inclusive scope gathers its candidates |
+| Is there a `Fetch` behind it? | none at all | one per candidate, immediately, in the same `engine.walkAllowed` |
+| Fix | the warm is **removed** | the warm is **conditional** |
+
+Removing the object warm would put a provider round trip per candidate into the
+widest fan-out Aperture has — precisely the super-linear term
+`bench.TestCheckNFREnumerateBound` exists to catch. So it is kept, gated on the one
+thing that makes it correct: the provider promising, through
+`provider.FetchCompleteLister`, that a listed bag is the bag its own `Fetch` would
+return. `Static` and `csvprovider` promise unconditionally (one map per object, served
+to all three methods); `sqlprovider` **derives** it from the two statements' real
+column projections; a provider that makes no promise gets no warm and stays correct.
+
+An `AttributeProvider` is given no such promise to make, deliberately. A slot's bags
+are only ever read by a decision, so a directory read has no business writing to
+what a decision reads, whatever it could promise about them.
 
 ## Wiring
 
@@ -470,9 +641,47 @@ must be safe for concurrent use and must return `APERTURE_NOT_FOUND` for a key i
 does not know. A slot left unregistered is **not** an error at construction — a
 deployment with no machine principals wires no machine provider.
 
-Registering a slot twice is refused, not replaced: "last writer wins" is how one
-deployment's directory quietly shadows another's during wiring, and the failure
-surfaces as attributes that are merely *wrong* rather than absent.
+A slot holds up to **two** providers, in two named layers, and which method a
+registration calls is which layer it fills:
+
+| Call | Layer | Who owns it |
+|---|---|---|
+| `Register` / `MustRegister` | `provider.AttributeLayerShared` | the **deployment**: a shared wiring row, a seed `attribute_providers:` entry, the one directory a host administers fleet-wide |
+| `RegisterLocal` / `MustRegisterLocal` | `provider.AttributeLayerLocal` | **this instance**: a seed `attributes:` block, a provider this binary registers for itself |
+
+A second registration **in the same layer** is still refused rather than replaced —
+"last writer wins" over a slot is how one deployment's directory quietly shadows
+another's during wiring, and the failure surfaces as attributes that are merely
+*wrong* rather than absent — so a slot accepts exactly two providers and a third is
+`APERTURE_ATTRIBUTE_PROVIDER_INVALID` whichever layer it names. A slot whose **only**
+registration is local behaves exactly like a slot whose only registration is shared:
+one provider, one cache, the bag verbatim. `Has(slot)` is layer-blind (it answers
+"will a fetch reach a provider?"); `Layers(slot)` reports the finer fact, in
+precedence order.
+
+The precedence between the two is stated in
+[Precedence: two layers, and the shared layer wins](#precedence-two-layers-and-the-shared-layer-wins)
+and is neither configurable nor order-dependent.
+
+`provider.WithDeclaredKeys(keys)` is the third registration option, alongside
+`WithTTL` / `WithMaxSize` / `WithClock` (every `CacheOption` is also an
+`AttributeRegistrationOption`, so nothing at an existing call site changes). It
+declares the keys that layer **answers for**, which reserves them to it:
+
+```go
+attrs.MustRegister(provider.AttributeSlotUser, dir,
+    provider.WithTTL(60*time.Second),
+    provider.WithDeclaredKeys([]string{"department", "clearance"}))
+attrs.MustRegisterLocal(provider.AttributeSlotUser, localBags, provider.WithTTL(0))
+```
+
+**Passing it at all is the declaration.** `WithDeclaredKeys(nil)` is declared
+**empty** — opted in, reserving no key — and not calling it is **not declared**; a
+caller holding a seed document's `*[]string` therefore tests the **pointer**, never
+the length. Only the **shared** layer may declare (`RegisterLocal` with it is
+`APERTURE_ATTRIBUTE_PROVIDER_INVALID`), and `keys` is copied, so a host that reuses
+its slice cannot change what a registered layer reserves. What reservation does and
+why is [What a declared set closes](#what-a-declared-set-closes-and-the-one-hole-left-open).
 
 Three implementations ship:
 
@@ -490,8 +699,19 @@ decision for that slot*, and boot is where the operator is present to fix it.
 
 Two sections, both **runtime wiring and never model state** — `Apply` writes no
 row for either, and because `Export` reads the model back out of storage, an
-export reproduces neither. The seed **file** is their source of truth, exactly as
-`providers:` / `objects:` / `field_types:` / `connections:` are.
+export reproduces neither.
+
+They part company on the other read-back, and along the line that separates all six
+wiring sections: **`attribute_providers:` is SHARED and `attributes:` is LOCAL.**
+An `attribute_providers:` entry points a slot *at* a source, so `aperture wiring
+push` writes it to `apt_wiring_attribute_providers` and every instance of the
+deployment reads it; an `attributes:` block carries the bags themselves, so no
+command shares it and the seed **file** is its only source of truth. That is also
+exactly why the two land in different registration layers — the shared row and the
+seed `attribute_providers:` entry both fill `AttributeLayerShared`, and an
+`attributes:` block fills `AttributeLayerLocal`. See
+[`skills/shared-wiring.md`](shared-wiring.md) for the four/two split and what a
+pushed row may never carry.
 
 ```yaml
 connections:
@@ -544,8 +764,15 @@ Key details:
   `attribute_providers:`.
 - Inline keys are deduplicated **per slot**, not across the section: a tenant
   called `acme` and a service principal called `acme` are unrelated subjects.
+- A slot may be filled by **both** sections, and that is a layering rather than a
+  conflict: the `attribute_providers:` entry becomes the slot's shared layer and the
+  inline block its local one — see
+  [Precedence](#precedence-two-layers-and-the-shared-layer-wins). Within
+  `attribute_providers:` itself each slot may still be declared at most once.
 - `ttl:` / `max_size:` are **per slot**, because one number covering all three
   would tune for whichever was declared last. `ttl: "0"` never expires.
+- `declared_keys:` is the **optional** declared key set — see below. Omitting it is
+  legal and changes nothing.
 - `dsn:` is refused **by name** wherever it appears: credentials belong to a
   `connections:` entry's `dsn_env:`.
 - A value-model rejection keeps `APERTURE_METADATA_INVALID` (whose fixups name the
@@ -559,25 +786,298 @@ section owes a one-line edit there, in one place. (`internal/cli`'s
 `providers:` alone, in a different package from the field list, so adding
 `objects:` did not look like touching the gate.)
 
-#### Precedence: the external source wins, entirely
+#### `declared_keys:` — the keys a shared slot guarantees
 
-When both sections declare the same slot, the `attribute_providers:` entry
-**wins and every inline entry for that slot is discarded entirely**. There is no
-per-subject merge and no fallback: an inline id the external source happens to
-lack is simply not resolvable, exactly as if the entry had never been written.
+An entry may declare the attribute keys it guarantees:
 
-Field-level merging is the most useful-sounding behaviour and the most impossible
-to debug — a rule reading a department the directory silently did not override is
-a support ticket nobody can reproduce. It is `ProviderCollisions`' rule at slot
-granularity.
+```yaml
+attribute_providers:
+  - subject: user
+    kind: sql
+    connection: main
+    get_one: SELECT department, clearance FROM users WHERE id = $1
+    declared_keys: [department, clearance]
+```
 
-The discard is **not silent**: `Document.AttributeCollisions()` reports the
-affected slots and the caller surfaces them (the CLI prints a warning). Only slot
-**names** are reported, never keys, so the warning cannot leak a directory's
-contents. `Document.AttributeSlotSources()` reports where each slot's bags come
-from (`"csv"`, `"sql"`, or `seed.AttributeSourceInline` = `"inline"`) so a surface
-that displays the wiring does not re-derive the precedence rule and eventually
-disagree with it.
+Declaring does **two jobs with one list**, and each fixes what the other cannot.
+
+**Key enforcement.** A rule may then read only the keys the set names on that slot,
+and reading any other one is refused at validation. Declaring nothing opts out, and
+a slot with no set behaves exactly as every slot did before the key existed.
+
+**Reservation: only this layer answers those keys.** A slot holds two layers, and
+this section is the **shared** one; a declared key is reserved to it, so the inline
+`attributes:` block contributes nothing to that key — not when the two disagree, not
+when this entry's own bag **omits** it for one row, and not when this entry has **no
+record** for the subject at all. Keys **outside** the set are untouched.
+`provider.WithDeclaredKeys` is the registration that carries this.
+
+Together they make a **local layer safe** in both directions. Enforcement covers the
+keys a local layer ADDS: they are unreachable from any rule the deployment can
+validate, so one instance's extra bag fields are **inert** rather than a second
+answer to a deployment-wide grant. Reservation covers the keys INSIDE the set, where
+the merge used to fall through to the local file on an absent value or an absent
+record — see [What a declared set closes](#what-a-declared-set-closes-and-the-one-hole-left-open),
+which is the full account, including why the second half is a **revocation
+control**.
+
+Both are why the declared set lives on the SHARED entry and nowhere else: a local
+layer able to narrow or widen it would be one machine changing which keys a
+deployment-wide rule may name, and which keys the deployment's own directory is
+allowed to answer. `RegisterLocal` with a declared set is
+`APERTURE_ATTRIBUTE_PROVIDER_INVALID`.
+
+The shape is a **plain list of names, with no per-key type information**. It is the
+simplest form that round-trips, and it is also the right one: the metadata value
+model already governs shape, and `field_types:` already governs declared date
+types, so a second typing mechanism here would be a second place for two
+declarations about one key to disagree.
+
+**Three states, not two**, and the difference is load-bearing:
+
+| Written | State | Effect |
+|---|---|---|
+| `declared_keys:` absent (or `null`) | not declared | the slot is opted **out** of key enforcement |
+| `declared_keys: []` | declared empty | the slot is opted **in** and permits **no** key |
+| `declared_keys: [a, b]` | declared | permits `a` and `b` |
+
+The middle row is the one a plain list would lose — nil is what both an absent and
+an empty list decode to — so the YAML field is a **pointer** (`*[]string`), the
+model carries `Declared` as its own bit (`model.DeclaredKeys`), both dialects'
+`declared_keys` column stores `""` for not-declared and `"[]"` for declared-empty,
+and `aperture wiring show` prints all three as words (`(not declared)`,
+`(declared empty)`, or the names). Collapsing declared-empty into not-declared
+would silently **un-enforce** a slot, with nothing red anywhere.
+
+Names are trimmed, an empty name is refused, and a repeated name is refused —
+`APERTURE_CONFIG_INVALID`, naming the slot and the key. The declaration order is
+preserved, so `aperture wiring pull` reproduces the author's list rather than a
+sorted paraphrase of it, and `push → pull → push` is a fixed point for a slot that
+declares a set.
+
+#### What enforcement actually refuses
+
+This is the FIRST of the two jobs above — the rule gate. The second, reservation, is
+applied by the registry at merge time; it is a different mechanism with a different
+failure mode, and the two must not be conflated.
+
+Enforcement is **definition-time**, in rule validation. `service.ValidateRule`,
+`service.PutRule`, `service.EvaluateRulePreview` **and `service.Import`** refuse a
+rule that names an attribute key a declaring root does not declare, with
+`APERTURE_RULE_UNDECLARED_ATTRIBUTE` naming **the key and the slot** whose
+`attribute_providers:` entry has to change. The rule editor renders it on the canvas
+beside the structural and type errors (400 / `invalid_argument` on the wire).
+
+**Every path that WRITES a rule checks, and that is load-bearing rather than
+thorough.** The inertness argument is that a local layer's extra keys cannot be
+reached, because no rule naming one can be saved — so one unchecked writer falsifies
+it for the whole deployment. `Import` was that writer for a while: it handed the
+document to `seed.Document.Apply`, whose `validateRuleAST` is a structural check
+only, so a rule naming an undeclared key went in through an admin-tier Twirp call
+and then decided on the instance whose local layer served the key and read a missing
+path on every other. `service.requireDeclaredRuleKeys` closes it, refusing the
+document **whole and before the transaction opens** and passing
+`APERTURE_RULE_UNDECLARED_ATTRIBUTE` through rather than re-stamping it, so the
+refusal still names the key and the entry to edit.
+
+The **`--seed` boot path** was the other one, and `internal/cli`'s
+`refuseUndeclaredSeedRules` closes it: it reads the shared wiring, checks the
+document's rules against the merged declared sets, and **refuses to start** rather
+than applying them. It has to run *before* the document is applied, not after — a
+rule that reaches storage is in the shared database and therefore reaches every
+other instance, and at that point refusing one instance's boot protects nothing. It
+is a no-op for a deployment that declares nothing: no wiring read, no parse, no
+walk. The slot-to-root collapse it uses is `service.DeclaredAttributeKeysFor` — the
+same one the facade uses, exported rather than reimplemented, because "union the
+principal slots, and only when every one declares" is silently wrong in the
+widening direction if two copies drift.
+
+It is refused at **authoring** and never at decision time, deliberately. A
+decision-time refusal would let a bad rule ship and then fail in production — on
+some instances and not others, which is the very divergence being removed, wearing
+an error message. A rule already stored therefore keeps deciding exactly as it did
+if the declared set later narrows: an operator's push must not silently change what
+an existing grant allows.
+
+The gate is on the paths the rule **NAMES**, the same notion `attributes_floor_only`
+uses (`rules.walkVarFields` serves both). A key behind an `&&` that short-circuits,
+inside a list, or under a `not` is still a key the rule's text depends on.
+
+**A whole-bag read is refused too.** A bare `principal` or `account` with no path —
+`hasKey(principal, "clearance")` — reads whatever the bag happens to carry,
+including every key a local layer added, so left legal it would be the one
+expression that makes a declared set decorative.
+
+Only the **first path segment** past the root is compared, because a declared key
+names a top-level key and its value may be a nested metadata value: a declared
+`metadata` permits `principal.metadata.department`.
+
+#### The floor sits above the declared set, and the `principal` root needs both slots
+
+`principal.id`, `principal.kind` and `account.id` are the engine's **floor bags** —
+stamped last over whatever a provider returned, present in every deployment whether
+a provider is wired or not. They are therefore **always readable and never part of a
+declared set**; declaring them is neither required nor an error, merely redundant.
+Refusing `principal.id` because a slot declared only `department` would refuse
+`principal.id == object.owner` — the most common rule there is — over a wiring change
+that has nothing to say about it.
+
+The `account` root is backed by one slot, so it is enforced exactly when that slot
+declares. The `principal` root is backed by **two** (user and machine), and
+`principal.*` resolves to one or the other by the kind of the principal asking,
+which validation cannot know. So:
+
+- the permitted set is the **union** of the principal slots' declared sets. Not the
+  intersection: a rule may legitimately be about one kind —
+  `principal.kind == "machine" && principal.fleet == "batch"` is the documented way
+  to say so — and intersecting would refuse it for a key the machine slot really
+  does guarantee. A user principal reading that key still reads a missing path, but
+  that is per-KIND leniency, which is deployment-wide and identical on every
+  instance; it is not the per-INSTANCE divergence the declared set exists to remove.
+- the root is enforced only when **every** principal slot declares. A slot that
+  declares nothing guarantees nothing and permits everything, so treating one
+  declaring slot as enough would start enforcing machine principals on the strength
+  of a set only the user slot agreed to — the per-slot opt-in, broken.
+
+The collapse from slots to roots happens in exactly one place,
+`service.WithDeclaredAttributeKeys`, and a booting instance collects the sets from
+the wiring rows and its own `attribute_providers:` block
+(`internal/cli/declaredAttributeKeySets`). The inline `attributes:` block is not a
+source: it is the slot's local layer, and a set a local file could widen would be
+one machine deciding which keys every instance's rules may read.
+
+#### Precedence: two layers, and the shared layer wins
+
+When both sections declare the same slot, this is **not a discard**. The
+`attribute_providers:` entry becomes the slot's **shared** layer, the inline
+`attributes:` block becomes its **local** layer, a fetch reads their **merge**, and
+the shared layer **wins every key both serve** (`provider.AttributeLayer`). **Nothing
+is dropped.** So an inline id the external source lacks **is** resolvable — that is
+what the local layer is for — while an inline value for a key the external source
+does serve is never read, on any instance.
+
+This is deliberately **not** `ProviderCollisions`' rule at slot granularity. The
+object rule really is a discard: a `providers:` entry wins a type and the inline
+`objects:` entries for it are dropped. The attribute rule is a layering, because the
+two sections are not two candidates for one slot — a shared directory the deployment
+administers and a block in one instance's file are two **layers** of it, and refusing
+the second meant an instance could not add a field the directory does not carry
+without abandoning the directory.
+
+**Which section is which layer is not a choice either.** `attribute_providers:` names
+a source every instance of the deployment reads (a wiring row projected back into
+that section, or a directory); `attributes:` is data written into one instance's
+file. If the file could override a key the directory serves, a file on one machine
+would change what `principal.clearance >= 3` compares against **on that machine
+only** — the same rule, the same grant, a different verdict, with nothing in a
+verdict, a trace or a note to say which layer answered. Precedence is therefore
+fixed, unconfigurable, and independent of registration order.
+
+What stays refused is **field-level merging with a configurable or order-dependent
+winner**: a rule reading a department one machine's file silently overrode is a
+support ticket nobody can reproduce. What makes the layering safe is that the winner
+is fixed and is the deployment-wide source, so a contested key reads the same on
+every instance — and `declared_keys:` is the other half, in two ways: it makes the keys
+only a local layer serves unreachable from any rule the deployment can validate, and it
+**reserves** the keys it names to the shared layer, so those read the same on every
+instance even where the shared bag is silent (see above, and
+[What a declared set closes](#what-a-declared-set-closes-and-the-one-hole-left-open)).
+
+It is the same mechanism as the floor, one tier down: the winner is stamped **last**
+over a **fresh** map, and the engine's floor then stamps over both, so the three tiers
+compose in one direction — **floor over shared over local**. The merged bag is
+read-only transitively, exactly as a single layer's bag is; merging *into* either
+input would be a write through a value shared by every object in the decision and
+every concurrent decision for that key.
+
+The layering is **not silent**: `Document.AttributeCollisions()` reports the affected
+slots and the caller surfaces them (the CLI prints a warning). It is reported for a
+different reason than the object case — there the warning says data was discarded,
+here it says **which layer answers a contested key**, which is exactly what an
+operator debugging an unexpected attribute value needs told and which no verdict,
+trace or note says. Only slot **names** are reported, never keys, so the warning
+cannot leak a directory's contents. `Document.AttributeSlotSources()` reports where
+each slot's bags come from (`"csv"`, `"sql"`, or `seed.AttributeSourceInline` =
+`"inline"`), naming the **winner** for a slot both sections fill, so a surface that
+displays the wiring does not re-derive the rule and eventually disagree with it; a
+surface that needs to name both layers asks
+`provider.AttributeRegistry.Layers(slot)` for the shape that was actually built.
+
+##### What a declared set closes, and the one hole left open
+
+"Shared wins" is a statement about keys the shared layer **serves**, and the merge
+is exactly that: the local bag is copied first and the shared bag is stamped over
+it, so a key the shared bag does not carry is answered out of the local one. That
+is the whole point — it is what lets an instance add a field the directory does not
+have. Read as a security property, though, it used to have two holes that no code
+could distinguish from the intended case:
+
+- **a shared layer that serves a key but omits it for one row** fell through to the
+  local layer, *inside* its own declared set. `sqlprovider`'s `rowMetadata` omits a
+  NULL column's field **entirely** rather than carrying a null — `metadataValue`
+  maps a SQL `NULL` and a JSON `null` to an *absent* field on purpose — so a
+  directory whose `clearance` is NULL for one subject returned a bag with no
+  `clearance` key at all, and that subject's `clearance` was read out of the local
+  file while the rule validated cleanly against the declaration.
+- **removing a subject from the shared directory revoked nothing** on any instance
+  whose local file still listed them. A shared layer with no record for a key
+  returns `APERTURE_NOT_FOUND`, which `Fetch` reads as *this layer has no record* —
+  the ordinary, necessary case — and the answer was the local bag. It never
+  expired either: `seed/` registers the inline layer with `provider.WithTTL(0)`,
+  because inline data is fixed for the life of the process, so invalidation had
+  nothing stale to drop.
+
+**`declared_keys:` closes both**, by doing a second job with the same list (see
+[`declared_keys:`](#declared_keys--the-keys-a-shared-slot-guarantees) above):
+**when a layer declares a key set, only that layer may answer the keys in it.** A
+local value for a declared key is dropped — whether the declaring layer returned a
+different value, returned the key **absent**, or returned **no record at all**.
+`provider.WithDeclaredKeys` is the registration that carries it and
+`provider.mergeAttributeBags` applies it; `seed/`'s builder passes it from the
+shared `attribute_providers:` entry, and `internal/cli`'s wiring projection carries
+it from the pushed row, so a DB-wired and a file-wired instance with the same
+declaration reserve the same keys.
+
+The second half is the **revocation control**. Deleting a subject from the shared
+directory now removes every declared key for them, on every instance, whatever any
+local file still says — which is what makes a delete a fleet-wide revocation
+instead of one that only lands where nobody happened to write a local entry.
+
+The remedies the holes used to need are still **good practice and no longer the
+only line of defence**: a shared `get_one` that must answer for a key should say so
+(`COALESCE(u.clearance, 0) AS clearance`), and the local layer is for **fields**
+the directory does not carry, not for **subjects** it is the register of.
+
+**Three things it deliberately does not do**, each of which would be the
+regression:
+
+- **It is opt-in, and a layer that declares nothing reserves nothing.** Every
+  deployment that has never written a `declared_keys:` merges exactly as it did.
+  `declared_keys: []` is declared **empty**, so it likewise reserves nothing — a
+  different state with the same effect, and the states must not collapse
+  (`provider.declaredKeySet` carries `declared` as its own bit for the reason
+  `model.DeclaredKeys` does).
+- **It is not a discard.** Suppression is scoped to the declared set; a key
+  **outside** it still answers from the local layer. Restating the layering as
+  "the shared layer wins the slot" would reinstate the mutual exclusivity this
+  layering replaced, where an instance could not add a field the directory does
+  not carry without abandoning the directory.
+- **It cannot reach the floor.** `principal.id`, `principal.kind` and `account.id`
+  are stamped **last** by `rules.principalBag` / `rules.accountBag` and are never
+  part of a declared set, so declaring them is redundant rather than either
+  required or refused. The three tiers still compose in one direction — floor over
+  shared over local.
+
+Only the **shared** layer may declare: `RegisterLocal` with a declared set is
+`APERTURE_ATTRIBUTE_PROVIDER_INVALID`, because a local declared set would be one
+machine deciding which keys the deployment's own directory is allowed to answer.
+
+**The hole that is left**, and it is a real one: a slot that declares **nothing**
+has both of the behaviours above, unchanged. There is no way for Aperture to infer
+a set — a bag is opaque host data and an absent key is indistinguishable from a
+genuinely unset one — so a deployment that layers a local `attributes:` block over
+a shared directory and declares no keys is still in the world the two bullets at
+the top of this section describe. Declaring is the fix, and it is the only one.
 
 #### The `get_all` bare-id contract — a failure with no error
 
@@ -654,6 +1154,15 @@ recs, err := svc.ListAttributes(ctx, actor, "user", provider.AttributeFilter{
   resolves one bag for a subject it already named. The two paths reach the same
   registry through different seams — the resolvers for a decision,
   `service.WithAttributes` for the admin read.
+- **It shows what a decision would read, including what a declared set suppresses.**
+  A slot whose shared entry declares its keys lists the merged, suppressed bag, so
+  an operator verifying a revocation sees what the engine sees rather than a local
+  file's leftover value.
+- **The admin read cannot change a decision.** It is read-only all the way down —
+  it does not write the slot's cache either, for the reason in
+  [`Enumerate` never writes the slot's cache](#enumerate-never-writes-the-slots-cache).
+  An operator diagnosing a deployment must not be able to alter a verdict by
+  looking at it.
 - The three `Invalidate*Attribute*` facade methods are gated identically, through
   the same `requireAttributeAdmin` in the same order. Invalidation writes nothing
   and discloses no bag, but its boolean says whether this process had that key
@@ -689,16 +1198,37 @@ require a human at a shell with the deployment's seed file in hand.
 
 | Command | Gate | What it does |
 |---|---|---|
-| `aperture attributes slots` | none | one row per slot: source (`csv`/`sql`/`inline`/`(host)`/`(unwired)`), `ttl`, `max-size`, `cached` |
+| `aperture attributes slots` | none | one row per **layer** of each slot: `layer` (`shared`/`local`), `source` (the kind plus the place — `sql (shared wiring)`, `csv (--seed file)`, `inline (--seed file)`, `(host)`, `(unwired)`), that layer's own `ttl` and `max-size`, and the slot's `cached` count |
 | `aperture attributes query <slot>` | system-admin | a page of the directory as `[{id, attributes}]`, narrowed by `--field` / `--fields-json` |
 | `aperture attributes invalidate <slot> [--id X] [--all]` | system-admin | drop cached bags |
 
-`slots` is ungated because it discloses nothing the caller did not supply: it
-reads the seed file named on the command line plus the cache configuration this
-process built from it. It contacts no provider, names no key, and prints no bag.
-Requiring system-admin authority to read back a file you just passed in would mean
-nobody could diagnose "is the user slot even wired?" without already holding the
-authority the diagnosis exists to explain.
+`slots` is ungated because it discloses nothing the caller did not supply: it reads
+the seed file named on the command line, the shared wiring rows in the `--store`
+named beside it, and the cache configuration this process built from the two. It
+contacts no provider, names no key, and prints no bag. Requiring system-admin
+authority to read back a file you just passed in would mean nobody could diagnose "is
+the user slot even wired?" without already holding the authority the diagnosis exists
+to explain — and the wiring half needs no gate for the reason `aperture wiring show`
+needs none: the `--store` credential already grants full **write** access to those
+rows.
+
+**The listing is per LAYER, and both halves of that are the fix for a wrong answer.**
+It reported one row per slot, with a `source` derived from the LOCAL document alone
+and a `ttl` read through `CacheConfigFor`:
+
+- a slot wired from the **shared wiring** printed `(host)`, the label reserved for a
+  Go registration, on the one command whose job is "is this slot wired, and from
+  where?". The `ttl` beside it was read off the registry and therefore correct, which
+  made the source column the only wrong cell and so the believable one. The origin is
+  now read from the two places wiring comes from, never inferred — the wiring set and
+  `Document.AttributeSlotSources` — with the LAYER order taken from
+  `AttributeRegistry.Layers`, the registry's own precedence.
+- a slot with two layers printed **one** `ttl`, the governing layer's. A layer's ttl
+  is its **own** revocation window (`CacheConfigForLayer`), so a shared directory on
+  five minutes beside an inline block that never expires left every key only the
+  inline block serves cached indefinitely, while the listing told an operator who had
+  just revoked something that the window was five minutes. **Two caches, not one**,
+  and a listing that reports one number per slot is the regression.
 
 `query` and `invalidate` hand the slot string over **unparsed**, because the
 facade gates first and parses second; parsing in the CLI would move the disclosure
@@ -706,10 +1236,13 @@ that ordering prevents back into the CLI. The `--field` predicate is exactly
 `aperture enumerate`'s: ANDed, absent-never-matches, membership for collections,
 typed equality for everything else (so `"5"` never matches `5`).
 
-The `ttl` column **is the revocation window**; `never` means a fetched bag is
-dropped only by eviction or an explicit invalidate — correct for a fixed inline
-block, dangerous for a live directory. The `cached` column counts *this* process,
-so a one-shot invocation reads `0`.
+Each `ttl` column **is that layer's revocation window**; `never` means a fetched bag
+is dropped only by eviction or an explicit invalidate — correct for a fixed inline
+block, dangerous for a live directory. The `cached` column counts *this* process for
+the whole **slot**: the counters are kept per slot and summed across its layers — a
+subject both layers serve is held twice, because it is cached twice — so it is printed
+once, on the slot's first row, and reads `-` on the second layer's. A one-shot
+invocation reads `0`.
 
 `invalidate`'s three forms are mutually exclusive and a conflict is **refused**
 rather than resolved by precedence: "`--all` plus a slot" has two plausible
@@ -728,7 +1261,7 @@ resolves through: the CLI cannot describe a wiring it does not itself run.
 |---|---|
 | `APERTURE_ATTRIBUTE_SLOT_UNKNOWN` | not one of the three slots — a programming error at the call site |
 | `APERTURE_ATTRIBUTE_PROVIDER_UNREGISTERED` | the slot is empty — a wiring gap. **Never** reaches you from a decision; only from a direct registry read |
-| `APERTURE_ATTRIBUTE_PROVIDER_INVALID` | a nil/duplicate registration, a duplicate key, an empty key, or the account wildcard as a key |
+| `APERTURE_ATTRIBUTE_PROVIDER_INVALID` | a nil provider, a second provider in a layer that already has one (a slot holds one shared and one local), a declared key set on the **local** layer (only the shared layer may declare), a duplicate key, an empty key, or the account wildcard as a key |
 | `APERTURE_ATTRIBUTE_PROVIDER_FETCH` | a host provider returned a plain (uncoded) error |
 | `APERTURE_NOT_FOUND` | the directory has no record for this key — returned by the provider, and **lenient** on the decision path |
 
@@ -739,7 +1272,8 @@ a wiring gap and a call-site bug have different remedies.
 
 The Update-Demand rows for this seam are in `CLAUDE.md`. Several of the most
 important properties here **cannot be gated** — the account-neutrality obligation,
-the `get_all` bare-id contract, the exclusive-grant widening, the staleness window
-— which is exactly why they live in prose. A rule nothing can enforce survives
+the `get_all` bare-id contract, the exclusive-grant widening, the staleness window,
+and the hole a slot that declares **nothing** still has — which is exactly why they
+live in prose. A rule nothing can enforce survives
 only in writing, and prose that was never written is a rule that does not exist.
 Change one of them and this document is the thing that has to move.

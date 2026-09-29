@@ -17,6 +17,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 
 	aerr "github.com/frankbardon/aperture/errors"
@@ -58,16 +60,42 @@ const (
 // stable order (sorted by id/name) so a round-trip is byte-stable and
 // human-diffable.
 //
-// Six sections are runtime WIRING rather than model state, and are the seed
-// FILE's own source of truth: Connections, Providers, Objects, FieldTypes,
-// Attributes, and AttributeProviders. BuildRegistry turns the first four into a
+// Ten of the sections are MODEL STATE and six are runtime WIRING: Connections,
+// Providers, Objects, FieldTypes, Attributes and AttributeProviders. Model state
+// is who exists and who may do what; wiring is where a decision reads object
+// metadata and subject attribute bags FROM. Apply writes model state and writes
+// no wiring at all; BuildRegistry turns the first four wiring sections into a
 // live *provider.Registry and BuildAttributeRegistry turns the last two into a
-// live *provider.AttributeRegistry; Apply writes none of them to storage, and because
-// Export reads the model back OUT of storage, none is ever reproduced by an
-// export. Live host domain-object metadata is deliberately not exportable state —
-// that is the provider cache, derived and disposable, never source of truth. The
-// same is true of a subject's attribute bag: it belongs to the host's directory,
-// and Aperture has no column for it.
+// live *provider.AttributeRegistry.
+//
+// The six wiring sections split FOUR SHARED and TWO LOCAL, and the split is the
+// contract rather than an implementation detail:
+//
+//   - SHARED — Connections, Providers, FieldTypes and AttributeProviders belong
+//     to the DEPLOYMENT and not to one instance. `aperture wiring push` writes
+//     them to the five apt_wiring_* tables every instance of a deployment already
+//     shares, and `aperture wiring pull` reads them back out through MarshalWiring
+//     below as a document a push accepts unchanged. Where those tables hold rows
+//     the DATABASE is authoritative and a local file may only ADD entries it never
+//     declared; where they are empty — every deployment that has never pushed —
+//     the local file's wiring is used exactly as it always was. A shared
+//     connection carries its NAME and nothing else: no DSN, no credential, not
+//     even the dsn_env: variable name, and no filesystem path, because each
+//     instance resolves its own route for a name.
+//   - LOCAL — Objects and Attributes carry inline DATA rather than a pointer to
+//     data, and neither is ever shared by any command. They belong to the instance
+//     whose seed file lists them, and they layer UNDER whatever the shared wiring
+//     declares for the same type or slot.
+//
+// Export answers a third question, and keeping it separate is the point: Export
+// reads the MODEL back out of storage, so it reproduces no wiring — not the four
+// shared sections and not the two local ones. That is what leaves the read-back
+// reachable over Twirp with an admin-tier token emitting no wiring at all, while
+// the shared read-back stays CLI-only and gated by the store credential. Live host
+// domain-object metadata is deliberately not exportable state either — that is the
+// provider cache, derived and disposable, never source of truth — and the same is
+// true of a subject's attribute bag: it belongs to the host's directory, and
+// Aperture has no column for it.
 type Document struct {
 	Accounts    []Account    `yaml:"accounts" json:"accounts"`
 	Memberships []Membership `yaml:"memberships" json:"memberships"`
@@ -83,25 +111,96 @@ type Document struct {
 	// than a list because the name is the identity a provider entry's
 	// connection: refers to, and a map cannot declare the same name twice. One
 	// pool is opened per entry and shared by every provider entry naming it.
+	//
+	// It is a SHARED wiring section, but only the NAME is shared: `aperture wiring
+	// push` writes the manifest of names and nothing else. The declaration's other
+	// half — dsn_env:, the pool sizes, query_timeout: — is this instance's ROUTE for
+	// that name, and a route is a per-instance fact. See connection.go.
 	Connections map[string]Connection `yaml:"connections,omitempty" json:"connections,omitempty"`
 	Providers   []Provider            `yaml:"providers,omitempty" json:"providers,omitempty"`
 	Objects     []Object              `yaml:"objects,omitempty" json:"objects,omitempty"`
 	FieldTypes  []FieldType           `yaml:"field_types,omitempty" json:"field_types,omitempty"`
 	// Attributes declares the bags a decision's SUBJECTS carry — a principal's
 	// department, an account's plan — inline, served from memory by
-	// BuildAttributeRegistry. It is the fifth wiring section and obeys the same
-	// rule as the other four: Apply writes nothing for it and an export reproduces
-	// none of it. See attribute.go for why it is its own key rather than a
-	// metadata: field on principals:/accounts:.
+	// BuildAttributeRegistry. It is one of the two LOCAL wiring sections: Apply
+	// writes nothing for it, an export reproduces none of it, and `aperture wiring
+	// push` does not share it either, because it carries the bags themselves rather
+	// than a pointer to where they live. See attribute.go for why it is its own key
+	// rather than a metadata: field on principals:/accounts:.
 	Attributes []Attribute `yaml:"attributes,omitempty" json:"attributes,omitempty"`
 	// AttributeProviders declares EXTERNAL sources for those same bags — a CSV of
 	// users, the host's own users table — one entry per attribute slot. It is the
-	// sixth wiring section and the attribute seam's counterpart of Providers:
-	// where Attributes lists bags inline, this points a slot at a file or a
-	// connection. Same rule as the other five: Apply writes nothing for it and an
-	// export reproduces none of it. See attribute_provider.go for why it is its
+	// attribute seam's counterpart of Providers: where Attributes lists bags
+	// inline, this points a slot at a file or a connection — which is exactly why
+	// it is one of the four SHARED wiring sections and Attributes is not. Apply
+	// writes nothing for it and an export reproduces none of it, but `aperture
+	// wiring push` writes it to apt_wiring_attribute_providers and every instance
+	// of the deployment reads it back. See attribute_provider.go for why it is its
 	// own top-level key rather than a discriminated variant of providers:.
 	AttributeProviders []AttributeProvider `yaml:"attribute_providers,omitempty" json:"attribute_providers,omitempty"`
+
+	// UnknownKeys is the TOP-LEVEL keys in the parsed document that name no section,
+	// sorted. It is a parse observation and not content: Parse fills it, nothing
+	// reads it to decide anything, and both tags are "-" so it stays out of an
+	// export, out of a re-parse, and out of the digest a wiring version is
+	// identified by.
+	//
+	// It exists because an unknown key is SILENTLY ABSENT, and for the four shared
+	// wiring sections that is indistinguishable from deliberately dropping one. A
+	// `providers:` mistyped as `provider:` makes `aperture wiring push` store a set
+	// with no providers in it, and every instance of the deployment then reads that
+	// set back — so a typo retires wiring fleet-wide and the command exits 0.
+	// `refuseEmptyWiringPush` catches the case where the document has NO wiring at
+	// all; this catches the PARTIAL case it cannot see, where other sections are
+	// present and the set is therefore not empty.
+	//
+	// It is reported and never refused. A document may legitimately carry keys
+	// Aperture does not know — a `# yaml-language-server:` companion block, another
+	// tool's section, a key from a newer Aperture than this binary — and refusing
+	// those would break files that work today, in a release that only meant to add
+	// a diagnostic. The caller decides what a warning is worth; `aperture wiring
+	// push` prints one, because that is the command where being wrong is fleet-wide.
+	UnknownKeys []string `yaml:"-" json:"-"`
+}
+
+// documentSectionKeys is the set of top-level keys a Document declares, derived from
+// the struct's own json tags so a section added later needs nothing here. A tag of
+// "-" is not a section — UnknownKeys itself is the reason that case exists.
+func documentSectionKeys() map[string]struct{} {
+	rt := reflect.TypeOf(Document{})
+	out := make(map[string]struct{}, rt.NumField())
+	for i := 0; i < rt.NumField(); i++ {
+		tag := rt.Field(i).Tag.Get("json")
+		name, _, _ := strings.Cut(tag, ",")
+		if name == "" || name == "-" {
+			continue
+		}
+		out[name] = struct{}{}
+	}
+	return out
+}
+
+// unknownTopLevelKeys reports the keys in a decoded document that name no section.
+//
+// It reads the NORMALIZED JSON rather than the original YAML, so it asks about the
+// keys the decoder actually saw: a YAML anchor, an alias or a merge key has already
+// been resolved by then, and asking the raw file would report keys that never
+// reached the struct. Anything that is not a JSON object yields nothing — a
+// malformed document is the decoder's error to report, not this function's.
+func unknownTopLevelKeys(normalized []byte) []string {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(normalized, &top); err != nil {
+		return nil
+	}
+	known := documentSectionKeys()
+	var out []string
+	for key := range top {
+		if _, ok := known[key]; !ok {
+			out = append(out, key)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Account mirrors model.Account in declarative form.
@@ -220,8 +319,12 @@ type Rule struct {
 // against the documented field names lands in the same shape either way.
 func Parse(data []byte, format Format) (*Document, error) {
 	var doc Document
+	// normalized is the JSON both formats decode from, kept so the unknown-key scan
+	// below asks about exactly the keys the decoder saw.
+	var normalized []byte
 	switch format {
 	case FormatJSON:
+		normalized = data
 		if err := json.Unmarshal(data, &doc); err != nil {
 			return nil, aerr.Wrap(aerr.APERTURE_INVALID_INPUT, "seed: decode JSON document", err)
 		}
@@ -234,12 +337,14 @@ func Parse(data []byte, format Format) (*Document, error) {
 		if err != nil {
 			return nil, aerr.Wrap(aerr.APERTURE_INVALID_INPUT, "seed: normalize YAML document", err)
 		}
+		normalized = jb
 		if err := json.Unmarshal(jb, &doc); err != nil {
 			return nil, aerr.Wrap(aerr.APERTURE_INVALID_INPUT, "seed: decode YAML document", err)
 		}
 	default:
 		return nil, aerr.Newf(aerr.APERTURE_INVALID_INPUT, "seed: unknown format %q", format)
 	}
+	doc.UnknownKeys = unknownTopLevelKeys(normalized)
 	// A literal dsn: is refused HERE, at decode, and not at BuildRegistry: the
 	// harm is that a password was written into a committed file, so the document
 	// must not be loadable — not by Apply, not by an export round-trip, not by a

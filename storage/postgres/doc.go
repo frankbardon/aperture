@@ -9,7 +9,7 @@
 //
 // # How this file's schema is applied, and why
 //
-// schema.sql is a single script of fourteen CREATE TABLE and seven CREATE INDEX
+// schema.sql is a single script of nineteen CREATE TABLE and seven CREATE INDEX
 // statements. Setup executes the WHOLE script as ONE ExecContext with NO bind
 // arguments. It is not split into statements, and it does not opt into pgx's
 // simple-protocol mode.

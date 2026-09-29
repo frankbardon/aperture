@@ -37,7 +37,7 @@ import (
 // orderByFloor is an anti-vacuity floor. The statement set has this many ORDER BY
 // clauses today; if a refactor moves them somewhere this gate cannot see, it must
 // fail rather than inspect nothing.
-const orderByFloor = 18
+const orderByFloor = 24
 
 // packageSQLFiles parses this package's non-test Go sources — the statement set.
 func packageSQLFiles(t *testing.T) map[string]*ast.File {

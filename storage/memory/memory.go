@@ -34,6 +34,14 @@ type Store struct {
 	templates map[templateKey]model.Template
 	// rules holds every named rule, keyed by name (E5-S2).
 	rules map[string]model.Rule
+	// The four shared-wiring maps (E1-S2). They are the in-memory form of the five
+	// wiring tables, and there are four maps rather than five because a provider
+	// entry's reference rows live INSIDE the entry — see "THE FOUR CASCADE EDGES"
+	// below for why that is the cascade rather than a shortcut around it.
+	wiringConnections        map[string]model.WiringConnection
+	wiringProviders          map[string]model.WiringProvider
+	wiringFieldTypes         map[wiringFieldKey]model.WiringFieldType
+	wiringAttributeProviders map[string]model.WiringAttributeProvider
 	// audit is the append-only audit trail (FR-25). It is an ordered slice rather
 	// than a map because the trail is append-only and queried newest-first.
 	audit []model.AuditEvent
@@ -51,6 +59,13 @@ type templateKey struct {
 	version int
 }
 
+// wiringFieldKey is the composite identity of a field-type declaration, matching
+// the (object_type, field) primary key.
+type wiringFieldKey struct {
+	objectType string
+	field      string
+}
+
 // New returns an empty, ready-to-use in-memory Store.
 func New() *Store {
 	return &Store{
@@ -64,6 +79,11 @@ func New() *Store {
 		grants:      make(map[string]model.Grant),
 		templates:   make(map[templateKey]model.Template),
 		rules:       make(map[string]model.Rule),
+
+		wiringConnections:        make(map[string]model.WiringConnection),
+		wiringProviders:          make(map[string]model.WiringProvider),
+		wiringFieldTypes:         make(map[wiringFieldKey]model.WiringFieldType),
+		wiringAttributeProviders: make(map[string]model.WiringAttributeProvider),
 	}
 }
 
@@ -101,10 +121,10 @@ func validateStamps(created, updated time.Time) error {
 
 // ---- Referential integrity ----
 //
-// The SQLite backend gets referential integrity from the schema: nine foreign
-// keys, six ON DELETE RESTRICT and three ON DELETE CASCADE (see the
+// The SQLite backend gets referential integrity from the schema: eleven foreign
+// keys, seven ON DELETE RESTRICT and four ON DELETE CASCADE (see the
 // "Referential integrity" header in storage/sqlite/schema.sql). This backend has
-// no schema, so it enforces the SAME nine edges by hand, in both directions:
+// no schema, so it enforces the SAME eleven edges by hand, in both directions:
 //
 //	apt_memberships.principal_id  -> apt_principals(id)      RESTRICT
 //	apt_permissions.object_type   -> apt_object_types(name)  RESTRICT
@@ -112,9 +132,12 @@ func validateStamps(created, updated time.Time) error {
 //	apt_role_permissions.permission_id -> apt_permissions(id) RESTRICT
 //	apt_group_members.principal_id -> apt_principals(id)     RESTRICT
 //	apt_grants.permission_id      -> apt_permissions(id)     RESTRICT
+//	apt_wiring_providers.object_type -> apt_object_types(name) RESTRICT
 //	apt_principal_roles.principal_id -> apt_principals(id)   CASCADE
 //	apt_role_permissions.role_id  -> apt_roles(id)           CASCADE
 //	apt_group_members.group_id    -> apt_groups(id)          CASCADE
+//	apt_wiring_provider_references.object_type
+//	                              -> apt_wiring_providers(object_type) CASCADE
 //
 // A write naming a parent that does not exist is refused; a delete with a live
 // child is refused (RESTRICT) or takes the child with it (CASCADE). The refusal
@@ -123,16 +146,25 @@ func validateStamps(created, updated time.Time) error {
 // allows no backend-conditional assertions, so a caller must not be able to tell
 // which backend refused it.
 //
-// THE THREE CASCADE EDGES. In SQLite those three join tables are real tables and
-// the cascade deletes rows. Here the same three relationships are stored INSIDE
+// THE FOUR CASCADE EDGES. In SQLite those four child tables are real tables and
+// the cascade deletes rows. Here the same four relationships are stored INSIDE
 // the owning record — a principal's role list is model.Principal.RoleIDs, a
 // role's permission list is model.Role.PermissionIDs, a group's member list is
-// model.Group.MemberPrincipalIDs — so removing the owner from its map removes
-// the join rows in the same statement, atomically, with no window in which a
-// half-deleted owner is visible. That is what makes the cascade real rather than
-// implied: after DeletePrincipal("alice") there is no lingering alice->role
-// assignment anywhere for a later check to find, exactly as in SQLite, and the
-// role she held becomes deletable.
+// model.Group.MemberPrincipalIDs, and a wiring provider entry's reference rows
+// are model.WiringProvider.References — so removing the owner from its map
+// removes the child rows in the same statement, atomically, with no window in
+// which a half-deleted owner is visible. That is what makes the cascade real
+// rather than implied: after DeletePrincipal("alice") there is no lingering
+// alice->role assignment anywhere for a later check to find, exactly as in
+// SQLite, and the role she held becomes deletable.
+//
+// The wiring edge is where this backend and the SQL ones are asymmetric ON
+// PURPOSE. The two SQL backends must NOT write the reference cleanup by hand —
+// the schema's ON DELETE CASCADE is the only implementation there, because two
+// halves that cover for each other leave the conformance suite green when either
+// one breaks. This backend has no schema to do it, so holding the references
+// inside the entry IS the hand-written half, and it is written in the shape that
+// cannot drift: there is no separate reference map to forget to clear.
 //
 // ORDERING. Every check below runs BEFORE any map is touched, while s.mu is
 // held. A refused operation therefore mutates nothing, and no check can ever
@@ -377,6 +409,25 @@ func (s *Store) permissionOfObjectTypeLocked(name string) (string, bool) {
 	return best, found
 }
 
+// hasObjectTypeLocked reports whether an object_type is a legal reference: an
+// existing apt_object_types row. It is the parent-side lookup for
+// apt_wiring_providers.object_type.
+func (s *Store) hasObjectTypeLocked(name string) bool {
+	_, ok := s.objectTypes[name]
+	return ok
+}
+
+// wiringProviderOfObjectTypeLocked finds a wiring provider entry serving name —
+// the child-side lookup for apt_wiring_providers.object_type's RESTRICT. The
+// entry's key IS the object type, so the answer is a single map probe rather than
+// a scan, and there is at most one.
+func (s *Store) wiringProviderOfObjectTypeLocked(name string) (string, bool) {
+	if _, ok := s.wiringProviders[name]; ok {
+		return name, true
+	}
+	return "", false
+}
+
 // ---- Account ----
 
 func (s *Store) PutAccount(_ context.Context, a model.Account) error {
@@ -570,6 +621,17 @@ func (s *Store) DeleteObjectType(_ context.Context, name string) error {
 		return constraint("delete object type",
 			"apt_permissions.object_type references apt_object_types(name): permission %q still hangs off object type %q",
 			permID, name)
+	}
+	// apt_wiring_providers.object_type -> apt_object_types(name), ON DELETE
+	// RESTRICT. A provider entry for a type the model no longer has is wiring
+	// nothing can reach — every decision arrives at it through a permission, which
+	// is keyed to an object type by the edge just above. Refusing the delete makes
+	// the operator remove the wiring on purpose, instead of discovering afterwards
+	// that a push-and-read-back round trip quietly lost an entry.
+	if wiringType, ok := s.wiringProviderOfObjectTypeLocked(name); ok {
+		return constraint("delete object type",
+			"apt_wiring_providers.object_type references apt_object_types(name): wiring provider %q still serves object type %q",
+			wiringType, name)
 	}
 	delete(s.objectTypes, name)
 	return nil
@@ -1151,6 +1213,233 @@ func (s *Store) DeleteRule(_ context.Context, name string) error {
 	return nil
 }
 
+// ---- Shared wiring (five tables, one all-or-nothing replace) ----
+//
+// Four maps for five tables: a provider entry's reference rows live inside the
+// entry, which is this backend's hand-written form of the
+// apt_wiring_provider_references CASCADE. See "THE FOUR CASCADE EDGES" in the
+// referential-integrity header above — including why the SQL backends must NOT
+// write that cleanup by hand and this one must.
+
+// ReplaceWiring replaces the whole wiring set. The order of the three phases is
+// the contract, not an implementation detail: it is the order the SQL backends
+// produce by construction, and storagetest allows no backend-conditional
+// assertion, so a caller must not be able to tell which backend refused a bad
+// set.
+//
+//  1. STRUCTURAL validation of the whole set (model.ValidateWiringSet) —
+//     APERTURE_INVALID_INPUT for an empty key, a negative max_size, a duplicate.
+//  2. STAMP validation of every entity — APERTURE_INVALID_INPUT. The SQL
+//     backends encode every stamp before they open a transaction for the same
+//     reason: which row is refused must not depend on which one happened to be
+//     written first.
+//  3. REFERENTIAL checks — APERTURE_STORAGE_CONSTRAINT, which is what the SQL
+//     foreign key raises at the INSERT.
+//
+// Only then is anything written, and the write builds fresh maps and swaps them
+// in under the same lock, so a refusal at any phase leaves the old wiring exactly
+// as it was. That is the all-or-nothing the push surface depends on.
+func (s *Store) ReplaceWiring(_ context.Context, set model.WiringSet) error {
+	if err := model.ValidateWiringSet(set); err != nil {
+		return err
+	}
+	for _, c := range set.Connections {
+		if err := validateStamps(c.CreatedAt, c.UpdatedAt); err != nil {
+			return err
+		}
+	}
+	for _, p := range set.Providers {
+		if err := validateStamps(p.CreatedAt, p.UpdatedAt); err != nil {
+			return err
+		}
+	}
+	for _, ft := range set.FieldTypes {
+		if err := validateStamps(ft.CreatedAt, ft.UpdatedAt); err != nil {
+			return err
+		}
+	}
+	for _, ap := range set.AttributeProviders {
+		if err := validateStamps(ap.CreatedAt, ap.UpdatedAt); err != nil {
+			return err
+		}
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// apt_wiring_providers.object_type -> apt_object_types(name), write direction.
+	for _, p := range set.Providers {
+		if !s.hasObjectTypeLocked(p.ObjectType) {
+			return constraint("replace wiring",
+				"apt_wiring_providers.object_type references apt_object_types(name): object type %q does not exist",
+				p.ObjectType)
+		}
+	}
+
+	connections := make(map[string]model.WiringConnection, len(set.Connections))
+	for _, c := range set.Connections {
+		connections[c.Name] = c
+	}
+	providers := make(map[string]model.WiringProvider, len(set.Providers))
+	for _, p := range set.Providers {
+		providers[p.ObjectType] = cloneWiringProvider(p)
+	}
+	fieldTypes := make(map[wiringFieldKey]model.WiringFieldType, len(set.FieldTypes))
+	for _, ft := range set.FieldTypes {
+		fieldTypes[wiringFieldKey{ft.ObjectType, ft.Field}] = ft
+	}
+	attributes := make(map[string]model.WiringAttributeProvider, len(set.AttributeProviders))
+	for _, ap := range set.AttributeProviders {
+		attributes[ap.Subject] = cloneWiringAttributeProvider(ap)
+	}
+	s.wiringConnections = connections
+	s.wiringProviders = providers
+	s.wiringFieldTypes = fieldTypes
+	s.wiringAttributeProviders = attributes
+	return nil
+}
+
+// GetWiring returns the whole set from one lock acquisition, which is this
+// backend's form of the SQL backends' single transaction: no push can land
+// between two of the four sections.
+func (s *Store) GetWiring(_ context.Context) (model.WiringSet, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	set := model.WiringSet{
+		Connections:        s.wiringConnectionsLocked(),
+		Providers:          s.wiringProvidersLocked(),
+		FieldTypes:         s.wiringFieldTypesLocked(),
+		AttributeProviders: s.wiringAttributeProvidersLocked(),
+	}
+	return set, nil
+}
+
+func (s *Store) ListWiringConnections(_ context.Context) ([]model.WiringConnection, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.wiringConnectionsLocked(), nil
+}
+
+func (s *Store) wiringConnectionsLocked() []model.WiringConnection {
+	out := make([]model.WiringConnection, 0, len(s.wiringConnections))
+	for _, c := range s.wiringConnections {
+		out = append(out, c)
+	}
+	model.SortWiringConnections(out)
+	return out
+}
+
+func (s *Store) GetWiringConnection(_ context.Context, name string) (model.WiringConnection, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	c, ok := s.wiringConnections[name]
+	if !ok {
+		return model.WiringConnection{}, notFound("wiring connection", name)
+	}
+	return c, nil
+}
+
+func (s *Store) ListWiringProviders(_ context.Context) ([]model.WiringProvider, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.wiringProvidersLocked(), nil
+}
+
+func (s *Store) wiringProvidersLocked() []model.WiringProvider {
+	out := make([]model.WiringProvider, 0, len(s.wiringProviders))
+	for _, p := range s.wiringProviders {
+		out = append(out, cloneWiringProvider(p))
+	}
+	model.SortWiringProviders(out)
+	return out
+}
+
+func (s *Store) GetWiringProvider(_ context.Context, objectType string) (model.WiringProvider, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	p, ok := s.wiringProviders[objectType]
+	if !ok {
+		return model.WiringProvider{}, notFound("wiring provider", objectType)
+	}
+	p = cloneWiringProvider(p)
+	model.SortWiringReferences(p.References)
+	return p, nil
+}
+
+func (s *Store) ListWiringFieldTypes(_ context.Context) ([]model.WiringFieldType, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.wiringFieldTypesLocked(), nil
+}
+
+func (s *Store) wiringFieldTypesLocked() []model.WiringFieldType {
+	out := make([]model.WiringFieldType, 0, len(s.wiringFieldTypes))
+	for _, ft := range s.wiringFieldTypes {
+		out = append(out, ft)
+	}
+	model.SortWiringFieldTypes(out)
+	return out
+}
+
+func (s *Store) GetWiringFieldType(_ context.Context, objectType, field string) (model.WiringFieldType, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	ft, ok := s.wiringFieldTypes[wiringFieldKey{objectType, field}]
+	if !ok {
+		return model.WiringFieldType{}, notFound("wiring field type", objectType+"."+field)
+	}
+	return ft, nil
+}
+
+func (s *Store) ListWiringAttributeProviders(_ context.Context) ([]model.WiringAttributeProvider, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.wiringAttributeProvidersLocked(), nil
+}
+
+func (s *Store) wiringAttributeProvidersLocked() []model.WiringAttributeProvider {
+	out := make([]model.WiringAttributeProvider, 0, len(s.wiringAttributeProviders))
+	for _, ap := range s.wiringAttributeProviders {
+		out = append(out, cloneWiringAttributeProvider(ap))
+	}
+	model.SortWiringAttributeProviders(out)
+	return out
+}
+
+func (s *Store) GetWiringAttributeProvider(_ context.Context, subject string) (model.WiringAttributeProvider, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	ap, ok := s.wiringAttributeProviders[subject]
+	if !ok {
+		return model.WiringAttributeProvider{}, notFound("wiring attribute provider", subject)
+	}
+	return cloneWiringAttributeProvider(ap), nil
+}
+
+// cloneWiringProvider deep-copies an entry's reference rows so a stored entry
+// cannot be mutated through a caller's slice (and vice versa).
+func cloneWiringProvider(p model.WiringProvider) model.WiringProvider {
+	if len(p.References) > 0 {
+		rs := make([]model.WiringReference, len(p.References))
+		copy(rs, p.References)
+		p.References = rs
+	} else {
+		p.References = nil
+	}
+	return p
+}
+
+// cloneWiringAttributeProvider deep-copies an entry's declared key set.
+//
+// It goes through model.DeclaredKeys.Clone rather than cloneStrings on purpose:
+// cloneStrings returns nil for an empty input, which would turn a DECLARED EMPTY
+// key set into a NOT DECLARED one — the one collapse the DeclaredKeys type exists
+// to prevent, and the reason the type carries an explicit Declared bit instead of
+// relying on nil-versus-empty.
+func cloneWiringAttributeProvider(ap model.WiringAttributeProvider) model.WiringAttributeProvider {
+	ap.DeclaredKeys = ap.DeclaredKeys.Clone()
+	return ap
+}
+
 // ---- Transactional apply ----
 
 // Atomic stages the whole batch on a snapshot and commits it only when fn
@@ -1209,6 +1498,18 @@ func (s *Store) snapshotLocked() *Store {
 	for k, v := range s.rules {
 		c.rules[k] = cloneRule(v)
 	}
+	for k, v := range s.wiringConnections {
+		c.wiringConnections[k] = v
+	}
+	for k, v := range s.wiringProviders {
+		c.wiringProviders[k] = cloneWiringProvider(v)
+	}
+	for k, v := range s.wiringFieldTypes {
+		c.wiringFieldTypes[k] = v
+	}
+	for k, v := range s.wiringAttributeProviders {
+		c.wiringAttributeProviders[k] = cloneWiringAttributeProvider(v)
+	}
 	c.audit = make([]model.AuditEvent, len(s.audit))
 	copy(c.audit, s.audit)
 	return c
@@ -1228,6 +1529,10 @@ func (s *Store) commitFromLocked(c *Store) {
 	s.grants = c.grants
 	s.templates = c.templates
 	s.rules = c.rules
+	s.wiringConnections = c.wiringConnections
+	s.wiringProviders = c.wiringProviders
+	s.wiringFieldTypes = c.wiringFieldTypes
+	s.wiringAttributeProviders = c.wiringAttributeProviders
 	s.audit = c.audit
 }
 

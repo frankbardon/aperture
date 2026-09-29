@@ -22,7 +22,7 @@ cannot describe a wiring it does not itself run. All three therefore take
 
 | Subcommand | Tier | What it does |
 |---|---|---|
-| `attributes slots` | none | one row per slot: source, `ttl`, `max-size`, and how many bags this process has cached |
+| `attributes slots` | none | one row per **layer** of each slot: where that layer is wired from, its own `ttl` and `max-size`, and how many bags this process has cached for the slot |
 | `attributes query <slot>` | system-admin | a page of that slot's directory as `[{id, attributes}]`, narrowed by attribute predicates |
 | `attributes invalidate <slot>` | system-admin | drop cached bags so the next decision re-reads them |
 
@@ -40,45 +40,73 @@ That is the frame for both of the interesting columns below and for the whole of
 back what the deployment is actually running, and close the window explicitly
 when you cannot wait.
 
-## `slots` — what is wired, and how stale it may be
+## `slots` — what is wired, where from, and how stale it may be
 
 ```bash
-bin/aperture attributes slots --seed ./seed.yaml
+bin/aperture attributes slots --seed ./seed.yaml --store 'postgres://…/acme'
 ```
 
 ```text
-slot     source  ttl    max-size  cached
-user     sql     1m0s   10000     12
-machine  csv     30s    10000     0
-account  inline  never  10000     3
+slot     layer   source                ttl    max-size  cached
+user     shared  sql (shared wiring)   1m0s   10000     15
+user     local   inline (--seed file)  never  10000     -
+machine  shared  csv (--seed file)     30s    10000     0
+account  -       (unwired)             -      -         -
 ```
 
-(An unwired slot renders as `(unwired)` with `-` in the three columns that
-describe a cache it does not have.)
+**One row per LAYER, not per slot.** A slot has two registration layers and each one
+caches on its **own** declaration, so a single row could only report one of two
+revocation windows — and it reported the winner's, which is the wrong number for every
+key only the other layer serves. The layers are printed in precedence order, highest
+first.
 
-- **`source`** is where that slot's bags come from: `csv` or `sql` (an
-  `attribute_providers:` entry), `inline` (the `attributes:` block), `(host)` for
-  a registry a host wired in Go rather than from the seed, and `(unwired)` for a
-  slot this deployment declares no source for. An unwired slot is not an error:
-  every decision for it resolves the [floor
+- **`layer`** is `shared` or `local`. An `attribute_providers:` entry fills the
+  **shared** layer and an `attributes:` block fills the **local** one; a fetch reads
+  their merge and the shared layer wins every key both serve, so nothing is discarded
+  and the inline bags still contribute the keys the external source does not carry. A
+  slot with no source at all reads `-`.
+- **`source`** names the kind *and the place*: `sql`/`csv` for an
+  `attribute_providers:` entry, `inline` for the `attributes:` block, then
+  `(shared wiring)` for a row in the deployment's database — put there by
+  [`aperture wiring push`](wiring.md) and read by every instance — or `(--seed file)`
+  for this instance's own document. `(host)` is a provider the binary embedding
+  Aperture registered in Go, which no document describes. `(unwired)` is a slot this
+  deployment declares nothing for: not an error, and not an empty directory — every
+  decision for it resolves the [floor
   bag](../concepts/rules.md#the-floor-bag-and-principalkind) and proceeds.
-- **`ttl` is the revocation window.** `never` means a fetched bag is dropped only
-  by eviction or by an explicit `invalidate` — correct for a fixed inline block,
-  dangerous for a live directory.
-- **`cached` counts *this* process.** A one-shot invocation starts cold and reads
-  `0`; it is the number that matters in a long-running [`serve`](serve.md).
+- **`ttl` is the revocation window, and there is one per layer.** `never` means a
+  fetched bag is dropped only by eviction or by an explicit `invalidate` — correct for
+  a fixed inline block, dangerous for a live directory. **Two layers are two caches
+  and never an average:** a shared directory on a one-minute window beside an inline
+  block that never expires leaves every key only the inline block serves cached
+  indefinitely, and a listing that reported `1m` for the slot would tell an operator
+  who had just revoked something that the window was closed.
+- **`cached` counts *this* process, for the whole slot.** The counters are kept per
+  slot and summed across its layers — a subject both layers serve is held twice,
+  because it is cached twice, and two `ttl`s will expire it — so the number appears
+  **once**, on the slot's first row, and reads `-` on the second layer's. A one-shot
+  invocation starts cold and reads `0`; it is the number that matters in a
+  long-running [`serve`](serve.md).
 
 `slots` needs **no actor**. It discloses nothing the caller did not already
-supply: it reads the seed file named on the command line plus the cache
-configuration this process built from it, contacts no provider, names no key, and
-prints no bag. Requiring system-admin authority to read back a file you just
-passed in would only mean nobody could diagnose *"is the user slot even wired?"*
-without already holding the authority the diagnosis exists to explain.
+supply: it reads the seed file named on the command line, the shared wiring rows in
+the `--store` named beside it, and the cache configuration this process built from the
+two. It contacts no provider, names no key, and prints no bag. Requiring system-admin
+authority to read back a file you just passed in would only mean nobody could diagnose
+*"is the user slot even wired?"* without already holding the authority the diagnosis
+exists to explain — and the wiring half needs no gate for the reason
+[`aperture wiring show`](wiring.md#show--read-what-is-deployed) needs none: the
+`--store` credential already grants full **write** access to those rows.
 
-When a seed declares one slot in **both** `attribute_providers:` and
-`attributes:`, every command that builds the stack prints a warning naming the
-affected slots — the external entry wins and the inline bags for that slot are
-discarded entirely. Only slot names are named, never keys.
+When a deployment declares one slot in **both** `attribute_providers:` and
+`attributes:` — in one file, or with the entry pushed and the block local — every
+command that builds the stack prints a warning naming the affected slots. Nothing is
+discarded: the `attribute_providers:` entry is that slot's **shared** layer, the
+inline bags **layer under it**, and the shared layer wins every key both serve. The
+warning exists to say **which layer answers a contested key** — the one thing no
+verdict, trace or note says. Only slot names are named, never keys. See [Precedence:
+two layers, and the shared layer
+wins](../concepts/seed.md#precedence-two-layers-and-the-shared-layer-wins).
 
 ## `query` — read a directory (system-admin)
 
@@ -129,6 +157,11 @@ the operator did not ask to clear.
 (`no cached user bag for "alice"`): an operator invalidating a subject they
 believe is cached wants to know their key did not match. Note that `--id` takes
 the **bare** subject id — `alice`, never `user:alice`.
+
+Every form clears **both layers** of every slot it names. A slot fed by an external
+source and an inline block caches each independently, and dropping one would leave the
+revoked value still being read out of the other — a window reported shut with half of
+it open.
 
 It is gated for the same reason `query` is, even though it writes nothing and
 discloses no bag: the result says whether *this process* had that key cached,

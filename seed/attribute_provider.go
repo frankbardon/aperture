@@ -46,8 +46,17 @@ import (
 // Like providers:, objects:, field_types:, connections: and attributes:, this is
 // runtime WIRING and not model state: Apply writes no row for it, and because
 // Export reads the model back OUT of storage, an export reproduces none of it.
-// See seed/provider.go:17-20, which states the rule for the section this one
-// mirrors.
+//
+// And like providers: — the section it mirrors — it is SHARED wiring, for the same
+// reason: an entry here points a slot AT a source rather than carrying the bags
+// themselves. `aperture wiring push` writes it to apt_wiring_attribute_providers,
+// `aperture wiring pull` reads it back under this key, and where those rows exist
+// they are authoritative on every instance while a local document may only ADD a
+// slot the database never declared. Path is the one field that is never shared
+// (kind: csv is refused at the push, and stays legal here), and a connection is
+// shared by NAME only. attributes:, which lists bags inline, is one of the two LOCAL
+// sections and is never shared at all — see seed/attribute.go. The contract for both
+// halves is skills/shared-wiring.md.
 
 const (
 	// attributeKindCSV is the file-backed attribute source: one CSV whose id
@@ -185,6 +194,76 @@ type AttributeProvider struct {
 	TTL string `yaml:"ttl,omitempty" json:"ttl,omitempty"`
 	// MaxSize caps cached bags for this slot; 0 uses the registry default.
 	MaxSize int `yaml:"max_size,omitempty" json:"max_size,omitempty"`
+	// DeclaredKeys is the OPTIONAL declared key set: the attribute keys this slot
+	// GUARANTEES to serve.
+	//
+	//	attribute_providers:
+	//	  - subject: user
+	//	    kind: sql
+	//	    connection: main
+	//	    get_one: SELECT department, clearance FROM users WHERE id = $1
+	//	    declared_keys: [department, clearance]
+	//
+	// # What declaring DOES — two jobs, one list
+	//
+	// It opts the slot into key enforcement: a rule may then read only the keys
+	// this set names on that slot, and reading any other one is refused at
+	// validation. Declaring nothing opts out, and a slot with no set behaves
+	// exactly as every slot did before the key existed — no refusal, no warning.
+	//
+	// It ALSO makes this entry the only layer that ANSWERS those keys. A slot holds
+	// two layers, and this section is the SHARED one (provider.AttributeLayer); a
+	// declared key is reserved to it, so the inline attributes: block contributes
+	// nothing to that key — not when the two disagree, not when this entry's own bag
+	// OMITS it for one row, and not when this entry has no record for the subject at
+	// all. Keys OUTSIDE the set are untouched, which is what the local layer is for.
+	//
+	// The two jobs compose only because it is the same list, and each fixes what the
+	// other cannot. Enforcement is what makes a local layer's EXTRA keys safe: they
+	// are unreachable from any rule the deployment can validate, so one instance's
+	// added bag fields are INERT rather than a second answer to a deployment-wide
+	// grant. Reservation is what makes a key INSIDE the set safe: without it, a
+	// directory whose clearance is NULL for one subject (sqlprovider omits a NULL
+	// column's field entirely) or that has dropped the subject altogether would have
+	// that subject's clearance read out of one machine's file, inside the declared
+	// set, with the rule validating cleanly. That second half is a revocation
+	// control: deleting a subject from the directory removes every declared key for
+	// them on every instance.
+	//
+	// Both are why the set lives on the SHARED entry and nowhere else: a local layer
+	// that could narrow or widen it would be one machine changing which keys a
+	// deployment-wide rule may name, and which keys the deployment's own directory
+	// is allowed to answer. provider.AttributeRegistry refuses a declared set on the
+	// local layer outright.
+	//
+	// # The shape is a plain list of names, with NO per-key type information
+	//
+	// It is the simplest form that round-trips, and the reason it is also the right
+	// one is that the metadata value model already governs SHAPE
+	// (provider/metadata.go, and field_types: for the declared date types). A second
+	// typing mechanism here would be a second place for two declarations about one
+	// key to disagree, and the one that loses is the one nobody reads.
+	//
+	// # Why a POINTER
+	//
+	// An absent declared_keys: and a present, empty one are DIFFERENT ANSWERS, and
+	// a []string cannot tell them apart — nil is what both decode to. So:
+	//
+	//   - the key ABSENT (or explicitly null) is NOT DECLARED: the slot is opted out.
+	//   - declared_keys: [] is DECLARED EMPTY: the slot is opted IN and permits no
+	//     key at all.
+	//   - declared_keys: [a, b] is declared and permits a and b.
+	//
+	// The distinction survives the whole trip because every layer it crosses was
+	// built to keep it: model.DeclaredKeys carries Declared as its own bit, both
+	// dialects' declared_keys column stores "" for the first state and "[]" for the
+	// second, and `aperture wiring show` prints all three as words. Collapsing
+	// declared-empty into not-declared would silently un-enforce a slot, which is
+	// the one failure the whole mechanism is shaped around.
+	//
+	// Names are trimmed, an empty one is refused, and a duplicate is refused; a
+	// push stores the set in the order it was declared.
+	DeclaredKeys *[]string `yaml:"declared_keys,omitempty" json:"declared_keys,omitempty"`
 }
 
 // attributeSource is one RESOLVED attribute_providers: entry: the declaration
@@ -209,9 +288,17 @@ type attributeSource struct {
 	// GetOne, GetAll and IDColumn are the declared statements and id column, with
 	// GetAll empty for a fetch-only slot.
 	GetOne, GetAll, IDColumn string
-	// cacheOpts are the per-slot cache options ttl: and max_size: imply, already
-	// parsed. Empty means "inherit the registry defaults".
-	cacheOpts []provider.CacheOption
+	// regOpts are the per-slot registration options the entry implies, already
+	// parsed: the cache options ttl: and max_size: build, plus the declared key set
+	// declared_keys: builds when it is PRESENT. Empty means "inherit the registry
+	// defaults and declare nothing".
+	//
+	// declared_keys: is carried here rather than being read off the declaration
+	// later because presence is the declaration: a *[]string that is nil is NOT
+	// DECLARED and one that is non-nil is DECLARED whatever it points at, and the
+	// only place that distinction can be turned into provider.WithDeclaredKeys
+	// without a length test is where the pointer is still in scope.
+	regOpts []provider.AttributeRegistrationOption
 }
 
 // attributeSourceOpener turns one resolved entry into the live
@@ -370,10 +457,13 @@ func (d *Document) BuildAttributeRegistryWithConnections(baseDir string, conns *
 func (d *Document) buildAttributeRegistry(baseDir string, conns *Connections, open attributeSourceOpener) (*provider.AttributeRegistry, error) {
 	// attribute_providers: is resolved FIRST, before any inline entry is grouped,
 	// so a document that declares both fails on the external declaration it
-	// cannot satisfy rather than on an inline entry that a declared source was
-	// going to discard anyway. That ordering IS the precedence rule, and it
-	// mirrors BuildRegistryWithConnections registering providers: before
-	// objects:.
+	// cannot satisfy rather than on an inline entry whose own validity says nothing
+	// about it. That ordering mirrors BuildRegistryWithConnections registering
+	// providers: before objects:.
+	//
+	// The precedence between the two sections is no longer this ordering, though:
+	// it is the LAYER each is registered in, which is a property of the registry
+	// rather than of a loop (see the registration calls below).
 	sources, err := d.attributeSources(baseDir, conns)
 	if err != nil {
 		return nil, err
@@ -386,6 +476,33 @@ func (d *Document) buildAttributeRegistry(baseDir string, conns *Connections, op
 	// Slots are filled in provider.AttributeSlots() order, not file order, so a
 	// document with two bad slots always fails on the same one and a build is
 	// reproducible.
+	//
+	// A slot declared in BOTH sections gets BOTH, in the two layers the registry
+	// keeps: the attribute_providers: entry is the SHARED layer and the inline
+	// attributes: block is the LOCAL one, so the external source wins every key
+	// both serve and the inline bags contribute the keys it does not. That is a
+	// reversal of the rule this file used to state — the inline bags were discarded
+	// entirely — and the argument for it is provider.AttributeLayer's: a shared
+	// directory a deployment administers and a block in one instance's file are not
+	// two candidates for one slot, they are two layers of it, and refusing the
+	// second meant an instance could not add a field the directory does not carry
+	// without abandoning the directory.
+	//
+	// Which section is which layer is not a choice either. attribute_providers:
+	// names a source every instance of the deployment reads (a database row
+	// projected back into this section, or a directory), and attributes: is data
+	// written into one instance's file; if the file could override a key the
+	// directory serves, one machine would silently answer a deployment-wide rule
+	// differently.
+	//
+	// A shared entry's declared_keys: goes in with it, in src.regOpts, and it
+	// RESERVES those keys to the shared layer: the inline block below then answers
+	// only outside the declared set, including for a subject the shared source has
+	// no record for. That is what makes deleting a subject from the directory a
+	// revocation on an instance whose own file still lists them — see
+	// AttributeProvider.DeclaredKeys and provider.WithDeclaredKeys. A slot that
+	// declares nothing reserves nothing, so a document that has never written the
+	// key builds exactly the registry it always did.
 	for _, slot := range provider.AttributeSlots() {
 		if src, ok := sources[slot]; ok {
 			impl, err := open(src)
@@ -397,10 +514,9 @@ func (d *Document) buildAttributeRegistry(baseDir string, conns *Connections, op
 					fmt.Sprintf("seed: the attribute source opener returned no provider for subject %q", slot),
 					map[string]any{"subject": slot.String(), "kind": src.Kind})
 			}
-			if err := reg.Register(slot, impl, src.cacheOpts...); err != nil {
+			if err := reg.Register(slot, impl, src.regOpts...); err != nil {
 				return nil, err
 			}
-			continue
 		}
 		records, ok := groups[slot]
 		if !ok {
@@ -415,8 +531,10 @@ func (d *Document) buildAttributeRegistry(baseDir string, conns *Connections, op
 			return nil, err
 		}
 		// TTL 0: inline data is fixed for the life of the process, so a freshness
-		// window would only buy re-reads of a value that cannot have changed.
-		if err := reg.Register(slot, impl, provider.WithTTL(0)); err != nil {
+		// window would only buy re-reads of a value that cannot have changed. It is
+		// the LOCAL layer's window and nothing else's — the shared layer keeps the
+		// ttl: its own entry declared, which is why the two caches are separate.
+		if err := reg.RegisterLocal(slot, impl, provider.WithTTL(0)); err != nil {
 			return nil, err
 		}
 	}
@@ -496,10 +614,18 @@ func resolveAttributeSource(ap AttributeProvider, baseDir string, conns *Connect
 				"seed: attribute provider has an invalid ttl",
 				map[string]any{"subject": slot.String(), "ttl": ap.TTL})
 		}
-		src.cacheOpts = append(src.cacheOpts, provider.WithTTL(ttl))
+		src.regOpts = append(src.regOpts, provider.WithTTL(ttl))
 	}
 	if ap.MaxSize != 0 {
-		src.cacheOpts = append(src.cacheOpts, provider.WithMaxSize(ap.MaxSize))
+		src.regOpts = append(src.regOpts, provider.WithMaxSize(ap.MaxSize))
+	}
+	// The POINTER is the test, never the length. A non-nil pointer is a
+	// declaration, so `declared_keys: []` reaches the registry as DECLARED EMPTY —
+	// opted in, reserving no key — and an absent key reaches it as nothing at all,
+	// which is the opt-out every deployment that has never written one is in.
+	// provider.WithDeclaredKeys copies the slice and normalises the names.
+	if ap.DeclaredKeys != nil {
+		src.regOpts = append(src.regOpts, provider.WithDeclaredKeys(*ap.DeclaredKeys))
 	}
 
 	switch src.Kind {
@@ -588,11 +714,18 @@ const AttributeSourceInline = "inline"
 //
 // It exists so a surface that DISPLAYS the wiring — `aperture attributes slots`
 // — does not have to re-derive the precedence rule. The rule is one rule and it
-// is defined in this file: an attribute_providers: entry WINS and the inline
-// bags for that slot are discarded entirely (see AttributeCollisions). A CLI
-// that walked the two sections itself would be a second implementation of it,
-// and the two would eventually disagree about which source an operator is
-// actually running — the one question the listing exists to answer.
+// is defined in this file: an attribute_providers: entry is the SHARED layer and
+// WINS every key both sections serve, with the inline bags layered under it (see
+// AttributeCollisions). A CLI that walked the two sections itself would be a
+// second implementation of it, and the two would eventually disagree about which
+// source an operator is actually running — the one question the listing exists to
+// answer.
+//
+// A slot filled by both therefore reports the external kind:, because that is the
+// source a contested key is answered from. That it is the WINNER rather than the
+// only source is what AttributeCollisions reports, and a listing that needs to
+// name both asks provider.AttributeRegistry.Layers for the shape it actually
+// built.
 //
 // It reports WIRING, not contents: slot names and kinds, never a key and never a
 // bag. What a slot's cache is actually configured with is a property of the
@@ -634,19 +767,25 @@ func (d *Document) AttributeSlotSources() map[string]string {
 // attribute_providers: and attributes: sections, in provider.AttributeSlots()
 // order.
 //
-// It is Document.ProviderCollisions for the attribute seam, and the rule it
-// reports is the same one, at slot granularity instead of type granularity: the
-// external attribute_providers: entry WINS, and every inline attributes: entry
-// for that slot is discarded ENTIRELY. There is no per-subject merge and no
-// fallback — an inline id the external source happens to lack is simply not
-// resolvable, exactly as if the entry had never been written.
+// It is Document.ProviderCollisions for the attribute seam, and the two no longer
+// report the same rule. The OBJECT rule is still a discard: a providers: entry
+// wins a type and the inline objects: entries for it are dropped. The ATTRIBUTE
+// rule is a LAYERING: the external attribute_providers: entry is the slot's shared
+// layer, the inline attributes: block is its local layer, and a fetch reads their
+// merge with the shared layer winning every key both serve (provider.AttributeLayer
+// is the full account).
 //
-// Field-level merging is the most useful-sounding behaviour and the most
-// impossible to debug: a rule reading a department the directory silently did
-// not override is a support ticket nobody can reproduce. Predictability wins,
-// and it wins for the same reason it does for objects.
+// So an inline id the external source lacks IS resolvable — that is the point of
+// the local layer — while an inline value for a key the external source does serve
+// is not read, ever, on any instance.
 //
-// The discard is not silent either. seed has no logging path of its own, so it
+// Field-level merging with a CONFIGURABLE or order-dependent winner is what remains
+// impossible to debug, and it is still refused: a rule reading a department one
+// machine's file silently overrode is a support ticket nobody can reproduce. What
+// makes the layering safe is that the winner is fixed and is the deployment-wide
+// source, so a contested key reads the same on every instance.
+//
+// The layering is not silent either. seed has no logging path of its own, so it
 // reports the fact here and the caller surfaces it — internal/cli prints a
 // warning naming the slots. Only SLOT NAMES are reported, never keys, so the
 // warning cannot leak a directory's contents.

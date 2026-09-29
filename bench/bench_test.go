@@ -170,6 +170,20 @@ func reportP99(b *testing.B, svc *service.Service, q service.Query) {
 // measureP99 runs n cached Checks, timing each, and returns the 99th-percentile
 // latency. The engine is already warm, so this measures steady-state cost.
 func measureP99(ctx context.Context, svc *service.Service, q service.Query, n int) time.Duration {
+	return measureQuantile(ctx, svc, q, n, 0.99)
+}
+
+// measureQuantile runs n cached Checks, timing each, and returns the requested
+// quantile of the sample.
+//
+// It exists so the p99 the gate asserts and the MEDIAN a one-off cost is read
+// against (wiring_test.go, the cold period after a wiring swap) are one
+// measurement with one quantile argument. The two controls are not
+// interchangeable, which is the reason this is a parameter and not a second
+// function: a threshold about the tail belongs at 0.99, while a cost paid ONCE has
+// to be compared with the typical decision — read against the tail, a single cold
+// sample can come out "faster than steady state" and report nothing at all.
+func measureQuantile(ctx context.Context, svc *service.Service, q service.Query, n int, quantile float64) time.Duration {
 	lat := make([]time.Duration, n)
 	for i := 0; i < n; i++ {
 		t0 := time.Now()
@@ -177,7 +191,7 @@ func measureP99(ctx context.Context, svc *service.Service, q service.Query, n in
 		lat[i] = time.Since(t0)
 	}
 	sort.Slice(lat, func(i, j int) bool { return lat[i] < lat[j] })
-	idx := int(float64(n) * 0.99)
+	idx := int(float64(n) * quantile)
 	if idx >= n {
 		idx = n - 1
 	}

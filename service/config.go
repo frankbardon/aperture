@@ -114,6 +114,23 @@ type ManagedEntities struct {
 //
 // It carries booleans and nothing else — no ids, no counts, no model data — so
 // that a surface can answer the question without authenticating the caller.
+//
+// # What it deliberately does not absorb
+//
+// Every field here is BOOT-TIME operator configuration, and that is a contract
+// and not an accident. It is what makes the read safe to leave open, safe to
+// cache once on page load, and unable to fail.
+//
+// Runtime FAULT state does not belong here, however posture-shaped it looks. The
+// worked case is stale shared wiring: an instance whose background refresh is
+// failing keeps deciding from the wiring it has, which is mutable state, whose
+// useful half is a DURATION rather than a boolean, and whose disclosure ("this
+// instance is enforcing configuration its operator already replaced, and has
+// been for four hours") is operational intelligence an anonymous caller should
+// not get. It lives on WiringPosture behind a system-admin gate instead. See
+// service/wiring_posture.go for the full argument — it is written down because
+// the pull towards adding one more boolean here is strong and the contract this
+// paragraph protects is invisible from the call site.
 type Capabilities struct {
 	// ManageAccounts reports whether PutAccount and DeleteAccount are available.
 	ManageAccounts bool

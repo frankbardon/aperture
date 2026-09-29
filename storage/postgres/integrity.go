@@ -9,7 +9,7 @@ import (
 
 // ---- The three columns SQL cannot constrain, enforced in Go ----
 //
-// Nine relationship columns carry a real foreign key (see the "Referential
+// Eleven relationship columns carry a real foreign key (see the "Referential
 // integrity" header in schema.sql). Three do not, and cannot, because the value
 // they hold is not always a row reference. This file is where those three are
 // enforced instead — in the application layer, with the same code and the same

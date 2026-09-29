@@ -29,7 +29,7 @@ func checkCommand() *ucli.Command {
 		Flags: []ucli.Flag{
 			&ucli.StringFlag{
 				Name:  "seed",
-				Usage: "path to a JSON/YAML seed model (defaults to the embedded example)",
+				Usage: "path to a JSON/YAML seed model to apply on startup (when omitted: the embedded example for the in-memory store, and nothing at all for a --store DSN)",
 			},
 			&ucli.StringFlag{
 				Name:  "store",
@@ -65,7 +65,7 @@ func runCheck(ctx context.Context, cmd *ucli.Command) error {
 	}
 	defer func() { _ = store.Close() }()
 
-	stack, err := buildDecisionStack(cmd, store, cmd.String("seed"))
+	stack, err := buildDecisionStack(ctx, cmd, store, cmd.String("seed"))
 	if err != nil {
 		return err
 	}
@@ -130,7 +130,7 @@ func enumerateCommand() *ucli.Command {
 			"honours, and it is what a --limit larger than it is clamped down to. A --limit of\n" +
 			"zero or less asks for the ceiling.",
 		Flags: append(append([]ucli.Flag{
-			&ucli.StringFlag{Name: "seed", Usage: "path to a JSON/YAML seed model (defaults to the embedded example)"},
+			&ucli.StringFlag{Name: "seed", Usage: "path to a JSON/YAML seed model to apply on startup (when omitted: the embedded example for the in-memory store, and nothing at all for a --store DSN)"},
 			&ucli.StringFlag{Name: "store", Usage: "DSN for the backing store: a postgres:// or postgresql:// URL for PostgreSQL, any other value as a SQLite path (defaults to in-memory). Set APERTURE_POSTGRES_SCHEMA to place Aperture's tables in a named PostgreSQL schema; unset uses the connection's search_path"},
 			&ucli.StringFlag{Name: "account", Usage: "active account the enumeration is scoped to", Value: seed.ExampleAccount},
 			&ucli.IntFlag{Name: "limit", Usage: "cap the number of returned object ids for THIS request, clamped down to the deployment's --enumerate-limit ceiling (<=0 means that ceiling, which is " + strconv.Itoa(engine.DefaultEnumerateLimit) + " unless configured)"},
@@ -162,7 +162,7 @@ func runEnumerate(ctx context.Context, cmd *ucli.Command) error {
 	}
 	defer func() { _ = store.Close() }()
 
-	stack, err := buildDecisionStack(cmd, store, cmd.String("seed"))
+	stack, err := buildDecisionStack(ctx, cmd, store, cmd.String("seed"))
 	if err != nil {
 		return err
 	}
@@ -198,7 +198,7 @@ func identifiersCommand() *ucli.Command {
 		Usage:     "List all valid instance ids of an object type from its provider",
 		ArgsUsage: "<object_type>",
 		Flags: []ucli.Flag{
-			&ucli.StringFlag{Name: "seed", Usage: "path to a JSON/YAML seed model (defaults to the embedded example)"},
+			&ucli.StringFlag{Name: "seed", Usage: "path to a JSON/YAML seed model to apply on startup (when omitted: the embedded example for the in-memory store, and nothing at all for a --store DSN)"},
 			&ucli.StringFlag{Name: "store", Usage: "DSN for the backing store: a postgres:// or postgresql:// URL for PostgreSQL, any other value as a SQLite path (defaults to in-memory). Set APERTURE_POSTGRES_SCHEMA to place Aperture's tables in a named PostgreSQL schema; unset uses the connection's search_path"},
 			&ucli.StringSliceFlag{Name: "exclude", Usage: "id to omit from the result (repeatable); expands an exclusive allowance"},
 			enumerateLimitFlag(),
@@ -219,7 +219,7 @@ func runIdentifiers(ctx context.Context, cmd *ucli.Command) error {
 	}
 	defer func() { _ = store.Close() }()
 
-	stack, err := buildDecisionStack(cmd, store, cmd.String("seed"))
+	stack, err := buildDecisionStack(ctx, cmd, store, cmd.String("seed"))
 	if err != nil {
 		return err
 	}
@@ -245,7 +245,7 @@ func explainCommand() *ucli.Command {
 		Usage:     "Explain why a decision resolved the way it did",
 		ArgsUsage: "<principal> <action> <object>",
 		Flags: []ucli.Flag{
-			&ucli.StringFlag{Name: "seed", Usage: "path to a JSON/YAML seed model (defaults to the embedded example)"},
+			&ucli.StringFlag{Name: "seed", Usage: "path to a JSON/YAML seed model to apply on startup (when omitted: the embedded example for the in-memory store, and nothing at all for a --store DSN)"},
 			&ucli.StringFlag{Name: "store", Usage: "DSN for the backing store: a postgres:// or postgresql:// URL for PostgreSQL, any other value as a SQLite path (defaults to in-memory). Set APERTURE_POSTGRES_SCHEMA to place Aperture's tables in a named PostgreSQL schema; unset uses the connection's search_path"},
 			&ucli.StringFlag{Name: "account", Usage: "active account the decision is scoped to", Value: seed.ExampleAccount},
 			enumerateLimitFlag(),
@@ -266,7 +266,7 @@ func runExplain(ctx context.Context, cmd *ucli.Command) error {
 	}
 	defer func() { _ = store.Close() }()
 
-	stack, err := buildDecisionStack(cmd, store, cmd.String("seed"))
+	stack, err := buildDecisionStack(ctx, cmd, store, cmd.String("seed"))
 	if err != nil {
 		return err
 	}

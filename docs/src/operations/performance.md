@@ -93,7 +93,8 @@ build, but it is wired and runnable on demand and in a dedicated CI job/cron
 where the runner is known to be idle.
 
 `-run` is an unanchored regexp, so that one invocation also picks up
-`TestCheckNFRCollections`, `TestCheckNFRAttributes` and
+`TestCheckNFRCollections`, `TestCheckNFRAttributes`, `TestCheckNFRWiringPoll`,
+`TestCheckNFRAfterAWiringSwap` and
 `TestCheckNFREnumerateBound` — the last of which guards the
 [enumeration bound](#the-enumeration-bound) and is the one threshold in the suite
 that is **not** a wall clock. It holds a rule-backed `Enumerate` at a *raised*
@@ -102,6 +103,42 @@ bound to a **ratio** against the same enumeration at the default bound
 same second. An 11.6 ms enumeration is correct by design at a bound of 2 000, so
 no absolute number could be asserted there; what must not change is that the cost
 stays **linear in the bound**.
+
+## The shared-wiring poll and swap
+
+A long-lived `serve` can be told to re-read the
+[shared wiring tables](../cli/serve.md#noticing-a-push-without-a-restart) on an
+interval and adopt a change without a restart. Two of the cases above exist because
+that machinery has to be **invisible** to the numbers on this page, and "invisible
+by construction" is a claim rather than a measurement:
+
+- `TestCheckNFRWiringPoll` re-runs the gate's own assertion over the same fixture
+  and query with a **live poll loop** underneath it, doing a tick's work every 1 ms
+  — thirty thousand ticks for every one the 30s default would make. At that rate the
+  loop's cost is visible but small: across two runs the p99 stayed inside the
+  run-to-run spread of the arm with no loop (0.27–0.32 ms against a 1 ms ceiling) and
+  throughput ran 5–15 % lower (12 900–14 700 checks/sec against a 10 000 floor).
+  Divided by the 30 000× between that interval and the default, the same work is not
+  a measurable quantity. The case logs and asserts its tick count, so a green run
+  cannot be one where the ticker never fired.
+- `TestCheckNFRAfterAWiringSwap` measures what an adopted push costs the decisions
+  that follow it. A swap installs a version whose caches start **empty**, on purpose
+  — a rebuilt attribute slot must never answer from an entry fetched under the
+  superseded configuration's `ttl:` — so there is a cold period after each push. On
+  the fixture the first decision on a new version cost 2.6× the warm median
+  (129–134 µs against 49–52 µs), the window settled within fifty to ninety decisions,
+  and the whole cold period cost 0.7–1.1 ms above steady state — about one decision's
+  worth of the 1 ms ceiling, once, per push. The case **asserts** that a swapped
+  version clears the same p99 and throughput targets a booted one does, which is the
+  regression that matters: a swap that installed a permanently colder stack would
+  show up here and in no other case, because every other one measures a stack that
+  booted.
+
+Neither figure is a reason to choose an interval. The interval is a **staleness
+budget** — how long two instances may answer differently — and the operator-facing
+account of that, and of the cold period under `kind: sql` providers where a cache
+entry costs a query round trip, is
+[Refreshing wiring on a live fleet](wiring-refresh.md#what-it-costs).
 
 ## Committed numbers
 
@@ -296,6 +333,8 @@ benchmark showing a win.
   optimization write-up, and the latest committed numbers.
 - [Deployment](deployment.md) — running the instance whose throughput these
   numbers describe, and where `--enumerate-limit` sits among the other settings.
+- [Refreshing wiring on a live fleet](wiring-refresh.md) — the poll and the swap
+  from the operator's side, including the cost paragraph these two cases feed.
 - [Global options](../cli/global-options.md) and
   [Decisions](../cli/decisions.md) — the bound at the command line, and how a
   request's `--limit` interacts with it.

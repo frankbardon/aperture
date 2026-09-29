@@ -28,11 +28,18 @@ func init() { sql.Register(fakeDriverName, fakeDriver{}) }
 
 // script is the canned behaviour of one fake database, plus what it observed.
 type script struct {
-	cols     []string
-	rows     [][]driver.Value
-	queryErr error         // returned instead of rows
-	rowsErr  error         // returned by Next in place of io.EOF, i.e. a mid-stream failure
-	delay    time.Duration // makes a statement outlive a short timeout
+	cols []string
+	rows [][]driver.Value
+	// fetchCols/fetchRows, when set, are the canned result for a PARAMETERISED
+	// statement — the "get one", which is the only statement this provider binds an
+	// argument to. Without them every statement returns the same canned result,
+	// which is enough for most cases here but cannot express the thing E3-S6 is
+	// about: two statements with two different projections of the same object.
+	fetchCols []string
+	fetchRows [][]driver.Value
+	queryErr  error         // returned instead of rows
+	rowsErr   error         // returned by Next in place of io.EOF, i.e. a mid-stream failure
+	delay     time.Duration // makes a statement outlive a short timeout
 
 	mu           sync.Mutex
 	calls        int
@@ -135,25 +142,34 @@ func (c *fakeConn) QueryContext(ctx context.Context, query string, args []driver
 	if c.s.queryErr != nil {
 		return nil, c.s.queryErr
 	}
-	return &fakeRows{s: c.s}, nil
+	// A bound argument means the "get one": this provider's fetch statement takes
+	// exactly one parameter and its list statement takes none, so the presence of an
+	// argument is how the fake tells the two apart without knowing either text.
+	cols, rows := c.s.cols, c.s.rows
+	if len(vals) > 0 && c.s.fetchCols != nil {
+		cols, rows = c.s.fetchCols, c.s.fetchRows
+	}
+	return &fakeRows{s: c.s, cols: cols, rows: rows}, nil
 }
 
 type fakeRows struct {
-	s *script
-	i int
+	s    *script
+	cols []string
+	rows [][]driver.Value
+	i    int
 }
 
-func (r *fakeRows) Columns() []string { return r.s.cols }
+func (r *fakeRows) Columns() []string { return r.cols }
 func (r *fakeRows) Close() error      { return nil }
 
 func (r *fakeRows) Next(dest []driver.Value) error {
-	if r.i >= len(r.s.rows) {
+	if r.i >= len(r.rows) {
 		if r.s.rowsErr != nil {
 			return r.s.rowsErr
 		}
 		return io.EOF
 	}
-	row := r.s.rows[r.i]
+	row := r.rows[r.i]
 	r.i++
 	copy(dest, row)
 	return nil

@@ -17,8 +17,22 @@ import (
 //
 // This section is runtime WIRING, not model state: Apply never writes it to
 // storage (a provider produces no model rows), and because the model is exported
-// by reading storage back, an export does not reproduce it — the seed file is
-// the source of truth for provider wiring, exactly as auth config is.
+// by reading storage back, an export does not reproduce it.
+//
+// It is one of the four SHARED wiring sections, and the seed file is therefore
+// not its only home. `aperture wiring push` writes every entry here to
+// apt_wiring_providers (and its References map to apt_wiring_provider_references),
+// `aperture wiring pull` reads them back as this same section, and an instance
+// booting against a store that holds rows builds its registry from them. Where the
+// store holds rows the DATABASE is authoritative and a local document may only ADD
+// a type it never declared; where the store holds none, this section is the whole
+// answer, exactly as it always was.
+//
+// Two things about an entry are never shared, because the tables have no column
+// for them and never will: Path — a filesystem path is machine-local, which is why
+// `kind: csv` is refused at the push and stays perfectly legal here — and anything
+// about the Connection beyond its NAME. See internal/cli/wiring_project.go for
+// every rule a push refuses on, and skills/shared-wiring.md for the contract.
 type Provider struct {
 	// ObjectType is the type whose instances this provider serves (e.g. "brand").
 	// An object's identity terminal-segment type must equal it, and each type may
@@ -98,7 +112,9 @@ type Provider struct {
 	// is APERTURE_PROVIDER_REFERENCE_INVALID at build, naming the field and the
 	// target. A field name that matches nothing is NOT an error: metadata fields
 	// are discovered at fetch, not declared. Like the rest of this struct it is
-	// runtime wiring — never written to storage, never reproduced by an export.
+	// runtime wiring: Apply never writes it and an export never reproduces it, and
+	// like the rest of this struct it IS shared — a push flattens the map into
+	// apt_wiring_provider_references and a pull reads it back under this key.
 	References map[string]string `yaml:"references,omitempty" json:"references,omitempty"`
 }
 

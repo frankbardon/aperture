@@ -1,11 +1,15 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/frankbardon/aperture/model"
+	"github.com/frankbardon/aperture/seed"
+	ucli "github.com/urfave/cli/v3"
 )
 
 // TestSeedingAnEnforcingStoreSucceeds is the regression guard for the ONE break
@@ -21,8 +25,15 @@ import (
 // storage/memory, which enforces nothing and therefore accepts any order at all;
 // the sqlite package's own tests never call the seed loader. The two halves are
 // only brought together HERE, in the wiring that a real `aperture --store
-// file:...` invocation actually walks: openStore picks the SQLite backend, then
-// loadSeed applies the embedded example through it.
+// file:... --seed example.yaml` invocation actually walks: openStore picks the
+// SQLite backend, then loadSeed applies the example document through it.
+//
+// The document is handed over as a FILE rather than left to the empty --seed
+// default, because a durable store with no --seed now seeds nothing at all (see
+// loadSeed, and TestADurableStoreWithNoSeedSeedsNothing below). The fixture under
+// test is the same seed.Example either way; what the explicit path buys is that
+// this test keeps exercising Apply against an enforcing backend instead of
+// quietly becoming a test that nothing was written.
 //
 // This test is deliberately end-to-end and deliberately assertion-light. It does
 // not check what was seeded — seed/ owns that. It checks that seeding an
@@ -30,8 +41,9 @@ import (
 func TestSeedingAnEnforcingStoreSucceeds(t *testing.T) {
 	ctx := context.Background()
 	dsn := "file:" + filepath.Join(t.TempDir(), "aperture.db")
+	examplePath := writeSeed(t, "example.yaml", string(seed.Example))
 
-	store, err := buildStore(ctx, dsn, "") // "" = the embedded example document
+	store, err := buildStore(ctx, dsn, examplePath)
 	if err != nil {
 		t.Fatalf("seeding a SQLite store failed: %v\n\n"+
 			"This is almost certainly the ORDER of the loops in seed.Document.Apply: "+
@@ -60,7 +72,7 @@ func TestSeedingAnEnforcingStoreSucceeds(t *testing.T) {
 	// the row before re-inserting it and so fires the children's ON DELETE
 	// actions — under these foreign keys, re-seeding a principal who is in a
 	// group would be refused outright.
-	if err := loadSeed(ctx, store, ""); err != nil {
+	if err := loadSeed(ctx, store, examplePath, storeSQLite); err != nil {
 		t.Fatalf("re-seeding an already-seeded store failed: %v\n\n"+
 			"An entity upsert is deleting its row instead of updating it in place "+
 			"(INSERT OR REPLACE rather than ON CONFLICT DO UPDATE).", err)
@@ -112,7 +124,7 @@ roles:
 groups:
   - {id: writers, name: Writers Renamed, description: No members any more., members: []}
 `
-	if err := loadSeed(ctx, store, writeSeed(t, "after.yaml", after)); err != nil {
+	if err := loadSeed(ctx, store, writeSeed(t, "after.yaml", after), storeSQLite); err != nil {
 		t.Fatalf("re-seeding a CHANGED document failed: %v\n\n"+
 			"An entity's child bundle (role permissions, principal roles, group members) is "+
 			"rewritten by clearing its join table first. That clear is a delete against the "+
@@ -208,5 +220,183 @@ grants:
 	}
 	if len(grants) != 1 || grants[0].ID != "g-bob" {
 		t.Fatalf("grants for beta = %+v, want exactly g-bob", grants)
+	}
+}
+
+// TestADurableStoreWithNoSeedSeedsNothing is the E2-S4 gate, and it asserts BOTH
+// halves of one decision from the same file.
+//
+// loadSeed used to default to the embedded acme fixture whenever --seed was
+// empty, whatever --store pointed at. seed.Document.Apply upserts the whole model
+// and deliberately sits outside the ManagedEntities posture, so
+// `aperture serve --store postgres://prod` with no --seed wrote the demo model
+// into production, and two instances sharing one database re-asserted their own
+// model over each other on every restart. Nothing refused it and nothing said it
+// had happened.
+//
+// The two halves have to be asserted together because each one stays green when
+// the other breaks. Drop the durable skip and the demo tests still pass; drop the
+// in-memory fixture and the durable cases here still pass — while every
+// getting-started page, seed.ExampleAccount as the default --account, and
+// cmd/aperture's end-to-end test would be silently wrong. So:
+//
+//   - a durable store (SQLite here; Postgres shares the classification through
+//     classifyStore, which is the only place the rule is written) with no --seed
+//     writes NO model rows, and re-booting over a model somebody else provisioned
+//     leaves it exactly as it was; and
+//   - an in-memory store with no --seed still loads the fixture.
+func TestADurableStoreWithNoSeedSeedsNothing(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("durable, no --seed: nothing is written", func(t *testing.T) {
+		dsn := "file:" + filepath.Join(t.TempDir(), "unseeded.db")
+
+		store, err := buildStore(ctx, dsn, "")
+		if err != nil {
+			t.Fatalf("booting a durable store with no --seed: %v", err)
+		}
+		t.Cleanup(func() { _ = store.Close() })
+
+		assertModelIsEmpty(ctx, t, store, "a durable store booted with no --seed")
+	})
+
+	t.Run("durable, no --seed: an existing model survives the boot", func(t *testing.T) {
+		// The anti-vacuity half: "no rows" is also true of a store nothing ever
+		// wrote to. Provision a model the way an operator would, then boot again
+		// with no --seed and require the model to be untouched — in particular NOT
+		// overwritten by the acme fixture, which is exactly what the bug did.
+		dsn := "file:" + filepath.Join(t.TempDir(), "provisioned.db")
+
+		provisioned, err := buildStore(ctx, dsn, writeSeed(t, "provisioned.yaml", delSeed))
+		if err != nil {
+			t.Fatalf("provisioning the durable store: %v", err)
+		}
+		// seed.Export emits every slice in a stable order, so the marshalled
+		// document is a byte-comparable snapshot of the whole model. Comparing it
+		// is stronger than naming the entities the fixture happens to add today:
+		// ANY divergence fails, including one the example document grows later.
+		before := exportModel(ctx, t, provisioned)
+		if err := provisioned.Close(); err != nil {
+			t.Fatalf("close after provisioning: %v", err)
+		}
+
+		reboot, err := buildStore(ctx, dsn, "")
+		if err != nil {
+			t.Fatalf("re-booting the provisioned store with no --seed: %v", err)
+		}
+		t.Cleanup(func() { _ = reboot.Close() })
+
+		if after := exportModel(ctx, t, reboot); after != before {
+			t.Errorf("the model changed across a boot with no --seed.\n\nbefore:\n%s\nafter:\n%s\n"+
+				"The embedded acme fixture has been applied over a model the operator "+
+				"provisioned. loadSeed must seed nothing when --seed is empty and "+
+				"classifyStore reports a durable backend.", before, after)
+		}
+	})
+
+	t.Run("durable, no --seed: a real command writes nothing either", func(t *testing.T) {
+		// Through the real command tree, because buildStore is reached from nine
+		// commands and the flag value is what an operator actually types. `check`
+		// stands in for `serve`: the two share buildStore verbatim, and `check`
+		// exits instead of listening.
+		dsn := "file:" + filepath.Join(t.TempDir(), "checked.db")
+
+		// An empty model denies, and a clean deny is a non-zero ExitCoder that
+		// urfave/cli would otherwise turn into os.Exit; the no-op ExitErrHandler
+		// keeps it inside the test process (the same idiom as runCheckCommand).
+		var out bytes.Buffer
+		app := NewApp("test")
+		app.Writer = &out
+		app.ErrWriter = &out
+		app.ExitErrHandler = func(context.Context, *ucli.Command, error) {}
+		err := app.Run(ctx, []string{"aperture", "check", "--store", dsn,
+			"alice", "read", "account:acme/project:atlas/document:42"})
+		if !strings.HasPrefix(out.String(), "deny\n") {
+			t.Fatalf("check against an unseeded durable store printed %q (err %v), want a deny",
+				out.String(), err)
+		}
+
+		store, err := openStore(dsn)
+		if err != nil {
+			t.Fatalf("reopen the store: %v", err)
+		}
+		t.Cleanup(func() { _ = store.Close() })
+		assertModelIsEmpty(ctx, t, store, "`aperture check --store <path>` with no --seed")
+	})
+
+	t.Run("in-memory, no --seed: the demo fixture still loads", func(t *testing.T) {
+		store, err := buildStore(ctx, "", "")
+		if err != nil {
+			t.Fatalf("booting the zero-flag demo: %v", err)
+		}
+		t.Cleanup(func() { _ = store.Close() })
+
+		grants, err := store.ListGrants(ctx, seed.ExampleAccount)
+		if err != nil {
+			t.Fatalf("list grants: %v", err)
+		}
+		if len(grants) == 0 {
+			t.Fatalf("the in-memory store booted with no --seed holds no grants for %q. "+
+				"The zero-flag demo is what every getting-started page, the default "+
+				"--account (seed.ExampleAccount) and cmd/aperture's end-to-end test "+
+				"rest on; the durable skip must not have taken it away.",
+				seed.ExampleAccount)
+		}
+	})
+}
+
+// exportModel snapshots the whole model as a stable YAML document, so two boots
+// can be compared byte for byte.
+func exportModel(ctx context.Context, t *testing.T, store model.Storage) string {
+	t.Helper()
+	doc, err := seed.Export(ctx, store)
+	if err != nil {
+		t.Fatalf("export the model: %v", err)
+	}
+	out, err := seed.Marshal(doc, seed.FormatYAML)
+	if err != nil {
+		t.Fatalf("marshal the exported model: %v", err)
+	}
+	return string(out)
+}
+
+// assertModelIsEmpty fails unless the store holds no model rows at all.
+//
+// It reads EVERY unscoped list on model.Storage, plus the account-scoped grant
+// list for the fixture's own account, rather than picking one of them: the bug it
+// guards wrote the whole document, so a check that looked only at grants would
+// pass against a fixture whose accounts, principals, roles and rules had all
+// landed.
+func assertModelIsEmpty(ctx context.Context, t *testing.T, store model.Storage, what string) {
+	t.Helper()
+
+	lists := []struct {
+		entity string
+		count  func() (int, error)
+	}{
+		{"accounts", func() (int, error) { v, err := store.ListAccounts(ctx); return len(v), err }},
+		{"principals", func() (int, error) { v, err := store.ListPrincipals(ctx); return len(v), err }},
+		{"object types", func() (int, error) { v, err := store.ListObjectTypes(ctx); return len(v), err }},
+		{"permissions", func() (int, error) { v, err := store.ListPermissions(ctx); return len(v), err }},
+		{"roles", func() (int, error) { v, err := store.ListRoles(ctx); return len(v), err }},
+		{"groups", func() (int, error) { v, err := store.ListGroups(ctx); return len(v), err }},
+		{"templates", func() (int, error) { v, err := store.ListTemplates(ctx); return len(v), err }},
+		{"rules", func() (int, error) { v, err := store.ListRules(ctx); return len(v), err }},
+		{"grants for " + seed.ExampleAccount, func() (int, error) {
+			v, err := store.ListGrants(ctx, seed.ExampleAccount)
+			return len(v), err
+		}},
+	}
+	for _, l := range lists {
+		n, err := l.count()
+		if err != nil {
+			t.Fatalf("list %s: %v", l.entity, err)
+		}
+		if n != 0 {
+			t.Errorf("%s holds %d %s, want none. The embedded acme fixture is being "+
+				"applied to a database the operator named: loadSeed must seed nothing "+
+				"when --seed is empty and classifyStore reports a durable backend.",
+				what, n, l.entity)
+		}
 	}
 }

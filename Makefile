@@ -1,4 +1,4 @@
-.PHONY: build run clean test bench fmt vet lint proto vendor-rete docs docs-serve docs-clean docs-gen
+.PHONY: build run clean test test-race bench fmt vet lint proto vendor-rete docs docs-serve docs-clean docs-gen
 
 BINARY_NAME=aperture
 BUILD_DIR=bin
@@ -38,18 +38,56 @@ clean:
 #   export APERTURE_PG_DSN='postgres://user:pass@localhost:5432/db?sslmode=disable'
 #   $(GO) test -run TestPostgresIntegration ./seed/
 #   $(GO) test -run TestPostgresLive ./storage/postgres/
+#   $(GO) test -run TestPostgresLive ./internal/cli/
 #
 # The second is the storage backend's conformance run: the WHOLE storagetest
 # contract against a real server, once unqualified and once pinned to a
 # configured schema. CI has no service containers, so it is the only evidence
 # storage/postgres behaves like storage/sqlite.
 #
+# The third is the shared-wiring surface against a real server: the
+# `aperture wiring push -> pull -> push` fixed point, the two backends pulling
+# and diffing one wiring as the SAME document, the DB-wired boot's refusals, and
+# the two-instance proof that an instance wired from the database and one wired
+# from the equivalent seed file decide identically. The dialect-parity gates
+# cannot reach any of it — they prove the two schemas describe the same database,
+# not that a write-then-read through one of them builds the same registries.
+#
 # The gate is deliberately fail-loud: with APERTURE_PG_INTEGRATION on and no
-# APERTURE_PG_DSN the tests FAIL rather than skip, so asking for the run and
-# silently not getting one cannot happen. Never put a DSN in a file — pass it in
-# the environment.
+# APERTURE_PG_DSN the tests FAIL rather than skip, and a value of it that is
+# neither on nor off FAILS too, so asking for the run and silently not getting
+# one cannot happen. Each suite creates and drops its own schema, so one exported
+# DSN drives all three in one shell and leaves no residue. Never put a DSN in a
+# file — pass it in the environment.
 test:
 	$(GO) test ./...
+
+# test-race runs the same suite under the race detector. It is a SEPARATE target
+# from `test` because -race rebuilds the world with instrumentation and runs several
+# times slower, but it is NOT optional: it has its own CI job, so a data race reports
+# as a distinct failed check rather than inside a longer test log.
+#
+# It is not redundant with `test`. A shared registry read on the decision path
+# (provider.AttributeRegistry, provider.Registry) is concurrency-safe by an
+# argument about publication, not by a lock held across the read, and an
+# unsynchronised write to an already-published entry is invisible to a suite that
+# runs every case single-threaded — `make test` cannot see that class of bug at
+# all. Run this after touching anything a decision reads concurrently:
+#
+#   make test-race
+#
+# CGO_ENABLED=1 is REQUIRED here and is not a relaxation of this file's CGO=0 rule.
+# The race detector's runtime is linked through cgo — on linux `go test -race` with
+# CGO off refuses outright ("-race requires cgo"), while on darwin it happens to
+# work, so a target without this line passes on a Mac and is a red CI job. It
+# overrides the exported default for THIS command only: `build` is untouched, the
+# shipped binary is still pure Go, and no dependency changes — modernc.org/sqlite and
+# pgx are pure Go either way, so the race run exercises the same code paths the
+# CGO-free build does. This collision with the project's headline constraint is
+# probably why the detector went unwired for so long; the answer is one variable on
+# one test command, not an exception to the build.
+test-race:
+	CGO_ENABLED=1 $(GO) test -race ./...
 
 # bench runs the performance benchmark suite in ./bench (INFORMATIONAL): it
 # prints ns/op, allocs/op, and the computed p99 (p99-ns) + sustained throughput

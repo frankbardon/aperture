@@ -180,6 +180,72 @@ type Storage interface {
 	// is unknown.
 	DeleteRule(ctx context.Context, name string) error
 
+	// ---- Shared wiring (E1-S2) ----
+	//
+	// Wiring is not model state. Every entity above is who exists and who may do
+	// what; the five wiring tables are where a decision's object metadata and
+	// attribute bags are read FROM — the database-backed home for a seed
+	// document's connections:, providers:, field_types: and attribute_providers:
+	// sections, so a second instance can boot with no seed file and decide
+	// identically. See model/wiring.go and skills/storage-schema.md.
+	//
+	// The write surface is ONE method, and deliberately not a Put/Delete pair per
+	// entity. Wiring is only meaningful whole: a provider entry naming a
+	// connection the manifest does not list is not half-valid wiring, and an
+	// instance booting against a set written half-way would build a registry
+	// missing exactly the entries whose write failed, while reporting nothing. So
+	// the caller hands over the whole set and gets all of it or none of it.
+
+	// GetWiring returns the WHOLE wiring set from one consistent snapshot: the
+	// four sections read together, inside a transaction on the backends that have
+	// one, so no boot can see a set that changed underneath it half-way through.
+	// Every section comes back in canonical order (WiringSet.Sort), and each
+	// provider entry carries its own reference rows.
+	//
+	// A database nothing has been pushed to answers with a zero WiringSet, which
+	// WiringSet.IsEmpty reports — the state that tells a booting instance to fall
+	// back to its local seed file. That is NOT an error.
+	GetWiring(ctx context.Context) (WiringSet, error)
+	// ReplaceWiring replaces the whole wiring set with set, atomically: every row
+	// of all five tables is removed and set is written in its place, and a failure
+	// at any point leaves the tables EXACTLY as they were. Pushing a zero
+	// WiringSet therefore clears the wiring entirely.
+	//
+	// It validates the whole set (ValidateWiringSet) before writing anything, so a
+	// malformed entry — an empty key, a negative max_size, a duplicate object type
+	// — is APERTURE_INVALID_INPUT with nothing written. A provider entry naming an
+	// object type the model does not have is refused with
+	// APERTURE_STORAGE_CONSTRAINT: apt_wiring_providers.object_type is a real
+	// foreign key, because a provider for a type no permission can name is wiring
+	// nothing can reach.
+	//
+	// It does NOT check that a Kind is implemented, that a Connection appears in
+	// the manifest, or that a TTL parses. Those belong to the layer that BUILDS
+	// the wiring, which owns the vocabulary; see model/wiring.go.
+	ReplaceWiring(ctx context.Context, set WiringSet) error
+	// ListWiringConnections returns the connection manifest, ordered by name.
+	ListWiringConnections(ctx context.Context) ([]WiringConnection, error)
+	// GetWiringConnection returns one manifest entry, or APERTURE_NOT_FOUND.
+	GetWiringConnection(ctx context.Context, name string) (WiringConnection, error)
+	// ListWiringProviders returns every provider entry with its reference rows,
+	// ordered by object type (and each entry's references by field).
+	ListWiringProviders(ctx context.Context) ([]WiringProvider, error)
+	// GetWiringProvider returns one provider entry with its reference rows, or
+	// APERTURE_NOT_FOUND.
+	GetWiringProvider(ctx context.Context, objectType string) (WiringProvider, error)
+	// ListWiringFieldTypes returns every field-type declaration, ordered by object
+	// type then field.
+	ListWiringFieldTypes(ctx context.Context) ([]WiringFieldType, error)
+	// GetWiringFieldType returns one field-type declaration, or
+	// APERTURE_NOT_FOUND.
+	GetWiringFieldType(ctx context.Context, objectType, field string) (WiringFieldType, error)
+	// ListWiringAttributeProviders returns every attribute-provider entry, ordered
+	// by slot.
+	ListWiringAttributeProviders(ctx context.Context) ([]WiringAttributeProvider, error)
+	// GetWiringAttributeProvider returns one attribute-provider entry, or
+	// APERTURE_NOT_FOUND.
+	GetWiringAttributeProvider(ctx context.Context, subject string) (WiringAttributeProvider, error)
+
 	// ---- Transactional apply (E5-S1) ----
 
 	// Atomic runs fn inside a transaction against a tx-scoped Storage, committing

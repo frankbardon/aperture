@@ -46,7 +46,11 @@ as an evaluation note and shown by `aperture explain` (see `decision-api`).
 Prints `allow` or `deny` plus the reason. Exit code reflects the decision:
 allow = 0, deny = non-zero, so checks compose in shell pipelines. Flags:
 
-- `--seed <file>` — JSON/YAML model to load (defaults to the embedded example).
+- `--seed <file>` — JSON/YAML model to apply on startup. **Omitting it means two
+  different things**: with no `--store` the embedded example is loaded (the
+  zero-flag demo), and with a `--store` DSN **nothing is seeded at all**.
+  Applying a document upserts the whole model, so a durable store is never
+  written on the strength of an absent flag; provisioning is always explicit.
   The file is also the source of the `providers:` / `objects:` object-metadata
   wiring, which rules and scope enumeration read.
 - `--store <dsn>` — backing store (defaults to in-memory). A `postgres://` or
