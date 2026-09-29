@@ -30,9 +30,41 @@ type attributeLayerEntry struct {
 // attributeSlotEntry holds one slot's layers. At least one is non-nil — an entry
 // is only ever created by a successful registration, so a slot present in the map
 // is a slot with a provider, and Has cannot report an empty shell.
+//
+// # An entry is IMMUTABLE once it is in the map, and that is what makes the reads safe
+//
+// Every reader — Fetch, Layers, Stats, CacheConfigFor, CacheConfigForLayer —
+// takes the pointer out of the map under r.mu.RLock and then reads the two fields
+// with NO lock held, because holding one across a provider call would serialise
+// the decision path on a network fetch. That is sound only while the fields never
+// change after publication: the map write under r.mu.Lock and the map read under
+// r.mu.RLock are the happens-before that publishes the entry AND everything it
+// points at.
+//
+// Adding a SECOND layer to a slot is therefore copy-on-write (see register): a
+// fresh entry is built with both layers set and swapped into the map, and the
+// entry a reader is already holding is never touched. Mutating the published one
+// instead would be two live bugs rather than a tidiness question — a reader in the
+// window can see shared == nil while local != nil, so sole() hands back the LOCAL
+// bag as the slot's whole answer, which is the precedence inversion
+// attribute_layer.go exists to forbid; and nothing orders the *attributeLayerEntry's
+// own initialisation before the field write, so a reader can reach cache.Get on a
+// half-built entry.
 type attributeSlotEntry struct {
 	shared *attributeLayerEntry
 	local  *attributeLayerEntry
+}
+
+// clone returns a shallow copy, which is the whole of copy-on-write: the layer
+// pointers are shared with the original because a layer entry is itself never
+// mutated after it is built, and the caches behind them are concurrency-safe in
+// their own right. Only the two-pointer struct is copied.
+func (e *attributeSlotEntry) clone() *attributeSlotEntry {
+	if e == nil {
+		return &attributeSlotEntry{}
+	}
+	cp := *e
+	return &cp
 }
 
 // layer returns the entry for one layer, or nil when that layer is unfilled.
@@ -47,7 +79,9 @@ func (e *attributeSlotEntry) layer(l AttributeLayer) *attributeLayerEntry {
 	}
 }
 
-// set fills one layer. The caller has already refused a duplicate.
+// set fills one layer on an entry that is NOT yet published — a fresh entry or a
+// clone. The caller has already refused a duplicate. It must never be called on
+// an entry that is in r.slots; see the type doc.
 func (e *attributeSlotEntry) set(l AttributeLayer, le *attributeLayerEntry) {
 	switch l {
 	case AttributeLayerShared:
@@ -88,9 +122,11 @@ func (e *attributeSlotEntry) filled() []*attributeLayerEntry {
 // AttributeRegistry maps each of the three attribute slots to up to TWO layered
 // AttributeProviders — a shared one and a local one — each with its own bag
 // cache. It is the seam the engine and rules layers resolve a decision's
-// principal and account attributes through. It is safe for concurrent use:
-// providers are registered at startup and read on the hot path under an RWMutex,
-// and each per-layer cache is independently concurrency-safe.
+// principal and account attributes through. It is safe for concurrent use: the
+// slot MAP is guarded by an RWMutex, a slot's entry is immutable once published
+// so the hot path reads its layers with no lock held (see attributeSlotEntry,
+// which is the whole of the argument), and each per-layer cache is independently
+// concurrency-safe.
 //
 // # Two layers per slot, shared over local
 //
@@ -252,24 +288,29 @@ func (r *AttributeRegistry) register(slot AttributeSlot, layer AttributeLayer, p
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	e, ok := r.slots[slot]
-	if ok && e.layer(layer) != nil {
+	published, ok := r.slots[slot]
+	if ok && published.layer(layer) != nil {
 		return aerr.WithContext(aerr.APERTURE_ATTRIBUTE_PROVIDER_INVALID,
 			"provider: attribute slot already has a registered provider in this layer",
 			map[string]any{"slot": string(slot), "layer": string(layer), "layers": layerNames()})
 	}
-	if !ok {
-		// Created only once the registration is known to succeed: an entry in the
-		// map is a slot with a provider, so Has and RegisteredSlots can never
-		// report an empty shell left behind by a refusal.
-		e = &attributeSlotEntry{}
-		r.slots[slot] = e
-	}
-	e.set(layer, &attributeLayerEntry{
+	// COPY-ON-WRITE, and it is a correctness requirement rather than a style: the
+	// entry already in the map may be held by a reader that released r.mu before
+	// touching its fields (see attributeSlotEntry's doc), so the second layer of a
+	// slot is added by building a NEW entry and swapping it in. The map write is
+	// then the single happens-before that publishes both layers at once, exactly as
+	// it did when a slot could only ever hold one.
+	//
+	// The entry is also only built once the registration is known to succeed: an
+	// entry in the map is a slot with a provider, so Has and RegisteredSlots can
+	// never report an empty shell left behind by a refusal.
+	next := published.clone()
+	next.set(layer, &attributeLayerEntry{
 		provider: provider,
 		cache:    r.newCache(cfg),
 		config:   cfg,
 	})
+	r.slots[slot] = next
 	return nil
 }
 
