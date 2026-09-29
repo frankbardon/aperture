@@ -531,7 +531,7 @@ if p.Stale {
 | `StaleFor` / `Since` | how long the current run of failures has lasted, and when it began. **`StaleFor` is the field to alert on**: one missed tick against a restarting database is ordinary, and the same alarm four hours old is a fleet enforcing policy somebody already retired. |
 | `Failures` | consecutive failures in the current run. A long duration with one is a loop that stopped looking; with many, a store that keeps refusing. |
 | `Code` / `Reason` | the most recent failure's own `APERTURE_*` code and message — the store's `APERTURE_STORAGE_SCHEMA_INCOMPATIBLE`, `APERTURE_WIRING_CONNECTION_UNROUTED`, and only `APERTURE_WIRING_REFRESH_FAILED` when nothing beneath it was coded. Following the underlying code's fixups is the remedy. |
-| `Digest` / `LastRefresh` | the digest of the wiring this process is DECIDING FROM (the last-good set, when stale), and when a refresh last succeeded. |
+| `Digest` / `LastRefresh` | the digest of the SHARED wiring this process is DECIDING FROM (the last-good set, when stale), and when a refresh last succeeded. It covers the five shared tables and no part of the instance's local `--seed` file, which a rebuild re-reads — so equal digests mean the same push landed, not that two instances decide identically. |
 
 Four properties are contract, not implementation:
 

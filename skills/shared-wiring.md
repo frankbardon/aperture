@@ -349,6 +349,28 @@ alternative implementation would get wrong:
   answers through the new one. That is not a torn read inside one decision; it is
   two engines in one process, and no verdict, trace or note reports it.
 
+A fifth property is not a choice the design made so much as a consequence worth
+writing down: **a rebuild RE-READS the local `--seed` file.** It goes through
+`buildWiredStack`, which calls `seedDocument`, which calls `seed.ParseFile` — a
+fresh disk read, on a swap exactly as on a boot. The two LOCAL sections are
+decision-affecting (`objects:` inline metadata, `attributes:` inline bags) and the
+declared attribute-key sets are taken from the same document, so a file rewritten in
+place since the boot is adopted as a side effect of the next shared push. The
+re-read is desirable — it is how a remounted ConfigMap takes effect without a
+restart — but two things follow that a reader must not assume away:
+
+- **`wiringDigest` covers `model.WiringSet` and nothing else.** No local content is
+  in it, so `WiringPosture.Digest` is a statement about the SHARED half. Two
+  instances reporting the same digest can hold different inline metadata and
+  different inline bags and return different verdicts. The digest stays shared-only
+  on purpose: it must remain comparable with what a push produced and with what
+  `aperture wiring diff` reports, so folding a local digest into it would break the
+  one sweep it exists for. If a fleet must be provably identical, the local files
+  have to be shipped identically as well.
+- **The trigger is a SHARED push.** A local edit does not cause a rebuild; it lands
+  on the next one. So "this file changed and nothing happened" and "an unrelated push
+  changed how this instance reads its own file" are both the same mechanism.
+
 A superseded version is never mutated and never `Close`d. Its pools are
 **borrowed** from the boot (`borrowBootPools`), so closing it would close the
 serving instance's connections; one pool per declared connection serves the life of

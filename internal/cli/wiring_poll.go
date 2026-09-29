@@ -341,6 +341,25 @@ func badWiringPoll(raw, why string) error {
 // mode is merely wasteful. TestTheDigestCoversEveryContentFieldAndNoStamp holds
 // both halves.
 //
+// # What it does NOT cover, and why that stays true
+//
+// It is a digest of model.WiringSet: the five SHARED tables and nothing else. It
+// covers no part of an instance's LOCAL --seed file, and a rebuild re-reads that
+// file (buildWiredStack -> seedDocument -> seed.ParseFile), so the two local
+// sections — inline objects: metadata and inline attributes: bags, plus the declared
+// attribute-key sets taken from them — can differ between two instances reporting
+// the same digest. That is stated in docs/src/cli/serve.md ("The digest covers the
+// shared set only"), skills/shared-wiring.md and
+// docs/src/operations/wiring-refresh.md, because a reader who assumes the digest is
+// a whole-configuration fingerprint will build a fleet sweep on it that answers a
+// question it cannot answer.
+//
+// Folding a local digest INTO this value is the tempting fix and the wrong one: this
+// digest's job is to compare against what a push produced and what `aperture wiring
+// diff` reports, and a value mixed with per-instance content matches neither. A
+// separate local digest on service.WiringPosture is the shape that would work; it is
+// not here because it is a wire-surface change.
+//
 // The snapshot is sorted first. GetWiring already returns canonical order, so this
 // is belt-and-braces for a caller holding a set it assembled itself — but it is
 // what makes the digest a property of the WIRING rather than of the read, so two

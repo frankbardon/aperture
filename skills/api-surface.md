@@ -550,6 +550,13 @@ seriously rather than as tuning.
   ACCOUNT and only the caller knows which of its accounts that is; the principal on
   the wire is ignored as always. Durations are Go duration text (`"4h0m0s"`) and
   instants RFC3339, because the person reading it has just been paged.
+- **`Digest` is the SHARED wiring's, and only that.** It is `wiringDigest` of the
+  five tables, which is what makes it comparable with what a push produced and with
+  `aperture wiring diff`. It covers no part of an instance's local `--seed` file, and
+  a rebuild re-reads that file — so two instances can report the same digest and hold
+  different inline `objects:` metadata and different inline `attributes:` bags. The
+  read answers "did this instance get the push"; it is not by itself proof that two
+  instances decide identically.
 - **It carries no model data.** Digests, durations, counts and coded errors only —
   never an object type, an id or a key — the same restriction the poll's stderr
   reports carry.
