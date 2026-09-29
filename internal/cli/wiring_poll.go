@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -537,10 +538,10 @@ func (p *wiringPoll) run(ctx context.Context) {
 			return
 		case <-t.C:
 			// The tick takes the loop's own context, so a shutdown cancels a read in
-			// flight rather than waiting for it — and a cancelled read is reported as
-			// the failure it is by the branch below, not swallowed, because "the
+			// flight rather than waiting for it. What the tick then does with that
+			// cancellation is the distinction abandonedDuringShutdown draws: "the
 			// database went away" and "we are shutting down" must not become the same
-			// silence.
+			// SILENCE, and they must not become the same ALARM either.
 			p.tick(ctx)
 		}
 	}
@@ -576,6 +577,9 @@ func (p *wiringPoll) tick(ctx context.Context) bool {
 
 	set, err := readSharedWiring(ctx, p.store)
 	if err != nil {
+		if p.abandoned(ctx, err, "re-reading the shared wiring") {
+			return false
+		}
 		// Last-good, and LOUD. Nothing is swapped, so the instance keeps deciding
 		// with the wiring it has; the digest deliberately does not advance, so the
 		// next successful read still sees a change this one could not confirm; and
@@ -606,6 +610,9 @@ func (p *wiringPoll) tick(ctx context.Context) bool {
 	// decision in flight goes on answering through the version this process already
 	// has. Only the final pointer store is visible to a reader, and it is atomic.
 	if err := p.swap(ctx, set, digest); err != nil {
+		if p.abandoned(ctx, err, "adopting the deployed wiring") {
+			return false
+		}
 		// Last-good, and the digest deliberately does NOT advance — see the doc
 		// comment.
 		//
@@ -651,6 +658,46 @@ func (p *wiringPoll) tick(ctx context.Context) bool {
 	p.refreshed()
 	p.report("wiring poll: the deployed wiring CHANGED (%s -> %s) and this instance ADOPTED it; decisions already in "+
 		"flight finish on the wiring they started with", shortDigest(previous), shortDigest(digest))
+	return true
+}
+
+// abandoned distinguishes a step THIS LOOP cancelled from a step that failed, and
+// says so on stderr without recording an alarm.
+//
+// A tick takes the loop's own context, so SIGTERM landing while readSharedWiring
+// is in flight returns context.Canceled. Alarming on it made a CLEANLY TERMINATING
+// instance report itself stale: service.WiringHealth would open a staleness window
+// with Reason "context canceled", and httpServer.Shutdown then drains for up to
+// shutdownTimeout, during which every WiringPosture read answers Stale=true. A
+// fleet sweep taken across a rolling restart would see every instance being
+// replaced reported as degraded, which is the false positive that trains an
+// operator to stop reading the channel — silent staleness by the longest route
+// there is.
+//
+// BOTH conditions are required, and each rules out a different mistake:
+//
+//   - ctx.Err() != nil, so only OUR OWN cancellation qualifies. A driver that
+//     surfaces a context error for a reason of its own, while this loop's context
+//     is alive, is a fault and is alarmed.
+//   - the error really IS a context error, so a read that failed for a REAL reason
+//     and only then noticed the shutdown is still alarmed. That ordering is the one
+//     a store that is going away at the same moment as the process produces, and
+//     losing it would make "the database died during a deploy" the one failure
+//     nothing anywhere records.
+//
+// It is NOT silent. Nothing is recorded, because there is nothing for an operator
+// to act on and no window to open — the instance is stopping, not deciding from
+// superseded wiring — but the line is written, so a shutdown that abandoned a
+// refresh is legible in the same place the refresh itself would have been.
+func (p *wiringPoll) abandoned(ctx context.Context, err error, what string) bool {
+	if ctx.Err() == nil {
+		return false
+	}
+	if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	p.report("wiring poll: %s was abandoned because this process is shutting down; nothing is stale and no alarm "+
+		"is recorded", what)
 	return true
 }
 

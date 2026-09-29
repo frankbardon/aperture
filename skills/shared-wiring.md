@@ -413,6 +413,23 @@ Two things about it are easy to get wrong and are asserted:
 - **The posture's digest is what the instance RUNS.** It advances with the adoption
   and not with the read, so a fleet-wide digest comparison reads a caught-up
   instance as caught up and a refusing one as behind.
+- **A step this process's own SHUTDOWN cancelled is not a failure of any of them.**
+  A tick takes the loop's context, so SIGTERM arriving mid-read (or mid-rebuild)
+  returns `context.Canceled`. Recording it made a cleanly terminating instance
+  report itself stale for the whole of its `Shutdown` drain, which is the false
+  positive that teaches an operator to ignore the channel. `wiringPoll.abandoned`
+  requires BOTH that this loop's context is done AND that the error really is a
+  context error, so a store that went away at the same moment as the process is
+  still alarmed with its own code; nothing is recorded, and one line still says the
+  refresh was abandoned (`TestACleanShutdownDoesNotReportItselfStale`).
+
+Each failure condition emits **exactly one** stderr line, in the words that fit
+that condition. "Re-reading the shared wiring failed" is the read's and the
+digest's sentence; a refused ADOPTION says the wiring CHANGED and could not be
+adopted, because there the re-read succeeded and the remedy is a restart rather
+than a look at store reachability. `wiringPoll.alarmf` records the classified
+alarm and then prints the branch's own sentence — record-then-report, so a broken
+writer cannot lose the one channel an operator can read without logs.
 
 The alarm **passes the underlying code through** (`wiringRefreshAlarm`'s
 pass-through guard) and `APERTURE_WIRING_REFRESH_FAILED` is the classification of

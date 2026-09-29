@@ -827,3 +827,123 @@ func TestTheAlarmRecordsBeforeItReports(t *testing.T) {
 type panicWriter struct{}
 
 func (panicWriter) Write([]byte) (int, error) { panic("the writer went away") }
+
+// wiringReadReturns answers every re-read with one fixed set and ignores the
+// context, which is what lets a case drive the ADOPTION branch under a cancelled
+// context: a real store honours the context and would fail the read first, so the
+// branch under test would never be reached.
+type wiringReadReturns struct {
+	model.Storage
+	set model.WiringSet
+}
+
+func (w wiringReadReturns) GetWiring(context.Context) (model.WiringSet, error) { return w.set, nil }
+
+// TestACleanShutdownDoesNotReportItselfStale is the false positive that trains an
+// operator to ignore the channel.
+//
+// A tick takes the LOOP's context, so SIGTERM landing while the re-read is in
+// flight returns context.Canceled. Alarming on it opened a staleness window with
+// Reason "context canceled" — and httpServer.Shutdown then drains for up to
+// shutdownTimeout, during which every WiringPosture read answers Stale=true. A
+// fleet sweep taken across an ordinary rolling restart would report every instance
+// being replaced as degraded.
+//
+// The discriminator has to keep the loud half, which is why the controls matter as
+// much as the case: a read that failed for a REAL reason and only then noticed the
+// shutdown is exactly what a store going away during a deploy produces, and it is
+// the one failure that must not be laundered into an orderly exit.
+func TestACleanShutdownDoesNotReportItselfStale(t *testing.T) {
+	// changedWiring is a push the probe has not adopted, so the tick reaches the
+	// adoption branch instead of the no-change one.
+	changedWiring := func() model.WiringSet {
+		set := staleWiringSet(time.Now().UTC())
+		set.FieldTypes = append(set.FieldTypes, model.WiringFieldType{
+			ObjectType: "document", Field: "released_on", DeclaredType: "date",
+			CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+		})
+		return set
+	}
+
+	t.Run("a re-read this loop cancelled", func(t *testing.T) {
+		probe := newStalenessProbe(t)
+		ctx, cancel := context.WithCancel(probe.ctx)
+		cancel()
+
+		// Through readSharedWiring, so the sentinel is reached through the coded wrap a
+		// real read would put on it.
+		probe.poll.store = wiringReadFails{Storage: probe.counting, err: context.Canceled}
+		probe.out.Reset()
+		if probe.poll.tick(ctx) {
+			t.Fatal("an abandoned tick reported a change")
+		}
+
+		if p := probe.health.Posture(); p.Stale {
+			t.Errorf("a cleanly terminating instance recorded staleness: %+v\n"+
+				"Shutdown drains for up to %s after this, and every WiringPosture read in that "+
+				"window would report a healthy instance as degraded", p, shutdownTimeout)
+		}
+		if p := probe.health.Posture(); p.Failures != 0 {
+			t.Errorf("Failures = %d after an abandoned tick, want 0", p.Failures)
+		}
+		// Not silent, though: nothing recorded, one line written.
+		lines := pollLines(probe.out.String())
+		if len(lines) != 1 || !strings.Contains(lines[0], "shutting down") {
+			t.Errorf("an abandoned re-read was silent or said the wrong thing: %q", probe.out.String())
+		}
+	})
+
+	t.Run("an adoption this loop cancelled", func(t *testing.T) {
+		probe := newStalenessProbe(t)
+		ctx, cancel := context.WithCancel(probe.ctx)
+		cancel()
+
+		probe.poll.store = wiringReadReturns{Storage: probe.counting, set: changedWiring()}
+		probe.poll.swap = func(context.Context, model.WiringSet, string) error { return context.Canceled }
+		probe.out.Reset()
+		if probe.poll.tick(ctx) {
+			t.Fatal("an abandoned adoption reported a change")
+		}
+
+		if p := probe.health.Posture(); p.Stale {
+			t.Errorf("a rebuild abandoned by this process's own shutdown recorded staleness: %+v", p)
+		}
+		if lines := pollLines(probe.out.String()); len(lines) != 1 || !strings.Contains(lines[0], "shutting down") {
+			t.Errorf("an abandoned adoption was silent or said the wrong thing: %q", probe.out.String())
+		}
+	})
+
+	t.Run("a real failure noticed at the same moment as the shutdown", func(t *testing.T) {
+		probe := newStalenessProbe(t)
+		ctx, cancel := context.WithCancel(probe.ctx)
+		cancel()
+
+		probe.poll.store = wiringReadFails{
+			Storage: probe.counting,
+			err:     aerr.New(aerr.APERTURE_STORAGE, "connection refused"),
+		}
+		probe.poll.tick(ctx)
+
+		p := probe.health.Posture()
+		if !p.Stale {
+			t.Fatalf("a store that went away as the process was stopping was laundered into an orderly "+
+				"exit: %+v. The discriminator is about WHY the step ended, not about whether the process "+
+				"is stopping", p)
+		}
+		if p.Code != string(aerr.APERTURE_STORAGE) {
+			t.Errorf("the alarm's code = %q, want %q", p.Code, aerr.APERTURE_STORAGE)
+		}
+	})
+
+	t.Run("a context error while this loop is alive", func(t *testing.T) {
+		probe := newStalenessProbe(t)
+		probe.poll.store = wiringReadFails{Storage: probe.counting, err: context.DeadlineExceeded}
+		probe.poll.tick(probe.ctx)
+
+		if p := probe.health.Posture(); !p.Stale {
+			t.Errorf("a context error raised while this loop's context is ALIVE was read as a shutdown: %+v. "+
+				"It is a fault somewhere beneath — a driver's own deadline — and the instance really is "+
+				"running wiring it has not re-read", p)
+		}
+	})
+}

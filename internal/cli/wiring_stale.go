@@ -55,6 +55,14 @@ import (
 // per tick for one fact is how the wrong one gets read, and a refused
 // connection-name change never clears by itself, so the pair would print forever.
 //
+// What does NOT come through here at all is a step this process's own shutdown
+// cancelled. A tick takes the loop's context, so SIGTERM mid-read returns
+// context.Canceled, and recording that made a cleanly terminating instance report
+// itself stale for the whole of its Shutdown drain. That is a fault report about an
+// orderly exit, and it is the false positive that teaches an operator to stop
+// reading the channel. wiringPoll.abandoned is the discriminator, and it still
+// writes a line — abandoning a refresh silently would be the other mistake.
+//
 // So a rebuild's failure path records through alarmf and its success path advances
 // p.digest and calls p.refreshed(). A rebuild that fails must NOT advance
 // p.digest — see service.WiringHealth.Refreshed for why the digest it is handed

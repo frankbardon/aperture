@@ -177,6 +177,24 @@ Four things about the read are worth knowing before you build a sweep on it:
   knowingly running superseded wiring, which is a worse posture than not having
   looked, and it says so.
 
+### A shutdown is not a failure
+
+SIGTERM landing while a tick is mid-read — or mid-rebuild — cancels it. That is
+**not** recorded as staleness, and it is deliberate: graceful shutdown then drains
+for up to ten seconds, and an instance that reported `Stale: true` with reason
+`context canceled` for that window would show up as degraded in every sweep taken
+across an ordinary rolling restart. The line is still written, so an abandoned
+refresh is legible:
+
+```text
+wiring poll: re-reading the shared wiring was abandoned because this process is
+shutting down; nothing is stale and no alarm is recorded
+```
+
+A store that genuinely went away at the same moment as the process is a different
+thing and **is** alarmed, with its own code. The distinction is why the step ended,
+not whether the process is stopping.
+
 ### Recovery needs nothing from you
 
 The next **completed** refresh clears the alarm, resets the duration and the failure
@@ -204,6 +222,7 @@ on wiring it cannot build, rather than starting degraded.
 | `APERTURE_WIRING_CONNECTION_UNROUTED` at boot | That instance has no route for a name the deployment declares. Supply it, then start. |
 | `APERTURE_WIRING_REFRESH_FAILED` itself | Nothing underneath it carried a code, which is worth reporting. Usually the store is unreachable from that host. |
 | A stale alarm that is minutes old | Ordinary — a restarting database. The number to act on is the duration, not the boolean. |
+| A stale alarm on an instance you just stopped | Not expected: a refresh this process's own shutdown cancelled records nothing. If you see one, the store really did go away first. |
 | A stale alarm that is hours old | The fleet is enforcing policy somebody already retired. Treat it as a drifted deployment, not an outage: decisions are still being made, just from old wiring. |
 
 ## What it costs
